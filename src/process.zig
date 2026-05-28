@@ -17,6 +17,15 @@ pub const ExpressionCache = cache_mod.ExpressionCache;
 pub const LruCache = cache_mod.LruCache;
 
 pub const MACRO_EXTENSION = ".lishmacro";
+pub const LISH_EXTENSION  = ".lish";
+
+/// Maximum size of a single `.lishmacro` file loaded from disk. Larger files
+/// fail with an IO error rather than silently consuming memory.
+pub const MACRO_FILE_MAX_SIZE = 1024 * 1024;
+
+/// Maximum size of a single `.lish` file (single-expression source) loaded
+/// from disk. Larger files fail with an IO error.
+pub const LISH_FILE_MAX_SIZE = 1024 * 1024;
 
 // ── Result types ──
 
@@ -144,7 +153,7 @@ pub fn loadMacroModule(
 }
 
 /// Lish standard library source — bundled into the compiled binary.
-pub const STDLIB_SOURCE = @embedFile("stdlib.lishmacro");
+pub const STDLIB_SOURCE = @embedFile("stdlib" ++ MACRO_EXTENSION);
 
 /// Load the bundled standard library macros into a registry.
 /// Library consumers opt into the stdlib by calling this after Session init.
@@ -170,12 +179,26 @@ pub fn loadMacroFile(
     registry: *Registry,
     file_path: []const u8,
 ) Allocator.Error!MacroLoadResult {
-    const source = std.Io.Dir.cwd().readFileAlloc(io, file_path, allocator, .limited(1024 * 1024)) catch |err| {
+    const source = std.Io.Dir.cwd().readFileAlloc(io, file_path, allocator, .limited(MACRO_FILE_MAX_SIZE)) catch |err| {
         return .{ .io_error = err };
     };
     defer allocator.free(source);
 
     return loadMacroModule(registry, source);
+}
+
+/// Read a `.lish` file (a single expression) from disk, parse, validate, and
+/// evaluate against the given environment. IO errors propagate as a Zig
+/// error union; parse/runtime errors surface inside the ProcessResult.
+pub fn loadLishFile(
+    io: std.Io,
+    env: *Env,
+    file_path: []const u8,
+    scope: ?*const Scope,
+) !ProcessResult {
+    const source = try std.Io.Dir.cwd().readFileAlloc(io, file_path, env.allocator, .limited(LISH_FILE_MAX_SIZE));
+    defer env.allocator.free(source);
+    return processRaw(env, source, scope);
 }
 
 /// Scan a directory for .lishmacro files and load each one.
@@ -660,5 +683,159 @@ test "loadStdlib: loads bundled stdlib without error" {
     switch (result) {
         .ok => {},
         .io_error, .validation_err => return error.TestUnexpectedResult,
+    }
+}
+
+// ── Bounds: recursion depth + fuel ──
+
+test "bounds: recursion depth halts runaway macro" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var registry = Registry.init(alloc);
+    try builtins.registerAll(&registry, alloc);
+
+    // A macro that calls itself with no termination condition.
+    const load = try loadMacroModule(&registry, "|forever| forever");
+    try std.testing.expect(load == .ok);
+
+    var env = Env{ .registry = &registry, .allocator = alloc };
+    env.bounds.max_call_depth = 32;
+
+    const result = try processRaw(&env, "forever", null);
+    switch (result) {
+        .runtime_err => |msg| {
+            try std.testing.expect(std.mem.indexOf(u8, msg, "Recursion depth") != null);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "bounds: fuel exhaustion halts long loop" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var registry = Registry.init(alloc);
+    try builtins.registerAll(&registry, alloc);
+
+    var env = Env{ .registry = &registry, .allocator = alloc };
+    env.bounds.fuel = 50;
+    env.fuel_remaining = env.bounds.fuel;
+
+    // Sub-expression body forces a processExpression call per iteration.
+    const result = try processRaw(&env, "loop 1000 (+ 1 1)", null);
+    switch (result) {
+        .runtime_err => |msg| {
+            try std.testing.expect(std.mem.indexOf(u8, msg, "Fuel exhausted") != null);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "bounds: unlimited fuel does not interfere" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var registry = Registry.init(alloc);
+    try builtins.registerAll(&registry, alloc);
+
+    var env = Env{ .registry = &registry, .allocator = alloc };
+    // fuel defaults to null → unlimited
+
+    const result = try processRaw(&env, "+ 1 2 3", null);
+    switch (result) {
+        .ok => |maybe_value| try std.testing.expectEqual(@as(i64, 6), maybe_value.?.int),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "bounds: list length cap halts huge range" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var registry = Registry.init(alloc);
+    try builtins.registerAll(&registry, alloc);
+
+    var env = Env{ .registry = &registry, .allocator = alloc };
+    env.bounds.max_list_length = 100;
+
+    const result = try processRaw(&env, "range 0 100000", null);
+    switch (result) {
+        .runtime_err => |msg| {
+            try std.testing.expect(std.mem.indexOf(u8, msg, "List length") != null);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "bounds: list length cap halts huge fill" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var registry = Registry.init(alloc);
+    try builtins.registerAll(&registry, alloc);
+
+    var env = Env{ .registry = &registry, .allocator = alloc };
+    env.bounds.max_list_length = 100;
+
+    const result = try processRaw(&env, "fill 1000000 0", null);
+    switch (result) {
+        .runtime_err => |msg| {
+            try std.testing.expect(std.mem.indexOf(u8, msg, "List length") != null);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "bounds: string length cap halts huge concat" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var registry = Registry.init(alloc);
+    try builtins.registerAll(&registry, alloc);
+
+    // Define a doubling macro and chain it.
+    const load = try loadMacroModule(&registry, "|double s| concat :s :s");
+    try std.testing.expect(load == .ok);
+
+    var env = Env{ .registry = &registry, .allocator = alloc };
+    env.bounds.max_string_length = 100;
+
+    // Each double doubles; 10 nestings = 2^10 = 1024 chars, exceeding 100.
+    const result = try processRaw(&env,
+        "double (double (double (double (double (double (double (double (double (double \"x\")))))))))", null);
+    switch (result) {
+        .runtime_err => |msg| {
+            try std.testing.expect(std.mem.indexOf(u8, msg, "String length") != null);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "bounds: shallow recursion under limit works fine" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var registry = Registry.init(alloc);
+    try builtins.registerAll(&registry, alloc);
+
+    // Counts down from :n to 0.
+    const load = try loadMacroModule(&registry, "|countdown n| if (> :n 0) (countdown (- :n 1)) :n");
+    try std.testing.expect(load == .ok);
+
+    var env = Env{ .registry = &registry, .allocator = alloc };
+    env.bounds.max_call_depth = 1024;
+
+    const result = try processRaw(&env, "countdown 50", null);
+    switch (result) {
+        .ok => |maybe_value| try std.testing.expectEqual(@as(i64, 0), maybe_value.?.int),
+        else => return error.TestUnexpectedResult,
     }
 }

@@ -6,6 +6,28 @@ const Value = val.Value;
 const Args = exec.Args;
 const ExecError = exec.ExecError;
 
+// ── Resource bound checks ──
+
+/// Fail if `n` exceeds env.bounds.max_list_length.
+/// No-op when the bound is null (unlimited).
+pub fn checkListLength(args: Args, n: usize) ExecError!void {
+    if (args.env.bounds.max_list_length) |limit| {
+        if (n > limit) {
+            return args.env.failFmt("List length {d} exceeds limit {d}", .{ n, limit });
+        }
+    }
+}
+
+/// Fail if `n` (in bytes) exceeds env.bounds.max_string_length.
+/// No-op when the bound is null (unlimited).
+pub fn checkStringLength(args: Args, n: usize) ExecError!void {
+    if (args.env.bounds.max_string_length) |limit| {
+        if (n > limit) {
+            return args.env.failFmt("String length {d} exceeds limit {d}", .{ n, limit });
+        }
+    }
+}
+
 // ── Numeric folds ──
 
 pub fn numericFold(

@@ -35,6 +35,7 @@ pub const Args = exec.Args;
 pub const Registry = exec.Registry;
 pub const Operation = exec.Operation;
 pub const Macro = exec.Macro;
+pub const Bounds = exec.Bounds;
 
 pub const processRaw = process.processRaw;
 pub const loadMacroModule = process.loadMacroModule;
@@ -51,6 +52,10 @@ pub const ExpressionCache = process.ExpressionCache;
 pub const LruCache = process.LruCache;
 pub const processRawCached = process.processRawCached;
 pub const MACRO_EXTENSION = process.MACRO_EXTENSION;
+pub const MACRO_FILE_MAX_SIZE = process.MACRO_FILE_MAX_SIZE;
+pub const LISH_EXTENSION = process.LISH_EXTENSION;
+pub const LISH_FILE_MAX_SIZE = process.LISH_FILE_MAX_SIZE;
+pub const loadLishFile = process.loadLishFile;
 
 pub const Session = session.Session;
 pub const SessionConfig = session.SessionConfig;

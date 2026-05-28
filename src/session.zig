@@ -21,6 +21,7 @@ pub const SessionConfig = struct {
     expression_cache_capacity: usize = 256,
     stdout: ?*std.Io.Writer = null,
     stderr: ?*std.Io.Writer = null,
+    bounds: exec_mod.Bounds = .{},
 };
 
 pub const Session = struct {
@@ -49,6 +50,7 @@ pub const Session = struct {
                 .io = config.io,
                 .stdout = config.stdout,
                 .stderr = config.stderr,
+                .bounds = config.bounds,
             },
             .expression_cache = expression_cache,
             .arena = arena,
@@ -107,6 +109,8 @@ pub const Session = struct {
         self.env.registry = &self.registry;
         self.env.allocator = self.arena.allocator();
         self.env.runtime_error = null;
+        self.env.call_depth = 0;
+        self.env.fuel_remaining = self.env.bounds.fuel;
     }
 
     /// Load macro files from a directory.

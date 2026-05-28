@@ -21,7 +21,7 @@ lish borrows Lisp's prefix notation and parenthesized sub-expressions, but diver
 - **Existential truthiness** — no booleans; values either exist (`?Value`) or they don't (`null`)
 - **Arena allocation** — parse and execute within a single arena lifecycle
 - **Expression caching** — generic LRU cache avoids redundant parsing
-- **92 built-in operations** — arithmetic, comparison, logic, control flow, string, list, higher-order, type, math, binding, and meta functions
+- **93 built-in operations** — arithmetic, comparison, logic, control flow, string, list, higher-order, type, math, binding, and meta functions
 - **Binding form for iteration** — `map`, `filter`, `reduce`, etc. take a binding name and a sub-expression body, so transforms live inline at the call site
 - **Session API** — backend-agnostic REPL core
 - **AST builder** — fluent Zig API for constructing lish expressions and macro definitions programmatically
@@ -116,7 +116,7 @@ Macros (params accessed with `:`):
 | List              | `list`, `flat`, `flatten`, `range`, `until`, `sort`, `sortby`, `sortwith`, `fill`, `fillby`                                      |
 | Collection        | `length`, `first`, `last`, `rest`, `at`, `reverse`, `take`, `drop`, `slice`, `zip`                                               |
 | Higher-Order      | `map`, `foreach`, `filter`, `reduce`, `any`, `all`, `count`, `findby`                                                            |
-| Meta              | `apply`, `known`                                                                                                                 |
+| Meta              | `apply`, `known`, `ops`                                                                                                          |
 | Math              | `min`, `max`, `clamp`, `abs`, `floor`, `ceil`, `round`, `even`, `odd`, `sign`, `pi`, `sqrt`, `sin`, `cos`, `atan2`, `log`, `exp` |
 | Type              | `type`, `int`, `float`, `string`                                                                                                 |
 | Sequencing        | `proc`, `loop`, `while`                                                                                                          |
@@ -150,6 +150,16 @@ sortwith a b [3 1 2] (compare :a :b)                ## [1 2 3]
 `apply NAME LIST` calls the operation named by `NAME` with the elements of `LIST` as positional arguments: `apply "+" [1 2 3]` → `6`. The first argument resolves to a string, looked up in the registry, so dispatch can be dynamic.
 
 `known NAME` returns `NAME` if it is registered as an operation or macro, or null otherwise. Useful for graceful fallback: `apply (or (known "custom-handler") "default") args`.
+
+`ops` (zero args) returns a list of every name registered in the current registry — both operations and macros. Order is unspecified (hashmap iteration). Composes naturally for discovery, counting, or filtering:
+
+```
+length (ops)                          ## how many things are callable
+sortby x (ops) :x                     ## sorted alphabetically
+filter x (ops) (prefix "list-" :x)    ## just list-related names
+in "my-op" (ops)                      ## membership check (equivalent to `known`)
+```
+
 
 ### `is` and `isnt` are value-preserving
 
@@ -438,13 +448,24 @@ The line editor supports history navigation (↑/↓), cursor movement (←/→,
 
 ### REPL Configuration
 
-The REPL reads `$XDG_CONFIG_HOME/lish/config` on startup, falling back to `~/.config/lish/config`. The file is a lish script evaluated with the full set of core built-ins available. If the file does not exist all settings use their defaults.
+The REPL reads `$XDG_CONFIG_HOME/lish/config.lish` on startup, falling back to `~/.config/lish/config.lish`. The file is a single lish expression evaluated with the full set of core built-ins available. If the file does not exist all settings use their defaults.
+
+File extensions used by lish:
+
+| Extension | Purpose | Parser |
+|---|---|---|
+| `.lish` | A single expression (config files, one-off scripts) | `parser.parse` → `processRaw` |
+| `.lishmacro` | One or more macro declarations | `macro_parser` → `loadMacroModule` |
 
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `autopair-insert` | `$some` | Typing `(`, `[`, `{`, `"`, or `'` inserts the matching closing delimiter with the cursor positioned between the pair. |
 | `autopair-delete` | `$some` | Pressing backspace between a matched pair deletes both brackets. |
 | `macros` | — | Load `.lishmacro` macros from the given path. Accepts a single `.lishmacro` file or a directory (all `.lishmacro` files in the directory are loaded). May be called multiple times. |
+| `max-call-depth` | `1024` | Maximum recursion depth (`processExpression` nesting). Prevents Zig stack overflow from runaway macros. Positive integer required. |
+| `fuel` | `$off` | Maximum total expression evaluations per top-level execute. Halts long-running scripts with a fuel-exhausted error. Positive integer to enable, `$off` for unlimited. |
+| `max-list-length` | `$off` | Maximum element count for any list constructed at runtime (`range`, `fill`, `map`, `filter`, etc.). Positive integer to enable, `$off` for unlimited. |
+| `max-string-length` | `$off` | Maximum byte length for any string constructed at runtime (`concat`, `join`, `format`, `replace`). Positive integer to enable, `$off` for unlimited. |
 
 The config file is evaluated as a single lish expression. Use `proc` to sequence multiple settings:
 
@@ -453,11 +474,45 @@ proc
     (autopair-insert $off)
     (autopair-delete $off)
     (macros '~/.config/lish/macros')
+    (max-call-depth 512)
+    (fuel 100000)
+    (max-list-length 100000)
+    (max-string-length 65536)
 ```
 
 The config context includes two convenience macros, `$on` and `$off`, for toggling boolean settings. Calling a boolean setting with no argument also enables it. `macros` takes exactly one path argument. An empty file or a file containing only comments is a no-op.
 
 Note: `say` and `error` are not available in the config context — they are excluded to prevent accidental terminal output on every REPL startup.
+
+### Resource bounds
+
+lish enforces parse-time and runtime bounds to prevent malformed or malicious scripts from crashing the host. Parse-time bounds (string/identifier length, expression nesting, parameter count) are compile-time constants. Runtime bounds are configurable per session via `SessionConfig.bounds` (Zig) or the REPL config options above:
+
+| Bound | Field | Default | Catches |
+|---|---|---|---|
+| Recursion depth | `max_call_depth` | 1024 | Runaway recursive macros (would otherwise overflow the Zig stack and crash the host) |
+| Fuel | `fuel` | `null` (unlimited) | Long-running loops or compounding `fillby`-style allocations |
+| List length | `max_list_length` | `null` (unlimited) | Huge single allocations from `range`, `fill`, `map`, etc. |
+| String length | `max_string_length` | `null` (unlimited) | Exponential string growth via repeated `concat`/`replace` |
+
+Embedded consumers set these directly:
+
+```zig
+var session = try lish.Session.init(allocator, .{
+    .io = io,
+    .fragments = &.{&lish.builtins.registerAll},
+    .bounds = .{
+        .max_call_depth = 256,
+        .fuel = 100_000,
+        .max_list_length = 100_000,
+        .max_string_length = 64 * 1024,
+    },
+});
+```
+
+When a bound trips, the script returns a `RuntimeError` whose message identifies the bound (`"Recursion depth exceeded ..."`, `"Fuel exhausted"`, `"List length N exceeds limit M"`, `"String length N exceeds limit M"`). The host can distinguish resource exhaustion from other runtime errors via message inspection if needed.
+
+Defaults are permissive (recursion depth aside) so existing scripts and library consumers see no behavior change. Tighten the bounds when running untrusted or user-supplied scripts.
 
 ## Architecture
 
@@ -471,7 +526,7 @@ Note: `say` and `error` are not available in the config context — they are exc
 | `parser.zig`       | Recursive descent expression parser                  |
 | `validation.zig`   | AST to executable transformation with error checking |
 | `exec.zig`         | Runtime: Thunk, Expression, Scope, Env, Registry     |
-| `builtins.zig`     | 92 built-in operations                               |
+| `builtins.zig`     | 93 built-in operations                               |
 | `macro_parser.zig` | Macro definition parser and validator                |
 | `cache.zig`        | Generic LRU cache (`LruCache(V)`)                    |
 | `process.zig`      | Convenience API: processRaw, macro file loading      |

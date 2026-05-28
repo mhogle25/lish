@@ -14,6 +14,7 @@ const Allocator = std.mem.Allocator;
 pub fn register(registry: *Registry, allocator: Allocator) Allocator.Error!void {
     try registry.registerOperation(allocator, "apply", Operation.fromFn(applyOp));
     try registry.registerOperation(allocator, "known", Operation.fromFn(knownOp));
+    try registry.registerOperation(allocator, "ops",   Operation.fromFn(opsOp));
 }
 
 inline fn makeExpression(id: exec.ExpressionId, arg_buf: []const *const Thunk) Expression {
@@ -48,6 +49,30 @@ fn knownOp(args: Args) ExecError!?Value {
     if (value.string.len == 0) return null;
     if (args.env.registry.resolveId(value.string) == null) return null;
     return value;
+}
+
+fn opsOp(args: Args) ExecError!?Value {
+    try args.expectCount(0);
+
+    const alloc = args.env.allocator;
+    const registry = args.env.registry;
+
+    var names = std.ArrayListUnmanaged(?Value).empty;
+    try names.ensureTotalCapacity(alloc, registry.operations.count() + registry.macros.count());
+
+    var op_iter = registry.operations.keyIterator();
+    while (op_iter.next()) |key| {
+        const owned = try alloc.dupe(u8, key.*);
+        names.appendAssumeCapacity(.{ .string = owned });
+    }
+
+    var macro_iter = registry.macros.keyIterator();
+    while (macro_iter.next()) |key| {
+        const owned = try alloc.dupe(u8, key.*);
+        names.appendAssumeCapacity(.{ .string = owned });
+    }
+
+    return .{ .list = names.items };
 }
 
 // ── Tests ──
@@ -96,6 +121,70 @@ test "known: chains with or for fallback" {
     const result = try testing.evalWithBuiltins(arena.allocator(),
         "apply (or (known \"missing\") \"+\") [10 20]");
     try std.testing.expectEqual(@as(i64, 30), result.?.int);
+}
+
+test "ops: returns a list" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try testing.evalWithBuiltins(arena.allocator(), "ops");
+    try std.testing.expect(result != null);
+    try std.testing.expect(result.? == .list);
+    try std.testing.expect(result.?.list.len > 0);
+}
+
+test "ops: contains known built-ins" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Use `in` to check membership of "+" in the list of op names.
+    const has_plus = try testing.evalWithBuiltins(arena.allocator(), "in \"+\" (ops)");
+    try std.testing.expect(has_plus != null);
+    const has_map = try testing.evalWithBuiltins(arena.allocator(), "in \"map\" (ops)");
+    try std.testing.expect(has_map != null);
+    const has_let = try testing.evalWithBuiltins(arena.allocator(), "in \"let\" (ops)");
+    try std.testing.expect(has_let != null);
+}
+
+test "ops: missing name not in list" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const missing = try testing.evalWithBuiltins(arena.allocator(), "in \"nonexistent-xyz\" (ops)");
+    try std.testing.expect(missing == null);
+}
+
+test "ops: accepts no arguments" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = testing.evalWithBuiltins(arena.allocator(), "ops 5");
+    try std.testing.expectError(error.RuntimeError, result);
+}
+
+test "ops: includes registered macros" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const parser = @import("../parser.zig");
+    const validation = @import("../validation.zig");
+    const process = @import("../process.zig");
+    const builtins = @import("../builtins.zig");
+
+    var registry = Registry.init(alloc);
+    builtins.registerAll(&registry, alloc) catch return error.OutOfMemory;
+
+    const macro_load = try process.loadMacroModule(&registry, "|triple x| * :x 3");
+    try std.testing.expect(macro_load == .ok);
+
+    var env = testing.makeTestEnv(alloc, &registry);
+    const scope = exec.Scope.EMPTY;
+
+    const ast_root = try parser.parse(alloc, "in \"triple\" (ops)");
+    const validated = try validation.validate(alloc, ast_root);
+
+    const result = switch (validated) {
+        .ok => |expression| try env.processExpression(expression, &scope),
+        .err => return error.RuntimeError,
+    };
+    try std.testing.expect(result != null);
 }
 
 test "known: registered macro" {

@@ -399,6 +399,32 @@ pub const Registry = struct {
     }
 };
 
+// ── Bounds — runtime resource limits ──
+
+/// Per-evaluation resource limits. Null fields mean "unlimited".
+/// `max_call_depth` always applies (no null option) since deep recursion
+/// can crash the host process via Zig stack overflow.
+pub const Bounds = struct {
+    /// Maximum nesting depth of `processExpression` calls. Catches runaway
+    /// macro recursion before it overflows the Zig stack.
+    max_call_depth: usize = 1024,
+
+    /// Maximum total `processExpression` calls per top-level evaluation.
+    /// Null = unlimited. The host resets this counter before each execute.
+    fuel: ?usize = null,
+
+    /// Maximum element count for any list constructed at runtime
+    /// (`list`, `range`, `until`, `fill`, `fillby`, `map`, `filter`, `flat`,
+    /// `flatten`, `zip`, `sort`, `sortby`, `sortwith`, `split`, `reduce`).
+    /// Null = unlimited.
+    max_list_length: ?usize = null,
+
+    /// Maximum byte length for any string constructed at runtime
+    /// (`concat`, `join`, `format`, `replace`, `reverse`, `string`).
+    /// Null = unlimited.
+    max_string_length: ?usize = null,
+};
+
 // ── Env — Execution environment ──
 
 pub const Env = struct {
@@ -409,8 +435,33 @@ pub const Env = struct {
     stdout: ?*std.Io.Writer = null,
     stderr: ?*std.Io.Writer = null,
 
+    /// Resource limits applied during evaluation.
+    bounds: Bounds = .{},
+
+    /// Current recursion depth — incremented at processExpression entry,
+    /// decremented on exit. Should be 0 between top-level evaluations.
+    call_depth: usize = 0,
+
+    /// Remaining fuel for the current evaluation. Initialized from
+    /// `bounds.fuel` at the start of each top-level execute.
+    /// Null = unlimited (no decrement, no check).
+    fuel_remaining: ?usize = null,
+
     /// Evaluate an expression: dispatch on its (possibly pre-resolved) ID.
     pub fn processExpression(self: *Env, expression: Expression, scope: *const Scope) ExecError!?Value {
+        // Recursion-depth guard: prevents Zig stack overflow from runaway macros.
+        self.call_depth += 1;
+        defer self.call_depth -= 1;
+        if (self.call_depth > self.bounds.max_call_depth) {
+            return self.failFmt("Recursion depth exceeded (max {d})", .{self.bounds.max_call_depth});
+        }
+
+        // Fuel guard: bounds total work per top-level evaluation.
+        if (self.fuel_remaining) |*fuel| {
+            if (fuel.* == 0) return self.fail("Fuel exhausted");
+            fuel.* -= 1;
+        }
+
         const id = expression.id;
         switch (id) {
             .resolved_op => |operation| {

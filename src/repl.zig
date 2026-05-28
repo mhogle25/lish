@@ -9,13 +9,21 @@ const line_editor_mod = @import("line_editor.zig");
 const Allocator = std.mem.Allocator;
 const LineEditor = line_editor_mod.LineEditor;
 
-const op_autopair_insert = "autopair-insert";
-const op_autopair_delete = "autopair-delete";
+const op_autopair_insert   = "autopair-insert";
+const op_autopair_delete   = "autopair-delete";
+const op_max_call_depth    = "max-call-depth";
+const op_fuel              = "fuel";
+const op_max_list_length   = "max-list-length";
+const op_max_string_length = "max-string-length";
+
+/// Maximum size of the REPL config file read from `~/.config/lish/config`.
+const CONFIG_FILE_MAX_SIZE = 64 * 1024;
 
 pub const ReplConfig = struct {
     autopair_insert: bool = true,
     autopair_delete: bool = true,
     macro_dirs: std.ArrayListUnmanaged([]const u8) = .empty,
+    bounds: exec_mod.Bounds = .{},
     allocator: Allocator,
 
     pub fn init(allocator: Allocator) ReplConfig {
@@ -46,6 +54,50 @@ fn autopairDeleteOp(config: *ReplConfig, args: exec_mod.Args) exec_mod.ExecError
     return null;
 }
 
+fn maxCallDepthOp(config: *ReplConfig, args: exec_mod.Args) exec_mod.ExecError!?value_mod.Value {
+    const value = try args.single();
+    const n = try value.resolveInt();
+    if (n < 1) return args.env.fail(op_max_call_depth ++ " must be a positive integer");
+    config.bounds.max_call_depth = @intCast(n);
+    return null;
+}
+
+fn fuelOp(config: *ReplConfig, args: exec_mod.Args) exec_mod.ExecError!?value_mod.Value {
+    const value = try (try args.single()).get();
+    if (value == null) {
+        config.bounds.fuel = null;
+        return null;
+    }
+    const n = value.?.getI() catch return args.env.fail(op_fuel ++ " expects an integer or $off");
+    if (n < 1) return args.env.fail(op_fuel ++ " must be a positive integer");
+    config.bounds.fuel = @intCast(n);
+    return null;
+}
+
+fn maxListLengthOp(config: *ReplConfig, args: exec_mod.Args) exec_mod.ExecError!?value_mod.Value {
+    const value = try (try args.single()).get();
+    if (value == null) {
+        config.bounds.max_list_length = null;
+        return null;
+    }
+    const n = value.?.getI() catch return args.env.fail(op_max_list_length ++ " expects an integer or $off");
+    if (n < 1) return args.env.fail(op_max_list_length ++ " must be a positive integer");
+    config.bounds.max_list_length = @intCast(n);
+    return null;
+}
+
+fn maxStringLengthOp(config: *ReplConfig, args: exec_mod.Args) exec_mod.ExecError!?value_mod.Value {
+    const value = try (try args.single()).get();
+    if (value == null) {
+        config.bounds.max_string_length = null;
+        return null;
+    }
+    const n = value.?.getI() catch return args.env.fail(op_max_string_length ++ " expects an integer or $off");
+    if (n < 1) return args.env.fail(op_max_string_length ++ " must be a positive integer");
+    config.bounds.max_string_length = @intCast(n);
+    return null;
+}
+
 fn macrosOp(config: *ReplConfig, args: exec_mod.Args) exec_mod.ExecError!?value_mod.Value {
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const path = try (try args.single()).resolveString(&path_buf);
@@ -57,12 +109,14 @@ fn macrosOp(config: *ReplConfig, args: exec_mod.Args) exec_mod.ExecError!?value_
     return null;
 }
 
+const CONFIG_FILE_NAME = "config" ++ process_mod.LISH_EXTENSION;
+
 fn configFilePath(environ: std.process.Environ, allocator: Allocator) ?[]const u8 {
     if (environ.getPosix("XDG_CONFIG_HOME")) |xdg| {
-        return std.fs.path.join(allocator, &.{ xdg, "lish", "config" }) catch null;
+        return std.fs.path.join(allocator, &.{ xdg, "lish", CONFIG_FILE_NAME }) catch null;
     }
     if (environ.getPosix("HOME")) |home| {
-        return std.fs.path.join(allocator, &.{ home, ".config", "lish", "config" }) catch null;
+        return std.fs.path.join(allocator, &.{ home, ".config", "lish", CONFIG_FILE_NAME }) catch null;
     }
     return null;
 }
@@ -71,15 +125,19 @@ pub fn loadConfig(io: std.Io, environ: std.process.Environ, config: *ReplConfig,
     const path = configFilePath(environ, allocator) orelse return;
     defer allocator.free(path);
 
-    const source = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(64 * 1024)) catch return;
+    const source = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(CONFIG_FILE_MAX_SIZE)) catch return;
     defer allocator.free(source);
 
     var registry = exec_mod.Registry.init(allocator);
     defer registry.deinit(allocator);
     builtins_mod.registerCore(&registry, allocator) catch return;
-    registry.registerOperation(allocator, op_autopair_insert, exec_mod.Operation.fromBoundFn(ReplConfig, autopairInsertOp, config)) catch return;
-    registry.registerOperation(allocator, op_autopair_delete, exec_mod.Operation.fromBoundFn(ReplConfig, autopairDeleteOp, config)) catch return;
-    registry.registerOperation(allocator, "macros", exec_mod.Operation.fromBoundFn(ReplConfig, macrosOp, config)) catch return;
+    registry.registerOperation(allocator, op_autopair_insert,   exec_mod.Operation.fromBoundFn(ReplConfig, autopairInsertOp,   config)) catch return;
+    registry.registerOperation(allocator, op_autopair_delete,   exec_mod.Operation.fromBoundFn(ReplConfig, autopairDeleteOp,   config)) catch return;
+    registry.registerOperation(allocator, op_max_call_depth,    exec_mod.Operation.fromBoundFn(ReplConfig, maxCallDepthOp,    config)) catch return;
+    registry.registerOperation(allocator, op_fuel,              exec_mod.Operation.fromBoundFn(ReplConfig, fuelOp,            config)) catch return;
+    registry.registerOperation(allocator, op_max_list_length,   exec_mod.Operation.fromBoundFn(ReplConfig, maxListLengthOp,   config)) catch return;
+    registry.registerOperation(allocator, op_max_string_length, exec_mod.Operation.fromBoundFn(ReplConfig, maxStringLengthOp, config)) catch return;
+    registry.registerOperation(allocator, "macros",             exec_mod.Operation.fromBoundFn(ReplConfig, macrosOp,          config)) catch return;
 
     const config_macros =
         \\|on| $some

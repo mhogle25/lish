@@ -1,6 +1,7 @@
 const std = @import("std");
 const exec = @import("../exec.zig");
 const val = @import("../value.zig");
+const helpers = @import("helpers.zig");
 
 const Value = val.Value;
 const Args = exec.Args;
@@ -35,6 +36,7 @@ fn concatOp(args: Args) ExecError!?Value {
         if (maybe_value) |value| {
             var buf: [256]u8 = undefined;
             const str = value.getS(&buf);
+            try helpers.checkStringLength(args, result.items.len + str.len);
             try result.appendSlice(args.env.allocator, str);
         }
     }
@@ -50,12 +52,14 @@ fn joinOp(args: Args) ExecError!?Value {
     var result = std.ArrayListUnmanaged(u8).empty;
     for (1..args.count()) |i| {
         if (i > 1) {
+            try helpers.checkStringLength(args, result.items.len + separator_owned.len);
             try result.appendSlice(args.env.allocator, separator_owned);
         }
         const maybe_value = try args.at(i).get();
         if (maybe_value) |value| {
             var buf: [256]u8 = undefined;
             const str = value.getS(&buf);
+            try helpers.checkStringLength(args, result.items.len + str.len);
             try result.appendSlice(args.env.allocator, str);
         }
     }
@@ -75,16 +79,19 @@ fn splitOp(args: Args) ExecError!?Value {
 
     if (separator.len == 0) {
         for (0..string.len) |i| {
+            try helpers.checkListLength(args, parts.items.len + 1);
             const char = try alloc.dupe(u8, string[i .. i + 1]);
             try parts.append(alloc, .{ .string = char });
         }
     } else {
         var remaining = string;
         while (std.mem.indexOf(u8, remaining, separator)) |idx| {
+            try helpers.checkListLength(args, parts.items.len + 1);
             const part = try alloc.dupe(u8, remaining[0..idx]);
             try parts.append(alloc, .{ .string = part });
             remaining = remaining[idx + separator.len ..];
         }
+        try helpers.checkListLength(args, parts.items.len + 1);
         const last_part = try alloc.dupe(u8, remaining);
         try parts.append(alloc, .{ .string = last_part });
     }
@@ -141,10 +148,12 @@ fn replaceOp(args: Args) ExecError!?Value {
     var result = std.ArrayListUnmanaged(u8).empty;
     var remaining = target;
     while (std.mem.indexOf(u8, remaining, pattern)) |idx| {
+        try helpers.checkStringLength(args, result.items.len + idx + replacement.len);
         try result.appendSlice(alloc, remaining[0..idx]);
         try result.appendSlice(alloc, replacement);
         remaining = remaining[idx + pattern.len ..];
     }
+    try helpers.checkStringLength(args, result.items.len + remaining.len);
     try result.appendSlice(alloc, remaining);
     return .{ .string = result.items };
 }
@@ -161,18 +170,21 @@ fn formatOp(args: Args) ExecError!?Value {
     var remaining = template;
     var arg_index: usize = 1;
     while (std.mem.indexOf(u8, remaining, "<>")) |idx| {
+        try helpers.checkStringLength(args, result.items.len + idx);
         try result.appendSlice(alloc, remaining[0..idx]);
         if (arg_index < args.count()) {
             const arg_val = try args.at(arg_index).get();
             if (arg_val) |value| {
                 var buf: [256]u8 = undefined;
                 const str = value.getS(&buf);
+                try helpers.checkStringLength(args, result.items.len + str.len);
                 try result.appendSlice(alloc, str);
             }
             arg_index += 1;
         }
         remaining = remaining[idx + 2 ..];
     }
+    try helpers.checkStringLength(args, result.items.len + remaining.len);
     try result.appendSlice(alloc, remaining);
     return .{ .string = result.items };
 }

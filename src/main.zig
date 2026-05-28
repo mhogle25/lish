@@ -44,6 +44,7 @@ pub fn main(init: std.process.Init) !void {
         .macro_paths = all_macro_dirs.items,
         .stdout = stdout,
         .stderr = stderr,
+        .bounds = repl_config.bounds,
     });
     defer session.deinit();
 
