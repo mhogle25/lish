@@ -1,5 +1,6 @@
 pub const value = @import("value.zig");
 pub const token = @import("token.zig");
+pub const scanner_corpus = @import("scanner_corpus.zig");
 
 pub const Value = value.Value;
 pub const SOME = value.SOME;

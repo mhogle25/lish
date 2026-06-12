@@ -4,6 +4,24 @@ const tok = @import("token.zig");
 const Token = tok.Token;
 const TokenType = tok.TokenType;
 
+// This file is the canonical source of truth for lish's lexical rules:
+// what counts as a string, a comment, an escape sequence, a token boundary.
+// Several embedders re-implement these rules in their own languages because
+// tree-sitter scanners are C, folio's lexer is Zig, and we don't yet have a
+// shared C ABI bridge. The lexical contract those embedders are held to lives
+// in src/scanner_corpus/, with the runners verifying every embedder's scanner
+// agrees with this lexer.
+//
+// If you change tokenization here in a way that affects boundary detection
+// (new sigil, new string form, new comment shape), add cases to
+// src/scanner_corpus/ — embedder CI will fail until they're updated.
+//
+// TODO: replace the duplication with a real `extern "C"` function
+// `lish_find_expression_boundary(source, terminator) -> usize` exported from
+// this module. Tree-sitter scanners and folio's lexer would call into it,
+// removing the scanner_corpus's job entirely. See lish-zig roadmap, "lish
+// embedders" section.
+
 pub const Lexer = struct {
     source: []const u8,
     idx: usize = 0,

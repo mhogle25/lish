@@ -110,6 +110,16 @@ pub const Token = struct {
 };
 
 
+// Cross-language sync contract.
+//
+// The character constants below are mirrored in tree-sitter-lish. If you add,
+// rename, or change the value of any constant in this block, also update both:
+//
+//   tree-sitter-lish/common/constants.js   (used by the grammar JS)
+//   tree-sitter-lish/common/constants.h    (used by external C scanners)
+//
+// The sync is enforced by tree-sitter-lish/test/constants-sync.test.js, which
+// will fail in tree-sitter-lish CI until all three files agree.
 pub const EXPRESSION_SINGLE = '$';
 pub const SCOPE_THUNK = ':';
 pub const EXPRESSION_OPEN = '(';

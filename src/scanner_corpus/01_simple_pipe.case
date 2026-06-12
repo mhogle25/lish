@@ -1,0 +1,5 @@
+terminator: |
+boundary: 8
+description: baseline — pipe at expression position terminates
+---
+do-thing|next

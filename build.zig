@@ -51,7 +51,21 @@ pub fn build(b: *std.Build) void {
     });
     const run_cli_tests = b.addRunArtifact(cli_tests);
 
+    // Scanner corpus: enforces the shared lexical-boundary contract documented
+    // in test/scanner_corpus/. Cases are pulled in via @embedFile so no
+    // filesystem access is needed at test time.
+    const corpus_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/scanner_corpus_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    corpus_tests.root_module.addImport("lish", mod);
+    const run_corpus_tests = b.addRunArtifact(corpus_tests);
+
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_cli_tests.step);
+    test_step.dependOn(&run_corpus_tests.step);
 }

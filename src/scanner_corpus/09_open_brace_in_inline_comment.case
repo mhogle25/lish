@@ -1,0 +1,5 @@
+terminator: }
+boundary: 32
+description: opening brace inside a comment doesn't increment depth (folio case)
+---
+do-thing ## init { state ## next}done

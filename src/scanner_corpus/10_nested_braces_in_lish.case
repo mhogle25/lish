@@ -1,0 +1,5 @@
+terminator: }
+boundary: 11
+description: nested {...} inside the embedded expression contributes to brace depth (folio case)
+---
+proc {body}}next

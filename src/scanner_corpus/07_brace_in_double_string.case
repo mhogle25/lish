@@ -1,0 +1,5 @@
+terminator: }
+boundary: 22
+description: closing brace inside a double-quoted string is content (folio case)
+---
+say "literal } inside"}next

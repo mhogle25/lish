@@ -1,0 +1,5 @@
+terminator: |
+boundary: 10
+description: `\\` inside a string is one escape (2 bytes), the closing quote is real
+---
+say "a\\b"|next
