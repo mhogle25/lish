@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: lish-zig
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - run: zig build test
+      # The generated/ artifacts are committed; fail if they drift from token.zig.
+      - name: generated artifacts up to date
+        run: |
+          zig build gen
+          git diff --exit-code generated/
+
+  downstreams:
+    name: downstreams build against this commit
+    runs-on: ubuntu-latest
+    steps:
+      # Lay the repos out as siblings so each dependent's `.path = "../lish-zig"`
+      # (and tree-sitter's LISH_SOURCE) resolves to the lish-zig commit under test.
+      - name: Checkout lish-zig
+        uses: actions/checkout@v4
+        with:
+          path: lish-zig
+      - name: Checkout folio-zig
+        uses: actions/checkout@v4
+        with:
+          repository: mhogle25/folio-zig
+          path: folio-zig
+      - name: Checkout lish-lsp
+        uses: actions/checkout@v4
+        with:
+          repository: mhogle25/lish-lsp
+          path: lish-lsp
+      - name: Checkout tree-sitter-lish
+        uses: actions/checkout@v4
+        with:
+          repository: mhogle25/tree-sitter-lish
+          path: tree-sitter-lish
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: folio-zig
+        working-directory: folio-zig
+        run: zig build test
+
+      - name: lish-lsp
+        working-directory: lish-lsp
+        run: zig build test
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: tree-sitter-lish
+        working-directory: tree-sitter-lish
+        env:
+          LISH_SOURCE: ${{ github.workspace }}/lish-zig
+        run: |
+          pnpm install
+          pnpm run generate
+          pnpm test
