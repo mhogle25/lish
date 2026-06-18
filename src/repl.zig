@@ -18,6 +18,18 @@ const op_fuel              = "fuel";
 const op_max_list_length   = "max-list-length";
 const op_max_string_length = "max-string-length";
 
+/// Write a result value in the canonical `=> <value>` form, strings quoted to
+/// disambiguate them from other types. The caller frames it (the trailing
+/// newline, and the REPL's dim ANSI). Shared by the REPL and the `lish <file>`
+/// runner so they stay consistent.
+pub fn writeResult(writer: *std.Io.Writer, value: value_mod.Value) std.Io.Writer.Error!void {
+    try writer.writeAll("=> ");
+    switch (value) {
+        .string => |str| try writer.print("\"{s}\"", .{str}),
+        else => try value.writeTo(writer),
+    }
+}
+
 /// Maximum size of the REPL config file read from `~/.config/lish/config`.
 const CONFIG_FILE_MAX_SIZE = 64 * 1024;
 
@@ -225,14 +237,9 @@ pub fn runRepl(
                 switch (result) {
                     .ok => |maybe_value| {
                         if (maybe_value) |value| {
-                            switch (value) {
-                                .string => |str| stdout.print("\x1b[2m=> \"{s}\"\x1b[0m\n", .{str}) catch {},
-                                else => {
-                                    stdout.writeAll("\x1b[2m=> ") catch {};
-                                    value.writeTo(stdout) catch {};
-                                    stdout.writeAll("\x1b[0m\n") catch {};
-                                },
-                            }
+                            stdout.writeAll("\x1b[2m") catch {};
+                            writeResult(stdout, value) catch {};
+                            stdout.writeAll("\x1b[0m\n") catch {};
                         }
                     },
                     .validation_err => |errors| {
