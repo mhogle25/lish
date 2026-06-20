@@ -18,10 +18,10 @@ Resulting layout (the sibling arrangement is required):
 
 ```
 lish-workspace/
-├── lish/              # the language: CLI/REPL + embeddable library
-├── lish-lsp/          # language server (builds against ../lish)
-├── folio/             # dialogue/scripting layer (builds against ../lish)
-└── tree-sitter-lish/  # grammars (vendor generated constants from ../lish)
+|-- lish/              # the language: CLI/REPL + embeddable library
+|-- lish-lsp/          # language server (builds against ../lish)
+|-- folio/             # dialogue/scripting layer (builds against ../lish)
+`-- tree-sitter-lish/  # grammars (vendor generated constants from ../lish)
 ```
 
 ## 2. Get the toolchain
@@ -35,8 +35,8 @@ cd lish
 nix develop
 ```
 
-This drops you into a shell with the **exact pinned toolchain** — `zig 0.16.0`,
-`node`, `pnpm`, `tree-sitter` — without installing anything system-wide. The
+This drops you into a shell with the **exact pinned toolchain** (`zig 0.16.0`,
+`node`, `pnpm`, `tree-sitter`) without installing anything system-wide. The
 pinned Zig version is the point: every repo builds against one toolchain, so
 there's no version drift. Exit the shell to return to your normal environment.
 

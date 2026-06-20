@@ -2,14 +2,14 @@
 //!
 //! Hosts that splice lish into their own syntax need the same answer: given the
 //! text right after an opening delimiter, where is the terminator that closes
-//! it — skipping any terminator that sits inside a string, a comment, or a
+//! it, skipping any terminator that sits inside a string, a comment, or a
 //! nested bracket pair? folio's `{...}` regions and the macro grammar's `|...|`
 //! bodies both ask this. This is the single place that answers it.
 //!
 //! It mirrors `lexer.zig`'s string and comment rules exactly; the corpus in
 //! `src/scanner_corpus/` pins the two together so they can't drift.
 //!
-//! Streaming embedders (tree-sitter external scanners) can't call this — they
+//! Streaming embedders (tree-sitter external scanners) can't call this; they
 //! receive input one codepoint at a time and have no buffer to pass. They keep
 //! their own scan, held to the same corpus.
 

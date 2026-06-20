@@ -289,12 +289,12 @@ test "builder: list vs expr list" {
     defer arena.deinit();
     const b = AstBuilder.init(arena.allocator());
 
-    // b.list() → .list_literal
+    // b.list() -> .list_literal
     var lb = b.list();
     const list_node = try lb.arg(try b.int(1)).build();
     try std.testing.expectEqual(AstExpression.MetaType.list_literal, list_node.body.expression.meta.meta_type);
 
-    // b.expr("list") → .standard
+    // b.expr("list") -> .standard
     var eb = b.expr("list");
     const expr_node = try eb.arg(try b.int(1)).build();
     try std.testing.expectEqual(AstExpression.MetaType.standard, expr_node.body.expression.meta.meta_type);

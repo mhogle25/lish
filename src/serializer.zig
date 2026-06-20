@@ -172,7 +172,7 @@ fn looksLikeNumber(str: []const u8) bool {
     }
 
     if (digit_count == 0) return false;
-    if (str[str.len - 1] == tok.DECIMAL_POINT) return false; // trailing dot → lexed as identifier
+    if (str[str.len - 1] == tok.DECIMAL_POINT) return false; // trailing dot -> lexed as identifier
     return true;
 }
 
@@ -202,7 +202,7 @@ test "quoting: bare words don't need quotes" {
     try std.testing.expect(!needsQuoting("my-op"));
     try std.testing.expect(!needsQuoting("snake_case"));
     try std.testing.expect(!needsQuoting("-")); // lone dash is valid identifier
-    try std.testing.expect(!needsQuoting("5.")); // trailing dot → identifier
+    try std.testing.expect(!needsQuoting("5.")); // trailing dot -> identifier
 }
 
 test "quoting: reserved chars require quotes" {

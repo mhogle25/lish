@@ -128,7 +128,7 @@ pub const ScopeEntry = struct {
 
 // Scopes with up to INLINE_CAP bindings store entries in a flat inline array
 // (linear scan). Larger scopes overflow to a HashMap. Most macro calls bind
-// 1–4 parameters, so the overflow path is almost never reached.
+// 1-4 parameters, so the overflow path is almost never reached.
 const INLINE_CAP = 8;
 
 const InlineEntry = struct {
@@ -994,7 +994,7 @@ test "nested expression evaluation" {
     var env = Env{ .registry = &registry, .allocator = alloc };
     const scope = Scope.EMPTY;
 
-    // Build: add (add 1 2) 3 → expects 6
+    // Build: add (add 1 2) 3 -> expects 6
     const add_id_inner = try makeValueLiteral(alloc, Position.synthetic, .{ .string = "add" });
     const one = try makeValueLiteral(alloc, Position.synthetic, .{ .int = 1 });
     const two = try makeValueLiteral(alloc, Position.synthetic, .{ .int = 2 });
@@ -1049,7 +1049,7 @@ test "macro with value parameters" {
     var env = Env{ .registry = &registry, .allocator = alloc };
     const scope = Scope.EMPTY;
 
-    // Call: add-one 5 → expects 6
+    // Call: add-one 5 -> expects 6
     const call_id = try makeValueLiteral(alloc, Position.synthetic, .{ .string = "add-one" });
     const five = try makeValueLiteral(alloc, Position.synthetic, .{ .int = 5 });
     const call_thunk = try makeExpression(alloc, Position.synthetic, call_id, &.{five});
@@ -1093,7 +1093,7 @@ test "macro with deferred parameter" {
     var env = Env{ .registry = &registry, .allocator = alloc };
     const scope = Scope.EMPTY;
 
-    // Call: run-deferred 42 → the literal 42 is passed deferred, resolved when :thunk is accessed
+    // Call: run-deferred 42 -> the literal 42 is passed deferred, resolved when :thunk is accessed
     const call_id = try makeValueLiteral(alloc, Position.synthetic, .{ .string = "run-deferred" });
     const forty_two = try makeValueLiteral(alloc, Position.synthetic, .{ .int = 42 });
     const call_thunk = try makeExpression(alloc, Position.synthetic, call_id, &.{forty_two});

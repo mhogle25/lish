@@ -8,7 +8,7 @@ const CommentSpan = tok.CommentSpan;
 
 /// Optional collaborator that gathers comment spans the lexer would otherwise
 /// discard. Tooling (the LSP) attaches one before lexing; the executable path
-/// leaves it null and pays nothing. `record` is infallible by design — the
+/// leaves it null and pays nothing. `record` is infallible by design: the
 /// lexer's `nextToken` cannot return an error, so a comment dropped under memory
 /// pressure simply goes un-highlighted rather than failing the parse.
 pub const CommentSink = struct {
@@ -31,7 +31,7 @@ pub const CommentSink = struct {
 //
 // If you change tokenization here in a way that affects boundary detection
 // (new sigil, new string form, new comment shape), update boundary.zig and add
-// cases to src/scanner_corpus/ — embedder CI will fail until they're updated.
+// cases to src/scanner_corpus/; embedder CI will fail until they're updated.
 
 pub const Lexer = struct {
     source: []const u8,

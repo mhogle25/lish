@@ -1,5 +1,5 @@
 terminator: |
 boundary: 6
-description: empty `""` then terminator — scanner must not trip on zero-length string
+description: empty `""` then terminator; scanner must not trip on zero-length string
 ---
 say ""|next

@@ -22,7 +22,7 @@ pub const Parsed = struct {
 
 /// Decode the header of a `.case` file. Returns `error.MalformedCase` if any
 /// required field is missing or unparseable. The returned `source` is a slice
-/// of `text` — no allocations.
+/// of `text`, no allocations.
 pub fn parse(text: []const u8) !Parsed {
     var terminator: ?u8 = null;
     var expected: ?u32 = null;

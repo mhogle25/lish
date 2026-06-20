@@ -231,7 +231,7 @@ test "pipe: single step" {
 test "pipe: multi-step rebinds between steps" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // 5 → +3 → 8 → *2 → 16
+    // 5 -> +3 -> 8 -> *2 -> 16
     const result = try testing.evalWithBuiltins(arena.allocator(), "pipe x 5 (+ :x 3) (* :x 2)");
     try std.testing.expectEqual(@as(i64, 16), result.?.int);
 }
@@ -239,7 +239,7 @@ test "pipe: multi-step rebinds between steps" {
 test "pipe: chain of same-op rebinds" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // 1 → +1 → 2 → +1 → 3 → +1 → 4
+    // 1 -> +1 -> 2 -> +1 -> 3 -> +1 -> 4
     const result = try testing.evalWithBuiltins(arena.allocator(), "pipe v 1 (+ :v 1) (+ :v 1) (+ :v 1)");
     try std.testing.expectEqual(@as(i64, 4), result.?.int);
 }
@@ -247,7 +247,7 @@ test "pipe: chain of same-op rebinds" {
 test "pipe: nested pipes with different names" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // outer x = 10; inner pipe y = (* :x 2) = 20; inner step (+ :y 5) → 25
+    // outer x = 10; inner pipe y = (* :x 2) = 20; inner step (+ :y 5) -> 25
     const result = try testing.evalWithBuiltins(arena.allocator(),
         "pipe x 10 (pipe y (* :x 2) (+ :y 5))");
     try std.testing.expectEqual(@as(i64, 25), result.?.int);

@@ -381,7 +381,7 @@ const MacroParser = struct {
 };
 
 /// True when `slice` (the gap between a comment and what follows) is whitespace
-/// only AND spans at most one line break — i.e. they are on adjacent lines. A
+/// only AND spans at most one line break, i.e. they are on adjacent lines. A
 /// blank line (two line breaks) detaches the comment, so it is not a docstring.
 fn isAdjacentGap(slice: []const u8) bool {
     var newlines: usize = 0;
@@ -629,7 +629,7 @@ test "end-to-end: macro with deferred parameter" {
         try registry.registerMacro(macro.id, macro);
     }
 
-    // do-twice 42 → evaluates 42 twice, returns last = 42
+    // do-twice 42 -> evaluates 42 twice, returns last = 42
     const ast_root = try expr_parser.parse(alloc, "do-twice 42");
     const expr_result = try validation_mod.validate(alloc, ast_root);
     const expression = switch (expr_result) {
@@ -663,7 +663,7 @@ test "end-to-end: multiple macros in module" {
         try registry.registerMacro(macro.id, macro);
     }
 
-    // quadruple 3 → double(double(3)) → double(6) → 12
+    // quadruple 3 -> double(double(3)) -> double(6) -> 12
     const ast_root = try expr_parser.parse(alloc, "quadruple 3");
     const expr_result = try validation_mod.validate(alloc, ast_root);
     const expression = switch (expr_result) {

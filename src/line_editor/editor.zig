@@ -348,7 +348,7 @@ pub const LineEditor = struct {
     }
 
     // Policy helpers: encode autopair behavior and explicit render needs.
-    // None of these call renderer.render — processInput's render-on-change
+    // None of these call renderer.render; processInput's render-on-change
     // covers buffer mutations; handleClearScreen is the one exception that
     // explicitly renders (clearing the screen doesn't change buffer state).
 
@@ -442,7 +442,7 @@ pub const LineEditor = struct {
         if (!matches) return false;
 
         // Splice out [line_start - 1, close_pos): the prev `\n`, the whitespace
-        // line, the trailing `\n`, and the close line's leading indent — leaving
+        // line, the trailing `\n`, and the close line's leading indent, leaving
         // `<open><close>` with the cursor between them.
         const delete_from = line_start - 1;
         const delete_to = close_pos;
@@ -539,7 +539,7 @@ pub const LineEditor = struct {
     }
 
     /// True when the byte at the cursor is a closing bracket whose matching
-    /// opener sits immediately before the cursor — i.e., the cursor is at
+    /// opener sits immediately before the cursor, i.e., the cursor is at
     /// `(|)`, `[|]`, or `{|}`. Quotes are deliberately excluded; lish strings
     /// can't span lines so expanding `"|"` would create invalid syntax.
     fn cursorInsideMatchedPair(self: *LineEditor) bool {
@@ -567,7 +567,7 @@ pub const LineEditor = struct {
         if (!self.buffer.insertChar('\n')) return;
         self.insertIndent(level);
 
-        // Remember the cursor position — the middle indented line — then
+        // Remember the cursor position (the middle indented line), then
         // insert the closing newline + indent and restore.
         const cursor_after_middle = self.buffer.cursor;
 
@@ -903,7 +903,7 @@ test "Alt+Enter inside `\"|\"` does NOT expand (strings are single-line)" {
     editor.testInsertString("\"\"");
     editor.buffer.cursor = 1;
     editor.insertNewlineWithIndent();
-    // Should be plain newline behavior: `"\n"` — quotes themselves don't expand.
+    // Should be plain newline behavior: `"\n"` ; quotes themselves don't expand.
     try std.testing.expectEqualStrings("\"\n\"", editor.buffer.slice());
 }
 
@@ -996,12 +996,12 @@ test "Backspace collapse disabled when bracket_expand is off" {
     editor.testInsertString("()");
     editor.buffer.cursor = 1;
     editor.insertNewlineWithIndent();
-    // Now turn off bracket_expand — backspace should fall through to autopair-delete or plain.
+    // Now turn off bracket_expand; backspace should fall through to autopair-delete or plain.
     editor.bracket_expand = false;
     editor.handleDeleteBackward();
     // bracket_expand off + autopair_delete on: the autopair_delete won't fire here
     // because we're on a whitespace line, not directly between matched brackets.
-    // We should get plain backspace — one space deleted.
+    // We should get plain backspace: one space deleted.
     var expected: [16]u8 = undefined;
     var len: usize = 0;
     expected[len] = '('; len += 1;
@@ -1043,7 +1043,7 @@ test "Up arrow on row > 0 moves cursor up within buffer" {
     editor.testInsertString("abc\ndefgh");
     // Cursor at end (position 9), on row 1 at col 5.
     editor.handleUpKey();
-    // Target row 0, col 5. Row 0 = "abc" so col clamps to 3 → offset 3.
+    // Target row 0, col 5. Row 0 = "abc" so col clamps to 3 -> offset 3.
     try std.testing.expectEqual(@as(usize, 3), editor.buffer.cursor);
 }
 
@@ -1067,7 +1067,7 @@ test "Down arrow on row < last_row moves cursor down within buffer" {
     editor.testInsertString("abcde\nfg");
     editor.buffer.cursor = 3; // Row 0, col 3.
     editor.handleDownKey();
-    // Target row 1, col 3. Row 1 = "fg" so col clamps to 2 → offset 6 + 2 = 8.
+    // Target row 1, col 3. Row 1 = "fg" so col clamps to 2 -> offset 6 + 2 = 8.
     try std.testing.expectEqual(@as(usize, 8), editor.buffer.cursor);
 }
 
@@ -1075,7 +1075,7 @@ test "escape parser: bracketed paste start (ESC [ 200 ~) and end (ESC [ 201 ~)" 
     var editor = LineEditor.testInit();
     defer editor.deinit();
 
-    // ESC [ 200 ~ → paste_start
+    // ESC [ 200 ~ -> paste_start
     try std.testing.expectEqual(escape_mod.Step.consumed, editor.escape.process(0x1b));
     try std.testing.expectEqual(escape_mod.Step.consumed, editor.escape.process('['));
     try std.testing.expectEqual(escape_mod.Step.consumed, editor.escape.process('2'));
@@ -1083,7 +1083,7 @@ test "escape parser: bracketed paste start (ESC [ 200 ~) and end (ESC [ 201 ~)" 
     try std.testing.expectEqual(escape_mod.Step.consumed, editor.escape.process('0'));
     try expectAction(.paste_start, editor.escape.process('~'));
 
-    // ESC [ 201 ~ → paste_end
+    // ESC [ 201 ~ -> paste_end
     try std.testing.expectEqual(escape_mod.Step.consumed, editor.escape.process(0x1b));
     try std.testing.expectEqual(escape_mod.Step.consumed, editor.escape.process('['));
     try std.testing.expectEqual(escape_mod.Step.consumed, editor.escape.process('2'));
@@ -1129,7 +1129,7 @@ test "Ctrl+P always navigates history regardless of cursor position" {
 
     editor.history.add("prev");
     editor.testInsertString("abc\ndef");
-    // Cursor on row 1 — Up arrow would move within buffer.
+    // Cursor on row 1; Up arrow would move within buffer.
     // Ctrl+P should still hit history.
     _ = editor.processInput(0x10);
     try std.testing.expectEqualStrings("prev", editor.buffer.slice());

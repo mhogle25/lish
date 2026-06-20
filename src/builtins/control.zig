@@ -132,7 +132,7 @@ test "control flow: if-then-else" {
 test "control flow: when" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // First condition is false (none), second is true (some) → returns 2
+    // First condition is false (none), second is true (some) -> returns 2
     const result = try testing.evalWithBuiltins(arena.allocator(), "when $none 1 $some 2");
     try std.testing.expectEqual(@as(i64, 2), result.?.int);
 }

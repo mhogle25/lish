@@ -20,6 +20,15 @@ jobs:
         run: |
           zig build gen
           git diff --exit-code generated/
+      # Keep every tracked text file ASCII-only: no smart quotes, em-dashes,
+      # arrows, box-drawing, or emoji. Everything should be typeable on a US
+      # keyboard. (-I skips binary files.)
+      - name: ASCII-only source
+        run: |
+          if git grep -nIP '[^\x00-\x7F]' -- .; then
+            echo "::error::Non-ASCII characters found above. Replace them with ASCII equivalents."
+            exit 1
+          fi
 
   downstreams:
     name: downstreams build against this commit

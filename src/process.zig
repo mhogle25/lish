@@ -603,7 +603,7 @@ test "let: inside macro body, both macro param and let-binding visible" {
     var registry = Registry.init(alloc);
     try builtins.registerAll(&registry, alloc);
 
-    // scale x → let doubled = x*2 in (doubled + x)
+    // scale x -> let doubled = x*2 in (doubled + x)
     const load_result = try loadMacroModule(
         &registry,
         "| scale x | let doubled (* :x 2) (+ :doubled :x)",
@@ -739,7 +739,7 @@ test "bounds: unlimited fuel does not interfere" {
     try builtins.registerAll(&registry, alloc);
 
     var env = Env{ .registry = &registry, .allocator = alloc };
-    // fuel defaults to null → unlimited
+    // fuel defaults to null -> unlimited
 
     const result = try processRaw(&env, "+ 1 2 3", null);
     switch (result) {
