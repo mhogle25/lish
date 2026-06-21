@@ -110,17 +110,32 @@ pub const ThunkBody = union(enum) {
     expression:    Expression,
 };
 
-// ExpressionId 
+// Expression
 
-pub const ExpressionId = union(enum) {
-    resolved_op:    Operation,      // direct call, no registry lookup
-    resolved_macro: *const Macro,   // direct call, no registry lookup
-    dynamic:        *const Thunk,   // fallback: evaluate thunk, look up at runtime
+/// A call site's id when it carries no stamped resolution slot: runtime-built
+/// expressions (e.g. `apply`) and anything the stamp pass never reached. Such a
+/// site is always dispatched dynamically and never memoized.
+pub const NO_SITE: u32 = std.math.maxInt(u32);
+
+/// One memoized resolution of a call site, stored in a registry's resolution
+/// table (never in the AST, so a parsed AST stays immutable and shareable across
+/// registries). `unresolved` is the un-looked-up default; `dynamic` marks a site
+/// whose name is computed or not yet known, so it is looked up at runtime.
+pub const ResolvedSlot = union(enum) {
+    unresolved,
+    resolved_op:    Operation,
+    resolved_macro: *const Macro,
+    dynamic,
 };
 
 pub const Expression = struct {
-    id:   ExpressionId,
+    /// The call-site name: usually a string literal thunk (`+`, `map`), but may
+    /// be a computed thunk. Resolution reads this; it is never overwritten.
+    name: *const Thunk,
     args: []const *const Thunk,
+    /// Stable, registry-independent call-site id. Indexes a registry's resolution
+    /// table. `NO_SITE` until the stamp pass assigns one.
+    site: u32 = NO_SITE,
 };
 
 // Scope 
@@ -548,13 +563,43 @@ pub const Registry = struct {
     operations: std.StringHashMapUnmanaged(Operation) = .{},
     macros: std.StringHashMapUnmanaged(*const Macro) = .{},
     macro_arena: std.heap.ArenaAllocator,
+    /// Memoized resolution of each call site, indexed by stamped site id. This is
+    /// where name->definition binding lives, kept off the (immutable) AST so one
+    /// parsed AST can run under many registries. Phase 1: site ids are drawn from
+    /// this registry's counter; phase 2 hoists the counter to a shared owner.
+    resolution: std.ArrayListUnmanaged(ResolvedSlot) = .empty,
+    site_counter: u32 = 0,
+    base_allocator: Allocator,
 
     pub fn init(allocator: Allocator) Registry {
         return .{
-            .operations    = .{},
-            .macros        = .{},
-            .macro_arena   = std.heap.ArenaAllocator.init(allocator),
+            .operations     = .{},
+            .macros         = .{},
+            .macro_arena    = std.heap.ArenaAllocator.init(allocator),
+            .base_allocator = allocator,
         };
+    }
+
+    /// Allocate the next call-site id.
+    pub fn nextSite(self: *Registry) u32 {
+        const id = self.site_counter;
+        self.site_counter += 1;
+        return id;
+    }
+
+    /// The resolution slot for a site, growing the table (with `.unresolved`) as
+    /// needed. The table is never shrunk by site retirement; ids are monotonic.
+    pub fn resolutionSlot(self: *Registry, site: u32) Allocator.Error!*ResolvedSlot {
+        while (self.resolution.items.len <= site) {
+            try self.resolution.append(self.base_allocator, .unresolved);
+        }
+        return &self.resolution.items[site];
+    }
+
+    /// Drop all memoized resolutions (they re-resolve lazily). Call after the set
+    /// of names changes, e.g. loading macros, so stale `*Macro` slots are cleared.
+    pub fn clearResolution(self: *Registry) void {
+        self.resolution.clearRetainingCapacity();
     }
 
     pub fn macroAllocator(self: *Registry) Allocator {
@@ -586,11 +631,12 @@ pub const Registry = struct {
 
     pub fn deinit(self: *Registry, allocator: Allocator) void {
         self.operations.deinit(allocator);
+        self.resolution.deinit(self.base_allocator);
         self.macro_arena.deinit();
     }
 
-    /// Resolve a name to a pre-resolved ExpressionId, or null if unknown.
-    pub fn resolveId(self: *const Registry, name: []const u8) ?ExpressionId {
+    /// Resolve a name to an op or macro slot, or null if unknown.
+    pub fn resolveId(self: *const Registry, name: []const u8) ?ResolvedSlot {
         if (self.getOperation(name)) |op|    return .{ .resolved_op    = op };
         if (self.getMacro(name))    |macro|  return .{ .resolved_macro = macro };
         return null;
@@ -626,7 +672,7 @@ pub const Bounds = struct {
 // Env
 
 pub const Env = struct {
-    registry: *const Registry,
+    registry: *Registry,
     allocator: Allocator,
     io: ?std.Io = null,
     runtime_error: ?RuntimeErr = null,
@@ -655,7 +701,8 @@ pub const Env = struct {
     /// entry (host sets it before kicking off processing).
     current_source: SourceId = .none,
 
-    /// Evaluate an expression: dispatch on its (possibly pre-resolved) ID.
+    /// Evaluate an expression: look up its memoized resolution slot (or resolve
+    /// it once) and dispatch. Unstamped sites are dispatched dynamically.
     pub fn processExpression(self: *Env, expression: Expression, scope: *const Scope) ExecError!?Value {
         // Recursion-depth guard: prevents Zig stack overflow from runaway macros.
         self.call_depth += 1;
@@ -670,34 +717,44 @@ pub const Env = struct {
             fuel.* -= 1;
         }
 
-        const id = expression.id;
-        switch (id) {
+        // Unstamped sites (runtime-built expressions) never memoize.
+        if (expression.site == NO_SITE) return self.dispatchDynamic(expression, scope);
+
+        // Memoized resolution lives in the registry's per-site table, keyed by the
+        // stamped site id. The AST itself is never written.
+        const slot = try self.registry.resolutionSlot(expression.site);
+        if (slot.* == .unresolved) slot.* = resolveSite(self.registry, expression.name);
+
+        switch (slot.*) {
             .resolved_op => |operation| {
                 const args = Args{ .items = expression.args, .env = self, .scope = scope };
                 return operation.call(args);
             },
-            .resolved_macro => |macro| {
-                return macro.run(expression.args, self, scope);
-            },
-            .dynamic => |id_thunk| {
-                const id_value = try id_thunk.proc(self, scope) orelse
-                    return self.fail(.invalid_argument, "Expression ID resolved to none");
-                const id_string = switch (id_value) {
-                    .string => |s| s,
-                    .int    => |n| return self.failFmt(.type_mismatch, "Expected operation name, got int: {d}", .{n}),
-                    .float  => |n| return self.failFmt(.type_mismatch, "Expected operation name, got float: {d}", .{n}),
-                    .list   =>     return self.fail(.type_mismatch, "Expected operation name, got list"),
-                };
-                if (self.registry.getOperation(id_string)) |operation| {
-                    const args = Args{ .items = expression.args, .env = self, .scope = scope };
-                    return operation.call(args);
-                }
-                if (self.registry.getMacro(id_string)) |macro| {
-                    return macro.run(expression.args, self, scope);
-                }
-                return self.failFmt(.unknown_op, "Unknown operation or macro: '{s}'", .{id_string});
-            },
+            .resolved_macro => |macro| return macro.run(expression.args, self, scope),
+            .dynamic => return self.dispatchDynamic(expression, scope),
+            .unresolved => unreachable, // just resolved above
         }
+    }
+
+    /// Resolve a call site by name at runtime and dispatch it, without memoizing.
+    /// Used for computed names and runtime-built (`NO_SITE`) expressions.
+    fn dispatchDynamic(self: *Env, expression: Expression, scope: *const Scope) ExecError!?Value {
+        const id_value = try expression.name.proc(self, scope) orelse
+            return self.fail(.invalid_argument, "Expression ID resolved to none");
+        const id_string = switch (id_value) {
+            .string => |s| s,
+            .int    => |n| return self.failFmt(.type_mismatch, "Expected operation name, got int: {d}", .{n}),
+            .float  => |n| return self.failFmt(.type_mismatch, "Expected operation name, got float: {d}", .{n}),
+            .list   =>     return self.fail(.type_mismatch, "Expected operation name, got list"),
+        };
+        if (self.registry.getOperation(id_string)) |operation| {
+            const args = Args{ .items = expression.args, .env = self, .scope = scope };
+            return operation.call(args);
+        }
+        if (self.registry.getMacro(id_string)) |macro| {
+            return macro.run(expression.args, self, scope);
+        }
+        return self.failFmt(.unknown_op, "Unknown operation or macro: '{s}'", .{id_string});
     }
 
     /// Record a categorized runtime error and return RuntimeError. Captures
@@ -742,54 +799,44 @@ pub fn makeScopeThunk(allocator: Allocator, position: Position, id_thunk: *const
 pub fn makeExpression(allocator: Allocator, position: Position, id: *const Thunk, args: []const *const Thunk) Allocator.Error!*Thunk {
     const duped_args = try allocator.dupe(*const Thunk, args);
     const thunk = try allocator.create(Thunk);
-    thunk.* = .{ .position = position, .body = .{ .expression = .{ .id = .{ .dynamic = id }, .args = duped_args } } };
+    thunk.* = .{ .position = position, .body = .{ .expression = .{ .name = id, .args = duped_args } } };
     return thunk;
 }
 
-// Resolve pass
+// Stamp pass
 
-/// Walk a thunk tree and replace dynamic string IDs with resolved references
-/// where the name is a known operation or macro. Safe to call immediately after
-/// parsing. Thunks are freshly allocated and not yet const-observed.
-pub fn resolveThunk(thunk: *Thunk, registry: *const Registry) void {
-    switch (thunk.body) {
-        .value_literal, .scope_thunk => {},
-        .expression => |*expr| resolveExpression(expr, registry),
-    }
-}
-
-pub fn resolveExpression(expr: *Expression, registry: *const Registry) void {
-    resolveExpressionId(expr, registry);
-    for (expr.args) |arg| resolveThunk(@constCast(arg), registry);
-}
-
-/// Replace a dynamic string-name ID with a pre-resolved op or macro reference,
-/// if the name is registered. No-op otherwise. Walks down through the dynamic
-/// id thunk, extracting each layer or bailing if it does not match.
-fn resolveExpressionId(expr: *Expression, registry: *const Registry) void {
-    const id_thunk = switch (expr.id) {
-        .dynamic => |t| t,
-        else => return,
+/// The resolved slot for a call site's name, without memoizing: a registered op
+/// or macro, else `.dynamic` (computed name, or not yet known). The runtime
+/// dispatcher stores the result of this in the registry's resolution table.
+fn resolveSite(registry: *const Registry, name: *const Thunk) ResolvedSlot {
+    const literal = switch (name.body) {
+        .value_literal => |v| v orelse return .dynamic,
+        else => return .dynamic,
     };
-    const literal = switch (id_thunk.body) {
-        .value_literal => |v| v orelse return,
-        else => return,
-    };
-    const name = switch (literal) {
+    const id = switch (literal) {
         .string => |s| s,
-        else => return,
+        else => return .dynamic,
     };
-    if (registry.resolveId(name)) |resolved| {
-        expr.id = resolved;
+    return registry.resolveId(id) orelse .dynamic;
+}
+
+/// Stamp every call site in a freshly-parsed tree with a registry-unique site id
+/// so per-registry resolution tables can memoize lookups. Mutates the tree, so
+/// run it once after validation and before the AST is cached or shared. This is
+/// the only write to an AST; it stamps registry-independent identity, never
+/// resolution, so the stamped AST stays runnable under any registry.
+pub fn stampThunk(thunk: *Thunk, registry: *Registry) void {
+    switch (thunk.body) {
+        .value_literal => {},
+        .scope_thunk => |inner| stampThunk(@constCast(inner), registry),
+        .expression => |*expr| stampExpression(expr, registry),
     }
 }
 
-/// Resolve all macro bodies in the registry. Call after all macros are loaded.
-pub fn resolveRegistryMacros(registry: *Registry) void {
-    var it = registry.macros.iterator();
-    while (it.next()) |entry| {
-        resolveExpression(&@constCast(entry.value_ptr.*).body, registry);
-    }
+pub fn stampExpression(expr: *Expression, registry: *Registry) void {
+    expr.site = registry.nextSite();
+    stampThunk(@constCast(expr.name), registry);
+    for (expr.args) |arg| stampThunk(@constCast(arg), registry);
 }
 
 // Tests
@@ -1049,7 +1096,7 @@ test "macro with value parameters" {
         .id = "add-one",
         .parameters = &params,
         .body = .{
-            .id   = .{ .dynamic = add_id },
+            .name = add_id,
             .args = try alloc.dupe(*const Thunk, &.{ x_ref, one }),
         },
     };
@@ -1093,7 +1140,7 @@ test "macro with deferred parameter" {
         .id = "run-deferred",
         .parameters = &params,
         .body = .{
-            .id   = .{ .dynamic = identity_id },
+            .name = identity_id,
             .args = try alloc.dupe(*const Thunk, &.{thunk_ref}),
         },
     };
@@ -1130,7 +1177,7 @@ test "macro arity mismatch" {
     macro.* = .{
         .id = "needs-two",
         .parameters = &params,
-        .body = .{ .id = .{ .dynamic = dummy_id }, .args = &.{} },
+        .body = .{ .name = dummy_id, .args = &.{} },
     };
     try registry.registerMacro("needs-two", macro);
 

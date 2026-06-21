@@ -79,7 +79,7 @@ pub fn processRaw(
 
     switch (validation_result) {
         .ok => |expression| {
-            exec_mod.resolveExpression(@constCast(&expression), env.registry);
+            exec_mod.stampExpression(@constCast(&expression), env.registry);
             return executeExpression(env, expression, scope);
         },
         .err => |errors| return .{ .validation_err = errors },
@@ -107,7 +107,7 @@ pub fn processRawCached(
 
     switch (validation_result) {
         .ok => |expression| {
-            exec_mod.resolveExpression(@constCast(&expression), env.registry);
+            exec_mod.stampExpression(@constCast(&expression), env.registry);
             try expression_cache.put(source, expression);
             return executeExpression(env, expression, scope);
         },
@@ -140,12 +140,14 @@ pub fn loadMacroModule(
 
     switch (validation_result) {
         .ok => |macros| {
-            // 3. Register all macros
+            // 3. Register all macros and stamp their body call sites with site ids.
             for (macros) |*macro| {
                 try registry.registerMacro(macro.id, macro);
+                exec_mod.stampExpression(@constCast(&macro.body), registry);
             }
-            // 4. Resolve all macro bodies now that the full registry is populated
-            exec_mod.resolveRegistryMacros(registry);
+            // 4. New names are now visible; drop memoized resolutions so call sites
+            //    re-resolve against the updated registry.
+            registry.clearResolution();
             return .{ .ok = macros.len };
         },
         .err => |errors| return .{ .validation_err = errors },
@@ -286,6 +288,52 @@ test "processRaw: nested expressions" {
         .validation_err => return error.TestUnexpectedResult,
         .runtime_err => return error.TestUnexpectedResult,
     }
+}
+
+fn pingOneOp(_: exec_mod.Args) exec_mod.ExecError!?Value {
+    return Value{ .int = 1 };
+}
+fn pingTwoOp(_: exec_mod.Args) exec_mod.ExecError!?Value {
+    return Value{ .int = 2 };
+}
+
+test "one stamped AST resolves per-registry, not to whoever stamped it" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // Same name, different behavior per registry; op-only so site ids can't collide.
+    var reg_one = Registry.init(alloc);
+    defer reg_one.deinit(alloc);
+    try reg_one.registerOperation(alloc, "ping", exec_mod.Operation.fromFn(pingOneOp, .{
+        .signature = .{ .returns = "int" },
+        .description = "ping one",
+    }));
+
+    var reg_two = Registry.init(alloc);
+    defer reg_two.deinit(alloc);
+    try reg_two.registerOperation(alloc, "ping", exec_mod.Operation.fromFn(pingTwoOp, .{
+        .signature = .{ .returns = "int" },
+        .description = "ping two",
+    }));
+
+    // Parse, validate, and stamp the AST exactly once (against reg_one).
+    const ast_root = try expr_parser.parse(alloc, "ping");
+    var stamped = switch (try validation_mod.validate(alloc, ast_root)) {
+        .ok => |e| e,
+        .err => return error.TestUnexpectedResult,
+    };
+    exec_mod.stampExpression(&stamped, &reg_one);
+
+    const scope = Scope.EMPTY;
+    var env_one = Env{ .registry = &reg_one, .allocator = alloc };
+    var env_two = Env{ .registry = &reg_two, .allocator = alloc };
+
+    // The single immutable AST binds to each registry's own definition.
+    try std.testing.expectEqual(@as(i64, 1), (try env_one.processExpression(stamped, &scope)).?.int);
+    try std.testing.expectEqual(@as(i64, 2), (try env_two.processExpression(stamped, &scope)).?.int);
+    // Re-run under one: memoization stayed registry-local.
+    try std.testing.expectEqual(@as(i64, 1), (try env_one.processExpression(stamped, &scope)).?.int);
 }
 
 test "processRaw: returns none for none operation" {

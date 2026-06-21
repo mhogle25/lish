@@ -30,10 +30,6 @@ pub fn register(registry: *Registry, allocator: Allocator) Allocator.Error!void 
     }));
 }
 
-inline fn makeExpression(id: exec.ExpressionId, arg_buf: []const *const Thunk) Expression {
-    return .{ .id = id, .args = arg_buf };
-}
-
 fn applyOp(args: Args) ExecError!?Value {
     try args.expectCount(2);
     const id_value = try args.at(0).resolve();
@@ -41,17 +37,14 @@ fn applyOp(args: Args) ExecError!?Value {
 
     // Variable-length arg list: must heap-allocate the thunk slice.
     const alloc = args.env.allocator;
-    var id_thunk = Thunk{ .position = exec.Position.synthetic, .body = .{ .value_literal = id_value } };
-    const id = if (id_value == .string)
-        args.env.registry.resolveId(id_value.string) orelse exec.ExpressionId{ .dynamic = &id_thunk }
-    else
-        exec.ExpressionId{ .dynamic = &id_thunk };
+    const id_thunk = try exec.makeValueLiteral(alloc, exec.Position.synthetic, id_value);
     const thunks = try alloc.alloc(*const Thunk, list.len);
     for (list, 0..) |item, i| {
         thunks[i] = try exec.makeValueLiteral(alloc, exec.Position.synthetic, item);
     }
 
-    const expression = makeExpression(id, thunks);
+    // Runtime-built: no stamped site, so it dispatches dynamically (NO_SITE).
+    const expression = Expression{ .name = id_thunk, .args = thunks };
     return args.env.processExpression(expression, args.scope);
 }
 
