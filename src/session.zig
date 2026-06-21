@@ -14,6 +14,17 @@ const MacroDirResult = process_mod.MacroDirResult;
 const RegistryFragment = process_mod.RegistryFragment;
 const ValidationError = validation_mod.ValidationError;
 
+/// When transient runtime values (the eval arena) are reclaimed.
+pub const EvalReset = enum {
+    /// Reset before every execute(): a result is valid only until the next
+    /// execute(). Bounded memory, no caller effort. The default.
+    per_execute,
+    /// Never reset automatically: results stay valid until the caller calls
+    /// resetEval(). Lets a batch of results be combined without per-value dupe(),
+    /// at the cost of the caller managing reclamation.
+    manual,
+};
+
 pub const SessionConfig = struct {
     io: std.Io,
     fragments: []const RegistryFragment = &.{},
@@ -22,6 +33,7 @@ pub const SessionConfig = struct {
     stdout: ?*std.Io.Writer = null,
     stderr: ?*std.Io.Writer = null,
     bounds: exec_mod.Bounds = .{},
+    eval_reset: EvalReset = .per_execute,
 };
 
 pub const Session = struct {
@@ -31,6 +43,7 @@ pub const Session = struct {
     expression_cache: ExpressionCache,
     parse_arena: std.heap.ArenaAllocator, // persistent: cached parses
     eval_arena: std.heap.ArenaAllocator, // transient: reset each execute()
+    eval_reset: EvalReset,
     session_allocator: Allocator,
 
     pub fn init(allocator: Allocator, config: SessionConfig) !Session {
@@ -54,6 +67,7 @@ pub const Session = struct {
             .expression_cache = expression_cache,
             .parse_arena = std.heap.ArenaAllocator.init(allocator),
             .eval_arena = std.heap.ArenaAllocator.init(allocator),
+            .eval_reset = config.eval_reset,
             .session_allocator = allocator,
         };
 
@@ -92,7 +106,9 @@ pub const Session = struct {
     }
 
     fn prepareEnv(self: *Session) void {
-        _ = self.eval_arena.reset(.retain_capacity); // reclaim the previous execution's transients
+        if (self.eval_reset == .per_execute) {
+            _ = self.eval_arena.reset(.retain_capacity); // reclaim the previous execution's transients
+        }
         self.env.registry = &self.registry;
         self.env.allocator = self.eval_arena.allocator();
         self.env.runtime_error = null;
@@ -115,8 +131,14 @@ pub const Session = struct {
         self.expression_cache.clear();
     }
 
-    /// Clear the cache and reset the parse arena. The eval arena self-resets
-    /// each execute(), so this only reclaims cached parses.
+    /// Reclaim transient runtime values (the eval arena). Automatic in the default
+    /// per_execute mode; call this explicitly under .manual when done with a batch.
+    pub fn resetEval(self: *Session) void {
+        _ = self.eval_arena.reset(.retain_capacity);
+    }
+
+    /// Clear the cache and reset the parse arena (cached parses). Transient runtime
+    /// values live in the eval arena; reclaim those with resetEval().
     pub fn resetArena(self: *Session) void {
         self.expression_cache.clear();
         _ = self.parse_arena.reset(.retain_capacity);
@@ -219,4 +241,25 @@ test "session: eval arena is reclaimed across executions" {
     for (0..100) |_| _ = try session.execute("range 0 500");
     // Each execute resets the eval arena, so 100 more runs don't grow it.
     try std.testing.expectEqual(baseline, session.eval_arena.queryCapacity());
+}
+
+test "session: manual eval reset keeps results alive across executions" {
+    var session = try Session.init(std.testing.allocator, .{
+        .io = std.Io.failing,
+        .fragments = &.{&builtins.registerAll},
+        .eval_reset = .manual,
+    });
+    defer session.deinit();
+
+    const first = (try session.execute("range 0 3")).ok.?;
+    const second = (try session.execute("range 10 13")).ok.?;
+
+    // No reset happened between the two executes, so the first list is still valid.
+    try std.testing.expectEqual(@as(i64, 0), (try first.getL())[0].?.int);
+    try std.testing.expectEqual(@as(i64, 10), (try second.getL())[0].?.int);
+
+    // resetEval retains capacity but reclaims contents; the next execute reuses it.
+    session.resetEval();
+    const after = (try session.execute("range 0 3")).ok.?;
+    try std.testing.expectEqual(@as(i64, 0), (try after.getL())[0].?.int);
 }
