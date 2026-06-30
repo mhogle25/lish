@@ -503,7 +503,7 @@ pub const Macro = struct {
         try writer.writeAll(self.id);
         for (self.parameters) |param| {
             try writer.writeByte(' ');
-            if (param.param_type == .deferred) try writer.writeByte(token.DEFERRED);
+            if (param.param_type == .deferred) try writer.writeByte(token.TILDE);
             try writer.writeAll(param.id);
         }
     }
@@ -601,7 +601,7 @@ pub const Registry = struct {
     /// by every `register*` mutator so the cache can never serve a stale binding;
     /// the registry maintains this invariant itself rather than trusting callers.
     ///
-    /// TODO: this is whole-cache invalidation — any registration discards every
+    /// TODO: this is whole-cache invalidation: any registration discards every
     /// memoized slot. Cheap today because registration happens before/between eval,
     /// when the cache is cold and nothing is pinned. If we ever add ops that load
     /// new ops/macros *during* hot evaluation, make this fine-grained (a

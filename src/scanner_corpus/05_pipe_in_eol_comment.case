@@ -1,6 +1,6 @@
-terminator: |
+terminator: ;
 boundary: 27
 description: pipe inside a to-end-of-line `##...\n` comment is content, not boundary
 ---
-do-thing ## use | here
-next|done
+do-thing ## use ; here
+next;done

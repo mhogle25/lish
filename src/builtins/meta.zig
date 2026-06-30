@@ -176,7 +176,7 @@ test "ops: includes registered macros" {
     var registry = Registry.init(alloc);
     builtins.registerAll(&registry, alloc) catch return error.OutOfMemory;
 
-    const macro_load = try process.loadMacroModule(&registry, "|triple x| * :x 3");
+    const macro_load = try process.loadMacroModule(&registry, "triple x | * :x 3 ;");
     try std.testing.expect(macro_load == .ok);
 
     var env = testing.makeTestEnv(alloc, &registry);
@@ -206,7 +206,7 @@ test "known: registered macro" {
     builtins.registerAll(&registry, alloc) catch return error.OutOfMemory;
 
     // Define a macro and load it into the registry
-    const macro_load = try process.loadMacroModule(&registry, "|double x| * :x 2");
+    const macro_load = try process.loadMacroModule(&registry, "double x | * :x 2 ;");
     try std.testing.expect(macro_load == .ok);
 
     var env = testing.makeTestEnv(alloc, &registry);

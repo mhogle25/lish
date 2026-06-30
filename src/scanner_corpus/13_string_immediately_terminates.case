@@ -1,5 +1,5 @@
-terminator: |
+terminator: ;
 boundary: 9
 description: terminator immediately after closing quote, no whitespace between
 ---
-say "abc"|next
+say "abc";next

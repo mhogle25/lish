@@ -19,9 +19,8 @@ pub fn serializeExpression(node: *const AstNode, writer: anytype) !void {
 }
 
 /// Serialize a single macro definition to lish source.
-/// Emits: |name param1 ~deferred2| body
+/// Emits: name param1 ~deferred2 | body ;
 pub fn serializeMacro(macro: AstMacro, writer: anytype) !void {
-    try writer.writeByte(tok.MACRO_BRACKET);
     switch (macro.id) {
         .valid => |id_data| try writer.writeAll(id_data.name),
         .err => return SerializeError.InvalidNode,
@@ -30,15 +29,18 @@ pub fn serializeMacro(macro: AstMacro, writer: anytype) !void {
         switch (param) {
             .valid => |param_data| {
                 try writer.writeByte(' ');
-                if (param_data.param_type == .deferred) try writer.writeByte(tok.DEFERRED);
+                if (param_data.param_type == .deferred) try writer.writeByte(tok.TILDE);
                 try writer.writeAll(param_data.id);
             },
             .err => return SerializeError.InvalidNode,
         }
     }
-    try writer.writeByte(tok.MACRO_BRACKET);
+    try writer.writeByte(' ');
+    try writer.writeByte(tok.PIPE);
     try writer.writeByte(' ');
     try serializeNode(macro.body, writer, false);
+    try writer.writeByte(' ');
+    try writer.writeByte(tok.SEMICOLON);
 }
 
 /// Serialize a slice of macro definitions as a .lishmacro module, one per line.
@@ -209,8 +211,14 @@ test "quoting: reserved chars require quotes" {
     try std.testing.expect(needsQuoting("hello world")); // space
     try std.testing.expect(needsQuoting("a(b")); // reserved
     try std.testing.expect(needsQuoting("a:b")); // reserved
-    try std.testing.expect(needsQuoting("a|b")); // reserved
+    try std.testing.expect(needsQuoting("a;b")); // `;` is a base wall (macro terminator)
     try std.testing.expect(needsQuoting("")); // empty
+
+    // `|` and `~` are body operators, not base walls: a bare `|`/`~`/`a|b` term
+    // round-trips as-is, so it must NOT be quoted (Track O).
+    try std.testing.expect(!needsQuoting("|"));
+    try std.testing.expect(!needsQuoting("~"));
+    try std.testing.expect(!needsQuoting("a|b"));
 }
 
 test "quoting: numbers require quotes" {
@@ -375,17 +383,41 @@ test "serialize: list value literal nested" {
 }
 
 
+/// Parse `src` as a top-level expression, serialize it, and assert the text
+/// round-trips to `expected`. Also re-parses + re-serializes `expected` to pin
+/// idempotence (the serialized form must re-lex to the same AST).
+fn expectRoundTrip(alloc: Allocator, src: []const u8, expected: []const u8) !void {
+    const node = try parser_mod.parse(alloc, src);
+    try expectSerialized(node, expected);
+
+    const reparsed = try parser_mod.parse(alloc, expected);
+    try expectSerialized(reparsed, expected);
+}
+
+test "round-trip: bitwise operator terms serialize bare and re-lex to themselves" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // `~` and `|` are body operators under Track O: not base walls, so they need
+    // no quoting and re-lex to the same op (the serializer round-trip contract).
+    try expectRoundTrip(alloc, "~ 5", "~ 5");
+    try expectRoundTrip(alloc, "| :a :b", "| :a :b");
+    try expectRoundTrip(alloc, "& 12 (~ 3)", "& 12 (~ 3)");
+    try expectRoundTrip(alloc, "<< 1 4", "<< 1 4");
+}
+
 test "serialize: simple macro" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    const module = try macro_parser_mod.parseMacroModule(alloc, "|double x| * :x 2");
+    const module = try macro_parser_mod.parseMacroModule(alloc, "double x | * :x 2 ;");
     const macro = switch (module.macros[0]) {
         .macro => |m| m,
         .err => return error.TestUnexpectedResult,
     };
-    try expectSerializedMacro(macro, "|double x| * :x 2");
+    try expectSerializedMacro(macro, "double x | * :x 2 ;");
 }
 
 test "serialize: macro with deferred param" {
@@ -393,12 +425,12 @@ test "serialize: macro with deferred param" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    const module = try macro_parser_mod.parseMacroModule(alloc, "|do-twice ~action| proc :action :action");
+    const module = try macro_parser_mod.parseMacroModule(alloc, "do-twice ~action | proc :action :action ;");
     const macro = switch (module.macros[0]) {
         .macro => |m| m,
         .err => return error.TestUnexpectedResult,
     };
-    try expectSerializedMacro(macro, "|do-twice ~action| proc :action :action");
+    try expectSerializedMacro(macro, "do-twice ~action | proc :action :action ;");
 }
 
 test "serialize: macro with no params" {
@@ -406,12 +438,12 @@ test "serialize: macro with no params" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    const module = try macro_parser_mod.parseMacroModule(alloc, "|greet| say hello");
+    const module = try macro_parser_mod.parseMacroModule(alloc, "greet | say hello ;");
     const macro = switch (module.macros[0]) {
         .macro => |m| m,
         .err => return error.TestUnexpectedResult,
     };
-    try expectSerializedMacro(macro, "|greet| say hello");
+    try expectSerializedMacro(macro, "greet | say hello ;");
 }
 
 test "serialize: macro module" {
@@ -419,7 +451,7 @@ test "serialize: macro module" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    const source = "|double x| * :x 2\n|triple x| * :x 3";
+    const source = "double x | * :x 2 ;\ntriple x | * :x 3 ;";
     const module = try macro_parser_mod.parseMacroModule(alloc, source);
 
     var macros_buf: [8]AstMacro = undefined;
@@ -438,7 +470,7 @@ test "serialize: macro module" {
     var writer = std.Io.Writer.fixed(&buf);
     try serializeMacroModule(macros_buf[0..macro_count], &writer);
     try std.testing.expectEqualStrings(
-        "|double x| * :x 2\n|triple x| * :x 3",
+        "double x | * :x 2 ;\ntriple x | * :x 3 ;",
         writer.buffered(),
     );
 }
@@ -476,10 +508,10 @@ test "round-trip: macro" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    const module = try macro_parser_mod.parseMacroModule(alloc, "|greet name| say (concat \"hello \" :name)");
+    const module = try macro_parser_mod.parseMacroModule(alloc, "greet name | say (concat \"hello \" :name) ;");
     const macro = switch (module.macros[0]) {
         .macro => |m| m,
         .err => return error.TestUnexpectedResult,
     };
-    try expectSerializedMacro(macro, "|greet name| say (concat \"hello \" :name)");
+    try expectSerializedMacro(macro, "greet name | say (concat \"hello \" :name) ;");
 }

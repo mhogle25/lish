@@ -29,15 +29,29 @@ pub const Span = struct {
     end:      u32,
 };
 
+/// Header/body zone, mirroring the lexer (see lexer.Mode). In a header `|`/`~`
+/// are macro structure; in a body they are ordinary operators. A `.lish` file
+/// and the REPL are always `.body`; a `.lishmacro` file starts `.header`.
+pub const Mode = enum { header, body };
+
 pub const Highlighter = struct {
     source: []const u8,
     pos:    usize = 0,
+    /// Current zone. Flips to `.body` at the header/body `|` and back to
+    /// `.header` at the `;` terminator.
+    mode: Mode = .body,
     /// True if the last emitted span was a `:` sigil. The next identifier
     /// becomes a `scope_ref` instead of a generic identifier.
     after_scope_thunk: bool = false,
 
     pub fn init(source: []const u8) Highlighter {
         return .{ .source = source };
+    }
+
+    /// Start highlighting in a specific zone. A `.lishmacro` document starts in
+    /// `.header`; a plain expression / REPL line uses `init` (`.body`).
+    pub fn initMode(source: []const u8, mode: Mode) Highlighter {
+        return .{ .source = source, .mode = mode };
     }
 
     pub fn next(self: *Highlighter) ?Span {
@@ -79,16 +93,34 @@ pub const Highlighter = struct {
                 return .{ .category = .bracket, .start = start, .end = @intCast(self.pos) };
             }
 
-            // Macro bar.
-            if (c == tok.MACRO_BRACKET) {
+            // `;` terminates a macro body in every zone; the next header begins.
+            if (c == tok.SEMICOLON) {
                 self.pos += 1;
+                self.mode = .header;
                 self.after_scope_thunk = false;
                 return .{ .category = .macro_bar, .start = start, .end = @intCast(self.pos) };
             }
 
-            // Sigils: $ : ~. The `:` flips a flag so the next identifier becomes
-            // a scope_ref.
-            if (c == tok.EXPRESSION_SINGLE or c == tok.SCOPE_THUNK or c == tok.DEFERRED) {
+            // `|` separates header from body ONLY in a header; in a body it is a
+            // bitwise operator (falls through to the identifier scan below).
+            if (c == tok.PIPE and self.mode == .header) {
+                self.pos += 1;
+                self.mode = .body;
+                self.after_scope_thunk = false;
+                return .{ .category = .macro_bar, .start = start, .end = @intCast(self.pos) };
+            }
+
+            // `~` is the deferred-param marker ONLY in a header; in a body it is a
+            // bitwise operator (falls through to the identifier scan below).
+            if (c == tok.TILDE and self.mode == .header) {
+                self.pos += 1;
+                self.after_scope_thunk = false;
+                return .{ .category = .sigil, .start = start, .end = @intCast(self.pos) };
+            }
+
+            // Sigils: $ : (reserved in every zone). The `:` flips a flag so the
+            // next identifier becomes a scope_ref.
+            if (c == tok.EXPRESSION_SINGLE or c == tok.SCOPE_THUNK) {
                 self.pos += 1;
                 self.after_scope_thunk = (c == tok.SCOPE_THUNK);
                 return .{ .category = .sigil, .start = start, .end = @intCast(self.pos) };
@@ -162,15 +194,17 @@ pub const Highlighter = struct {
         while (self.pos < self.source.len) {
             const c = self.source[self.pos];
 
-            if (isWhitespace(c) 
-                or isBracket(c) 
-                or c == tok.MACRO_BRACKET 
-                or c == tok.EXPRESSION_SINGLE 
-                or c == tok.SCOPE_THUNK 
-                or c == tok.DEFERRED 
+            // Base walls always end a term; `|`/`~` end one only in a header
+            // (in a body they are part of an operator term, e.g. `~5`, `a|b`).
+            if (isWhitespace(c)
+                or isBracket(c)
+                or c == tok.EXPRESSION_SINGLE
+                or c == tok.SCOPE_THUNK
+                or c == tok.SEMICOLON
                 or c == tok.QUOTE_DOUBLE
-                or c == tok.QUOTE_SINGLE) break;
-            
+                or c == tok.QUOTE_SINGLE
+                or (self.mode == .header and (c == tok.PIPE or c == tok.TILDE))) break;
+
             self.pos += 1;
         }
     }
@@ -277,11 +311,49 @@ test "highlight: block comment" {
     });
 }
 
-test "highlight: macro bar" {
-    try expectSpans("|name|", &.{
-        .{ .category = .macro_bar, .start = 0, .end = 1 },
-        .{ .category = .identifier, .start = 1, .end = 5 },
-        .{ .category = .macro_bar, .start = 5, .end = 6 },
+fn expectSpansMode(source: []const u8, mode: Mode, expected: []const Span) !void {
+    var hl = Highlighter.initMode(source, mode);
+    for (expected) |exp| {
+        const got = hl.next() orelse return error.TestExpectedSpan;
+        try testing.expectEqual(exp.category, got.category);
+        try testing.expectEqual(exp.start, got.start);
+        try testing.expectEqual(exp.end, got.end);
+    }
+    try testing.expect(hl.next() == null);
+}
+
+test "highlight: macro header then body then terminator" {
+    // `double x | * :x 2 ;` in header mode: name + param, `|` macro_bar flips to
+    // body where `*` is an operator identifier, and `;` is the terminator.
+    try expectSpansMode("double x | :x ;", .header, &.{
+        .{ .category = .identifier, .start = 0, .end = 6 }, // double
+        .{ .category = .identifier, .start = 7, .end = 8 }, // x
+        .{ .category = .macro_bar, .start = 9, .end = 10 }, // |
+        .{ .category = .sigil, .start = 11, .end = 12 }, // :
+        .{ .category = .scope_ref, .start = 12, .end = 13 }, // x
+        .{ .category = .macro_bar, .start = 14, .end = 15 }, // ;
+    });
+}
+
+test "highlight: deferred marker is a sigil in a header" {
+    try expectSpansMode("run ~body |", .header, &.{
+        .{ .category = .identifier, .start = 0, .end = 3 }, // run
+        .{ .category = .sigil, .start = 4, .end = 5 }, // ~
+        .{ .category = .identifier, .start = 5, .end = 9 }, // body
+        .{ .category = .macro_bar, .start = 10, .end = 11 }, // |
+    });
+}
+
+test "highlight: body-mode | and ~ are operator identifiers" {
+    // Default (body) mode: `|`/`~` are part of operator terms, not structure.
+    try expectSpans("| :a", &.{
+        .{ .category = .identifier, .start = 0, .end = 1 }, // | operator
+        .{ .category = .sigil, .start = 2, .end = 3 }, // :
+        .{ .category = .scope_ref, .start = 3, .end = 4 }, // a
+    });
+
+    try expectSpans("~5", &.{
+        .{ .category = .identifier, .start = 0, .end = 2 }, // ~5 is one term
     });
 }
 

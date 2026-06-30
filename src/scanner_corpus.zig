@@ -85,6 +85,7 @@ pub const cases = [_]Case{
     .{ .name = "13_string_immediately_terminates.case",  .text = @embedFile("scanner_corpus/13_string_immediately_terminates.case") },
     .{ .name = "14_leading_comment_then_content.case",   .text = @embedFile("scanner_corpus/14_leading_comment_then_content.case") },
     .{ .name = "15_string_with_pipe_in_middle.case",     .text = @embedFile("scanner_corpus/15_string_with_pipe_in_middle.case") },
+    .{ .name = "16_pipe_operator_not_boundary.case",     .text = @embedFile("scanner_corpus/16_pipe_operator_not_boundary.case") },
 };
 
 test "parse: minimal case" {

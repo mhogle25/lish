@@ -169,7 +169,7 @@ pub fn toCondition(condition: bool) ?Value {
 /// is the `int|float` shorthand; `collection` is the `string|list` (iterable)
 /// shorthand; `any` is any present value; `some`/`none` are the `$some`/`$none`
 /// sentinels; `literal` is one concrete string value (e.g. `"ortho"`); `one_of`
-/// is an arbitrary union — and since it carries `literal` members too, a union
+/// is an arbitrary union, and since it carries `literal` members too, a union
 /// can mix generic types with literals (`string|"ortho"`).
 ///
 /// This is a description vocabulary for signatures, NOT a runtime type system:
@@ -185,7 +185,7 @@ pub const LishType = union(enum) {
     some,
     none,
     // TODO: `literal` is string-only. Add numeric literals (int/float, e.g. `3`,
-    // `3.555`) when a concrete "must be 0|1|2"-style op appears — either sibling
+    // `3.555`) when a concrete "must be 0|1|2"-style op appears: either sibling
     // variants (`int_literal: i64`, `float_literal: f64`) or by promoting
     // `literal` to a typed union. Render numbers bare (unquoted) so they read as
     // values distinct from the quoted strings.

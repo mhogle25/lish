@@ -315,7 +315,8 @@ pub const Parser = struct {
                 .too_long_term => try self.syntaxErr("The term was too long"),
                 .too_long_string_literal => try self.syntaxErr("The string literal was too long"),
                 .deferred_macro_param_symbol => try self.syntaxErr("Invalid use of a deferred modifier"),
-                .macro_bracket => try self.syntaxErr("Invalid use of a macro bar"),
+                .macro_separator => try self.syntaxErr("Invalid use of a macro separator"),
+                .macro_break => try self.syntaxErr("Invalid use of a macro terminator"),
                 .identifier => try self.identifierLiteral(),
                 .int => try self.intLiteral(),
                 .float => try self.floatLiteral(),
@@ -413,8 +414,12 @@ pub const Parser = struct {
                     try self.stackPush(try self.syntaxErr("Invalid use of a deferred modifier"));
                     expr_count += 1;
                 },
-                .macro_bracket => {
-                    try self.stackPush(try self.syntaxErr("Invalid use of a macro bar"));
+                .macro_separator => {
+                    try self.stackPush(try self.syntaxErr("Invalid use of a macro separator"));
+                    expr_count += 1;
+                },
+                .macro_break => {
+                    try self.stackPush(try self.syntaxErr("Invalid use of a macro terminator"));
                     expr_count += 1;
                 },
                 .identifier => {
@@ -572,7 +577,8 @@ pub const Parser = struct {
             .too_long_term => singleTermResult(try self.syntaxErr("The term was too long")),
             .too_long_string_literal => singleTermResult(try self.syntaxErr("The string literal was too long")),
             .deferred_macro_param_symbol => singleTermResult(try self.syntaxErr("Invalid use of a deferred modifier")),
-            .macro_bracket => singleTermResult(try self.syntaxErr("Invalid use of a macro bar")),
+            .macro_separator => singleTermResult(try self.syntaxErr("Invalid use of a macro separator")),
+            .macro_break => singleTermResult(try self.syntaxErr("Invalid use of a macro terminator")),
             .eof => singleTermResult(try self.syntaxErr("Expected a term but got the end of the input")),
             .identifier => singleTermResult(try self.identifierLiteral()),
             .int => singleTermResult(try self.intLiteral()),
@@ -833,18 +839,31 @@ test "parse empty input produces error" {
     try std.testing.expect(node.body.expression.id.body == .err);
 }
 
-test "parse with eof_at stops at macro bracket" {
+test "parse with eof_at stops at macro terminator" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    var lexer = Lexer{ .source = "+ 1 2 |next" };
-    const result = try parseFromLexer(arena.allocator(), &lexer, &.{.macro_bracket});
+    // Body parses in BODY mode and stops at `;` (the macro body terminator).
+    var lexer = Lexer{ .source = "+ 1 2 ;next" };
+    const result = try parseFromLexer(arena.allocator(), &lexer, &.{.macro_break});
 
     try std.testing.expect(result.node.body == .expression);
     const expr = result.node.body.expression;
     try std.testing.expectEqualStrings("+", expr.id.body.value_literal.string);
     try std.testing.expectEqual(@as(usize, 2), expr.args.len);
-    try std.testing.expectEqual(TokenType.macro_bracket, result.last_token_type);
+    try std.testing.expectEqual(TokenType.macro_break, result.last_token_type);
+}
+
+test "body mode parses | and ~ as operator terms" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // `| :a :b` is the bitwise-or op applied to two scope refs (no macro here).
+    const node = try parse(arena.allocator(), "| :a :b");
+    try std.testing.expect(node.body == .expression);
+    const expr = node.body.expression;
+    try std.testing.expectEqualStrings("|", expr.id.body.value_literal.string);
+    try std.testing.expectEqual(@as(usize, 2), expr.args.len);
 }
 
 test "parseWithComments returns comment spans and a valid root" {

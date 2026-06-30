@@ -310,7 +310,7 @@ test "builder: macro with value param" {
 
     var mb = b.macro("double");
     const macro_def = try mb.param("x").body(body_node);
-    try expectMacro(macro_def, "|double x| * :x 2");
+    try expectMacro(macro_def, "double x | * :x 2 ;");
 }
 
 test "builder: macro with deferred param" {
@@ -326,7 +326,7 @@ test "builder: macro with deferred param" {
 
     var mb = b.macro("do-twice");
     const macro_def = try mb.deferredParam("action").body(body_node);
-    try expectMacro(macro_def, "|do-twice ~action| proc :action :action");
+    try expectMacro(macro_def, "do-twice ~action | proc :action :action ;");
 }
 
 test "builder: macro with no params" {
@@ -339,7 +339,7 @@ test "builder: macro with no params" {
 
     var mb = b.macro("greet");
     const macro_def = try mb.body(body_node);
-    try expectMacro(macro_def, "|greet| say hello");
+    try expectMacro(macro_def, "greet | say hello ;");
 }
 
 test "builder: complex macro" {
@@ -358,5 +358,5 @@ test "builder: complex macro" {
 
     var mb = b.macro("greet");
     const macro_def = try mb.param("name").body(say_node);
-    try expectMacro(macro_def, "|greet name| say (concat \"hello \" :name)");
+    try expectMacro(macro_def, "greet name | say (concat \"hello \" :name) ;");
 }

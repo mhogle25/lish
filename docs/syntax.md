@@ -57,9 +57,17 @@ Comments with `##` (inline or to end of line):
 say hello ## rest of line is ignored
 ```
 
-Macros (params accessed with `:`):
+Macros are written `name params | body ;` (params accessed with `:`):
 ```
-|greet name| say (concat "hello " :name)
+greet name | say (concat "hello " :name) ;
+```
+The header (the name and its parameters) runs up to the first `|`; the body runs
+from there to the terminating `;`. The `;` is required between macros in a file
+and optional after the last one (end of file also terminates a body). Because the
+header and body are bounded by different glyphs, `|` and `~` are free to be
+ordinary operators inside a body (see [bitwise operations](operations.md)):
+```
+setbit n b | | :n (<< 1 :b) ;   ## header `|`, then the body's bitwise-OR `|`
 ```
 
 ## Key Concepts
@@ -68,7 +76,8 @@ Macros (params accessed with `:`):
 - `:name`: scope thunk (looks up a named entry in the current scope; used to access macro parameters)
 - `[...]`: list sugar
 - `{...}`: block sugar (desugars to `proc`; evaluates each sub-expression in order, returns the last)
-- `~param`: deferred parameter in macro definitions (not evaluated until accessed)
+- `name params | body ;`: macro definition (`|` separates header from body, `;` terminates the body)
+- `~param`: deferred parameter in a macro header (not evaluated until accessed). In a body, `~` is the bitwise-NOT operator.
 - `?Value` = truthy, `null` = falsy
 
 ## How lish differs from Lisp

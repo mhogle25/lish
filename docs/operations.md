@@ -3,7 +3,8 @@
 | Category          | Operations                                                                                                                       |
 |-------------------|----------------------------------------------------------------------------------------------------------------------------------|
 | Constants         | `some`, `none`                                                                                                                   |
-| Arithmetic        | `+`, `-`, `*`, `/`, `%`, `^`                                                                                                     |
+| Arithmetic        | `+`, `-`, `*`, `/`, `%`, `**`                                                                                                    |
+| Bitwise           | `&`, `\|`, `^`, `~`, `<<`, `>>`                                                                                                  |
 | Comparison        | `<`, `<=`, `>`, `>=`, `is`, `isnt`, `compare`                                                                                    |
 | Logic             | `and`, `or`, `not`                                                                                                               |
 | Control Flow      | `if`, `when`, `match`, `panic`                                                                                                   |
@@ -25,6 +26,8 @@
 > hand-maintained overview; the dump cannot drift.
 
 The bundled stdlib (`src/stdlib.lishmacro`) loaded automatically by `registerCore` adds math helpers (`squared`, `cubed`, `clamp`, `clamp01`, `pi`, `sign`, `lerp`, `smoothstep`, `negate`), list helpers (`fill`, `pop`), string helpers (`repeatstr`, `padleft`, `padright`), predicates (`positive`, `negative`, `zero`, `between`, `numeric`, `blank`), `assert` (the conditional wrapper over the `panic` builtin), a kv-list family (`kvget`, `kvhas`, `kvkeys`, `kvvalues`, `kvset`, `kvmerge`) for working with flat alternating key/value lists, and a Result family (`ok`, `err`, `pass`, `fail`, `unwrap`; see [Error handling](errors.md)).
+
+The **bitwise** operations (`&` AND, `|` OR, `^` XOR, `~` NOT, `<<` left shift, `>>` right shift) work on integers. All fold variadically except `~`, which is unary: `& 14 12 10` is `14 & 12 & 10`, and `<< 1 2 3` is `((1 << 2) << 3)`. A negative shift distance reverses direction (`<< x -2` == `>> x 2`); a distance at or beyond the integer width saturates to `0`. Note that exponentiation is `**` (e.g. `** 2 10` -> `1024`); `^` is XOR, not power. `|` and `~` are ordinary operators in expression position; they carry special meaning *only* inside a macro header (the header/body separator and the deferred-parameter marker), so a host may even register its own ops named `|`/`~`. See [Syntax](syntax.md).
 
 `proc` takes its name from three overlapping meanings: **procedure** (execute a sequence of steps), **procure** (retrieve a value), and **process** (transform a sequence). With one argument it returns that argument's value; with multiple arguments it evaluates each in order and returns the last.
 

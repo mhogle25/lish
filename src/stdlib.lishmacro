@@ -15,127 +15,127 @@
 ## Note: searches the flat list directly via `find`. If a value happens to
 ## equal a key elsewhere in the list, the result is the value following that
 ## position. Use unique keys to avoid this.
-| kvget xs key |
+kvget xs key |
    let idx (find :key :xs)
-        (if (isnt :idx $none) (at (+ :idx 1) :xs) $none)
+        (if (isnt :idx $none) (at (+ :idx 1) :xs) $none) ;
 
 ## kvhas: $some if key is present, $none otherwise.
-| kvhas xs key |
-   isnt $none (find :key :xs)
+kvhas xs key |
+   isnt $none (find :key :xs) ;
 
 ## kvkeys: list of all keys (elements at even indices).
-| kvkeys xs |
-   map idx (until 0 (length :xs) 2) (at :idx :xs)
+kvkeys xs |
+   map idx (until 0 (length :xs) 2) (at :idx :xs) ;
 
 ## kvvalues: list of all values (elements at odd indices).
-| kvvalues xs |
-   map idx (until 1 (length :xs) 2) (at :idx :xs)
+kvvalues xs |
+   map idx (until 1 (length :xs) 2) (at :idx :xs) ;
 
 ## kvset: return a new kv-list with key bound to value.
 ## If key already exists, replaces the existing value; otherwise appends
 ## [key value] to the end. Original list is not modified.
-| kvset xs key value |
+kvset xs key value |
    let idx (find :key (kvkeys :xs))
         (if (isnt :idx $none)
            (flat (take (+ (* :idx 2) 1) :xs) :value (drop (+ (* :idx 2) 2) :xs))
-           (flat :xs [:key :value]))
+           (flat :xs [:key :value])) ;
 
 ## kvmerge: merge b's bindings into a; b wins on key conflict.
-| kvmerge a b |
+kvmerge a b |
    reduce result :a i (until 0 (length :b) 2)
-      (kvset :result (at :i :b) (at (+ :i 1) :b))
+      (kvset :result (at :i :b) (at (+ :i 1) :b)) ;
 
 ## Math helpers
 
-## squared: square a number 
-| square v | ^ :v 2
+## squared: square a number
+square v | ** :v 2 ;
 
-## cubed: cube a number 
-| cube v | ^ :v 3
+## cubed: cube a number
+cube v | ** :v 3 ;
 
 ## pi: floating-point pi.
-| pi | proc 3.141592653589793
+pi | proc 3.141592653589793 ;
 
 ## clamp: bound v to the range [lo, hi].
-| clamp v lo hi |
-   min :hi (max :lo :v)
+clamp v lo hi |
+   min :hi (max :lo :v) ;
 
 ## sign: -1, 0, or 1 based on the sign of v.
-| sign v |
+sign v |
    if (< :v 0) -1
-      (if (> :v 0) 1 0)
+      (if (> :v 0) 1 0) ;
 
 ## List helpers
 
 ## fill: list of n copies of v. For null-filled lists use $none as the value.
-| fill n v |
-   fillby :n :v
+fill n v |
+   fillby :n :v ;
 
 ## negate: -v.
-| negate v | - 0 :v
+negate v | - 0 :v ;
 
 ## lerp: linear interpolation from a to b by t (0..1).
-| lerp a b t |
-   + :a (* :t (- :b :a))
+lerp a b t |
+   + :a (* :t (- :b :a)) ;
 
 ## clamp01: clamp to [0, 1].
-| clamp01 v | clamp :v 0 1
+clamp01 v | clamp :v 0 1 ;
 
 ## smoothstep: classic Hermite-smoothed step from edge0 to edge1 at x.
-| smoothstep edge0 edge1 x |
+smoothstep edge0 edge1 x |
    let t (clamp01 (/ (- :x :edge0) (- :edge1 :edge0)))
-        (* :t :t (- 3 (* 2 :t)))
+        (* :t :t (- 3 (* 2 :t))) ;
 
 ## pop: list minus its last element.
-| pop xs | take (- (length :xs) 1) :xs
+pop xs | take (- (length :xs) 1) :xs ;
 
 ## String helpers
 
 ## repeatstr: string concatenated with itself n times.
-| repeatstr s n |
+repeatstr s n |
    reduce result "" x (fill :n :s)
-      (concat :result :x)
+      (concat :result :x) ;
 
 ## padleft: pad s on the left with `filler` until it reaches `width`.
 ## If s is already wider, returns s unchanged.
-| padleft s width filler |
+padleft s width filler |
    if (>= (length :s) :width) :s
-      (concat (repeatstr :filler (- :width (length :s))) :s)
+      (concat (repeatstr :filler (- :width (length :s))) :s) ;
 
 ## padright: pad s on the right with `filler` until it reaches `width`.
-| padright s width filler |
+padright s width filler |
    if (>= (length :s) :width) :s
-      (concat :s (repeatstr :filler (- :width (length :s))))
+      (concat :s (repeatstr :filler (- :width (length :s)))) ;
 
 ## Predicates (value-preserving: return the value when true, $none otherwise)
 
 ## positive: $some when v > 0.
-| positive v | > :v 0
+positive v | > :v 0 ;
 
 ## negative: $some when v < 0.
-| negative v | < :v 0
+negative v | < :v 0 ;
 
 ## zero: $some when v == 0.
-| zero v | is :v 0
+zero v | is :v 0 ;
 
 ## between: $some when lo <= v <= hi.
-| between lo hi v |
-   and (>= :v :lo) (<= :v :hi)
+between lo hi v |
+   and (>= :v :lo) (<= :v :hi) ;
 
 ## numeric: $some when v is an int or float.
-| numeric v |
-   or (is (type :v) "int") (is (type :v) "float")
+numeric v |
+   or (is (type :v) "int") (is (type :v) "float") ;
 
 ## blank: $some when s is empty or whitespace-only.
-| blank s |
-   is (length (trim :s)) 0
+blank s |
+   is (length (trim :s)) 0 ;
 
 ## Control-flow helpers
 
 ## assert: the condition when truthy, else panic with the framed message.
 ## (panic is the builtin primitive; assert is the conditional wrapper over it.)
-| assert cond msg |
-   if :cond :cond (panic (concat "Assertion failed: " :msg))
+assert cond msg |
+   if :cond :cond (panic (concat "Assertion failed: " :msg)) ;
 
 ## Result type
 ##
@@ -149,31 +149,31 @@
 ## a non-Result fails loudly instead of masquerading as an empty $none.
 
 ## ok: construct a success Result wrapping v.
-| ok v |
-   list ok :v
+ok v |
+   list ok :v ;
 
 ## err: construct a failure Result wrapping message m.
-| err m |
-   list err :m
+err m |
+   list err :m ;
 
 ## pass: the payload if this Result is ok, else $none (Result -> Optional).
-| pass r |
+pass r |
     match (first :r)
-        ok  (last :r) 
+        ok  (last :r)
         err $none
-        (panic (concat "pass: Not a Result -> " :r))
+        (panic (concat "pass: Not a Result -> " :r)) ;
 
 ## fail: the payload if this Result is err, else $none (Result -> Optional).
-| fail r |
-    match (first :r) 
+fail r |
+    match (first :r)
         ok  $none
-        err (last :r) 
-        (panic (concat "fail: Not a Result -> " :r))
+        err (last :r)
+        (panic (concat "fail: Not a Result -> " :r)) ;
 
 ## unwrap: the payload if this Result is ok, else panic with the err payload.
-| unwrap r |
-    match (first :r) 
-        ok  (last :r) 
-        err (panic (last :r))
-        (panic (concat "unwrap: Not a Result -> " :r))
-
+unwrap r |
+    unpack t v :r
+        (match :t
+            ok :v
+            err (panic :v)
+            (panic (concat "unwrap: Not a Result -> " :r))) ;

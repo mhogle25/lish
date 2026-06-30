@@ -33,11 +33,28 @@ pub const CommentSink = struct {
 // (new sigil, new string form, new comment shape), update boundary.zig and add
 // cases to src/scanner_corpus/; embedder CI will fail until they're updated.
 
+/// What the lexer treats as a token boundary. A macro module flips between the
+/// two as it crosses the structural glyphs; a plain `.lish` file / the REPL is
+/// always `.body`. See `isHeaderWall` / `isReservedChar` in token.zig.
+pub const Mode = enum {
+    /// A macro header (its start up to the first `|`). Adds `~` and `|` to the
+    /// walls, so `~cond` splits and the `|` ends the header.
+    header,
+    /// A macro body, and all plain expression / REPL text. Base walls only;
+    /// `~` and `|` glue like ordinary operator chars (`~5` is the term "~5").
+    body,
+};
+
 pub const Lexer = struct {
     source: []const u8,
     idx: usize = 0,
     line: usize = 1,
     column: usize = 1,
+
+    /// Current boundary mode. Defaults to `.body` so the plain expression parser
+    /// and the REPL never see `~`/`|` as special. The macro-module parser sets
+    /// `.header` at each macro start and `.body` after the header's `|`.
+    mode: Mode = .body,
 
     /// When set, `## comment` spans are recorded here instead of being silently
     /// skipped. Null by default, so non-tooling callers are unaffected. Attach
@@ -131,9 +148,8 @@ pub const Lexer = struct {
 
         return switch (first) {
             tok.EXPRESSION_SINGLE => self.singleCharToken(.call_expression_symbol, start),
-            tok.MACRO_BRACKET => self.singleCharToken(.macro_bracket, start),
-            tok.DEFERRED => self.singleCharToken(.deferred_macro_param_symbol, start),
             tok.SCOPE_THUNK => self.singleCharToken(.call_scope_thunk_symbol, start),
+            tok.SEMICOLON => self.singleCharToken(.macro_break, start),
 
             tok.EXPRESSION_OPEN => self.singleCharToken(.expression_opening_bracket, start),
             tok.EXPRESSION_CLOSE => self.singleCharToken(.expression_closing_bracket, start),
@@ -144,6 +160,17 @@ pub const Lexer = struct {
 
             tok.QUOTE_DOUBLE => self.makeStringLiteralToken(tok.QUOTE_DOUBLE),
             tok.QUOTE_SINGLE => self.makeStringLiteralToken(tok.QUOTE_SINGLE),
+
+            // `|`/`~` wall only in a macro header; in a body they glob as
+            // ordinary operator/term chars (the bitwise ops).
+            tok.PIPE => if (self.mode == .header)
+                self.singleCharToken(.macro_separator, start)
+            else
+                self.makeTermToken(),
+            tok.TILDE => if (self.mode == .header)
+                self.singleCharToken(.deferred_macro_param_symbol, start)
+            else
+                self.makeTermToken(),
 
             else => self.makeTermToken(),
         };
@@ -177,7 +204,11 @@ pub const Lexer = struct {
         while (self.idx < self.source.len) {
             const current = self.source[self.idx];
 
-            if (isWhitespace(current) or tok.isReservedChar(current))
+            const is_wall = if (self.mode == .header)
+                tok.isHeaderWall(current)
+            else
+                tok.isReservedChar(current);
+            if (isWhitespace(current) or is_wall)
                 break;
 
             is_last_char_decimal = false;
@@ -373,17 +404,74 @@ test "lex brackets" {
 }
 
 test "lex symbols" {
-    var lex = Lexer{ .source = "$foo :bar |baz| ~qux" };
+    var lex = Lexer{ .source = "$foo :bar" };
 
     try std.testing.expectEqual(TokenType.call_expression_symbol, lex.nextToken().type);
     try std.testing.expectEqual(TokenType.identifier, lex.nextToken().type); // foo
     try std.testing.expectEqual(TokenType.call_scope_thunk_symbol, lex.nextToken().type);
     try std.testing.expectEqual(TokenType.identifier, lex.nextToken().type); // bar
-    try std.testing.expectEqual(TokenType.macro_bracket, lex.nextToken().type);
-    try std.testing.expectEqual(TokenType.identifier, lex.nextToken().type); // baz
-    try std.testing.expectEqual(TokenType.macro_bracket, lex.nextToken().type);
-    try std.testing.expectEqual(TokenType.deferred_macro_param_symbol, lex.nextToken().type);
-    try std.testing.expectEqual(TokenType.identifier, lex.nextToken().type); // qux
+}
+
+test "lex header mode: ~ and | are walls" {
+    var lex = Lexer{ .source = "double x ~body |", .mode = .header };
+
+    const id = lex.nextToken();
+    try std.testing.expectEqual(TokenType.identifier, id.type);
+    try std.testing.expectEqualStrings("double", id.lexeme);
+    try std.testing.expectEqual(TokenType.identifier, lex.nextToken().type); // x
+
+    const tilde = lex.nextToken();
+    try std.testing.expectEqual(TokenType.deferred_macro_param_symbol, tilde.type);
+    const body = lex.nextToken();
+    try std.testing.expectEqual(TokenType.identifier, body.type);
+    try std.testing.expectEqualStrings("body", body.lexeme); // ~body splits
+
+    try std.testing.expectEqual(TokenType.macro_separator, lex.nextToken().type);
+    try std.testing.expectEqual(TokenType.eof, lex.nextToken().type);
+}
+
+test "lex body mode: ~5 globs into one term" {
+    var lex = Lexer{ .source = "~5", .mode = .body };
+    const t = lex.nextToken();
+    try std.testing.expectEqual(TokenType.identifier, t.type);
+    try std.testing.expectEqualStrings("~5", t.lexeme);
+    try std.testing.expectEqual(TokenType.eof, lex.nextToken().type);
+}
+
+test "lex body mode: ~ space 5 is two tokens (NOT op)" {
+    var lex = Lexer{ .source = "~ 5", .mode = .body };
+    const op = lex.nextToken();
+    try std.testing.expectEqual(TokenType.identifier, op.type);
+    try std.testing.expectEqualStrings("~", op.lexeme);
+    const five = lex.nextToken();
+    try std.testing.expectEqual(TokenType.int, five.type);
+    try std.testing.expectEqualStrings("5", five.lexeme);
+}
+
+test "lex body mode: | is an operator term, split by base walls" {
+    var lex = Lexer{ .source = "| :a :b", .mode = .body };
+    const bor = lex.nextToken();
+    try std.testing.expectEqual(TokenType.identifier, bor.type);
+    try std.testing.expectEqualStrings("|", bor.lexeme);
+    try std.testing.expectEqual(TokenType.call_scope_thunk_symbol, lex.nextToken().type);
+    try std.testing.expectEqual(TokenType.identifier, lex.nextToken().type); // a
+    try std.testing.expectEqual(TokenType.call_scope_thunk_symbol, lex.nextToken().type);
+    try std.testing.expectEqual(TokenType.identifier, lex.nextToken().type); // b
+}
+
+test "lex body mode: a|b is a single bare term" {
+    var lex = Lexer{ .source = "a|b", .mode = .body };
+    const t = lex.nextToken();
+    try std.testing.expectEqual(TokenType.identifier, t.type);
+    try std.testing.expectEqualStrings("a|b", t.lexeme);
+}
+
+test "lex semicolon is a macro_break in every mode" {
+    var body = Lexer{ .source = ";", .mode = .body };
+    try std.testing.expectEqual(TokenType.macro_break, body.nextToken().type);
+
+    var header = Lexer{ .source = ";", .mode = .header };
+    try std.testing.expectEqual(TokenType.macro_break, header.nextToken().type);
 }
 
 test "lex numbers" {

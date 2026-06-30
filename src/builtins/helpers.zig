@@ -54,6 +54,24 @@ pub fn numericFold(
     return accumulator;
 }
 
+/// Left-fold integer-only arguments with `int_op`. All operands must be ints
+/// (no float promotion: bitwise ops are integer-only). Mirrors `numericFold`.
+pub fn intFold(
+    args: Args,
+    int_op: *const fn (i64, i64) i64,
+) ExecError!?Value {
+    try args.expectMinCount(2);
+    var accumulator = try args.at(0).resolve();
+    if (accumulator != .int) return args.env.failFmt(.type_mismatch, "Expected an integer, got {s}", .{accumulator.typeName()});
+
+    for (1..args.count()) |i| {
+        const operand = try args.at(i).resolve();
+        if (operand != .int) return args.env.failFmt(.type_mismatch, "Expected an integer, got {s}", .{operand.typeName()});
+        accumulator = .{ .int = int_op(accumulator.int, operand.int) };
+    }
+    return accumulator;
+}
+
 pub fn numericComparison(
     args: Args,
     int_cmp: *const fn (i64, i64) bool,

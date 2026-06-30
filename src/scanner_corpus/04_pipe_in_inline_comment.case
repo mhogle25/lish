@@ -1,5 +1,5 @@
-terminator: |
+terminator: ;
 boundary: 30
 description: pipe inside an inline `##...##` comment is content, not boundary
 ---
-do-thing ## use | here ## next|done
+do-thing ## use ; here ## next;done

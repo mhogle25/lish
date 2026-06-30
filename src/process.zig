@@ -402,7 +402,7 @@ test "recursion does not evict a live ancestor unit (pinning)" {
     var registry = Registry.initCapacity(alloc, 1);
     defer registry.deinit(alloc);
     try builtins.registerAll(&registry, alloc);
-    const load = try loadMacroModule(&registry, "|countdown n| if (> :n 0) (countdown (- :n 1)) :n");
+    const load = try loadMacroModule(&registry, "countdown n | if (> :n 0) (countdown (- :n 1)) :n ;");
     try std.testing.expect(load == .ok);
 
     var env = Env{ .registry = &registry, .allocator = alloc };
@@ -504,7 +504,7 @@ test "loadMacroModule: load and execute macros" {
     try builtins.registerAll(&registry, alloc);
 
     // Load a macro module
-    const load_result = try loadMacroModule(&registry,"| double x | * :x 2");
+    const load_result = try loadMacroModule(&registry,"double x | * :x 2 ;");
     switch (load_result) {
         .ok => |count| try std.testing.expectEqual(@as(usize, 1), count),
         .io_error, .validation_err => return error.TestUnexpectedResult,
@@ -532,7 +532,7 @@ test "loadMacroModule: multiple macros" {
 
     const load_result = try loadMacroModule(
         &registry,
-        "| double x | * :x 2 | quadruple x | double (double :x)",
+        "double x | * :x 2 ; quadruple x | double (double :x) ;",
     );
     switch (load_result) {
         .ok => |count| try std.testing.expectEqual(@as(usize, 2), count),
@@ -558,7 +558,7 @@ test "loadMacroModule: validation errors" {
     var registry = Registry.init(alloc);
 
     // Duplicate macro IDs should produce validation errors
-    const load_result = try loadMacroModule(&registry,"| foo x | + :x 1 | foo y | + :y 2");
+    const load_result = try loadMacroModule(&registry,"foo x | + :x 1 ; foo y | + :y 2 ;");
     switch (load_result) {
         .ok, .io_error => return error.TestUnexpectedResult,
         .validation_err => |errors| {
@@ -596,7 +596,7 @@ test "processRaw: full pipeline with macros and scope" {
     try builtins.registerAll(&registry, alloc);
     const load_result = try loadMacroModule(
         &registry,
-        "| add-to-x x amount | + :x :amount",
+        "add-to-x x amount | + :x :amount ;",
     );
     try std.testing.expectEqual(MacroLoadResult{ .ok = 1 }, load_result);
 
@@ -706,7 +706,7 @@ test "let: let-binding does not leak into a called macro's body" {
     try builtins.registerAll(&registry, alloc);
 
     // `grab` references :y, which is NOT one of its params, it should never resolve
-    const load_result = try loadMacroModule(&registry, "| grab | proc :y");
+    const load_result = try loadMacroModule(&registry, "grab | proc :y ;");
     switch (load_result) {
         .ok => {},
         .io_error, .validation_err => return error.TestUnexpectedResult,
@@ -733,7 +733,7 @@ test "let: inside macro body, both macro param and let-binding visible" {
     // scale x -> let doubled = x*2 in (doubled + x)
     const load_result = try loadMacroModule(
         &registry,
-        "| scale x | let doubled (* :x 2) (+ :doubled :x)",
+        "scale x | let doubled (* :x 2) (+ :doubled :x) ;",
     );
     switch (load_result) {
         .ok => {},
@@ -756,7 +756,7 @@ test "let: macro arguments evaluate in caller's let scope" {
     var registry = Registry.init(alloc);
     try builtins.registerAll(&registry, alloc);
 
-    const load_result = try loadMacroModule(&registry, "| double x | * :x 2");
+    const load_result = try loadMacroModule(&registry, "double x | * :x 2 ;");
     switch (load_result) {
         .ok => {},
         .io_error, .validation_err => return error.TestUnexpectedResult,
@@ -781,7 +781,7 @@ test "let: deferred param captures let scope as a closure" {
 
     // run-it takes a deferred body; the body is `(+ :y 100)` which references the
     // outer let-binding via the deferred param's captured scope
-    const load_result = try loadMacroModule(&registry, "| run-it ~body | proc :body");
+    const load_result = try loadMacroModule(&registry, "run-it ~body | proc :body ;");
     switch (load_result) {
         .ok => {},
         .io_error, .validation_err => return error.TestUnexpectedResult,
@@ -820,7 +820,7 @@ test "bounds: recursion depth halts runaway macro" {
     try builtins.registerAll(&registry, alloc);
 
     // A macro that calls itself with no termination condition.
-    const load = try loadMacroModule(&registry, "|forever| forever");
+    const load = try loadMacroModule(&registry, "forever | forever ;");
     try std.testing.expect(load == .ok);
 
     var env = Env{ .registry = &registry, .allocator = alloc };
@@ -924,7 +924,7 @@ test "bounds: string length cap halts huge concat" {
     try builtins.registerAll(&registry, alloc);
 
     // Define a doubling macro and chain it.
-    const load = try loadMacroModule(&registry, "|double s| concat :s :s");
+    const load = try loadMacroModule(&registry, "double s | concat :s :s ;");
     try std.testing.expect(load == .ok);
 
     var env = Env{ .registry = &registry, .allocator = alloc };
@@ -950,7 +950,7 @@ test "bounds: shallow recursion under limit works fine" {
     try builtins.registerAll(&registry, alloc);
 
     // Counts down from :n to 0.
-    const load = try loadMacroModule(&registry, "|countdown n| if (> :n 0) (countdown (- :n 1)) :n");
+    const load = try loadMacroModule(&registry, "countdown n | if (> :n 0) (countdown (- :n 1)) :n ;");
     try std.testing.expect(load == .ok);
 
     var env = Env{ .registry = &registry, .allocator = alloc };

@@ -10,10 +10,10 @@
 | `parser.zig`               | Recursive descent expression parser                                                      |
 | `validation.zig`           | AST to executable transformation with error checking                                     |
 | `exec.zig`                 | Runtime: Thunk, Expression, Scope, Env, Registry                                         |
-| `builtins.zig`             | Registration entry point for the 93 built-in operations                                  |
+| `builtins.zig`             | Registration entry point for the 101 built-in operations                                 |
 | `builtins/`                | One module per category (arithmetic, lists, strings, higher_order, binding, types, ...)  |
 | `introspect.zig`           | Registry self-description: serialize ops/macros to JSON (`lish --dump-ops` / `--dump-macros`) |
-| `boundary.zig`             | Shared expression-boundary finder for embedders (folio's `{...}`, macro `\|...\|`)        |
+| `boundary.zig`             | Shared expression-boundary finder for embedders (folio's `{...}`, macro body `...;`)      |
 | `macro_parser.zig`         | Macro definition parser and validator                                                    |
 | `cache.zig`                | Generic LRU cache (`LruCache(V)`)                                                        |
 | `process.zig`              | Convenience API: processRaw, macro file loading                                          |

@@ -82,8 +82,8 @@ From source strings:
 
 ```zig
 const macro_source =
-    \\|double x| * :x 2
-    \\|greet name| say (concat "Hello, " :name)
+    \\double x | * :x 2 ;
+    \\greet name | say (concat "Hello, " :name) ;
 ;
 
 const load_result = try lish.loadMacroModule(&registry, macro_source);
@@ -171,7 +171,7 @@ const body = try say_eb.arg(concat_node).build();
 
 var mb = b.macro("greet");
 const macro_def = try mb.param("name").body(body);
-// -> |greet name| say (concat "hello " :name)
+// -> greet name | say (concat "hello " :name) ;
 ```
 
 ## Serializing AST to Source
@@ -259,3 +259,10 @@ try registry.registerOperation(
 
 `lish.Param` has terse constructors for each role/arity: `Param.value`,
 `Param.optional`, `Param.variadic`, `Param.binding`, `Param.body`.
+
+An operation name can be any bare term, including operator glyphs. The built-in
+bitwise ops are named `&`, `|`, `^`, `~`, `<<`, `>>`, and a host is free to
+register or shadow ops with those names: `|` and `~` are only special inside a
+macro *header* (the header/body separator and the deferred-parameter marker), so
+in expression position they are ordinary operator terms. The structural
+characters that can never be op names are the base walls (`( ) [ ] { } : $ " ' ;`).

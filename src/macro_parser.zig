@@ -108,10 +108,14 @@ const MacroParser = struct {
     /// Comment sink shared with the lexer (and sub-parsers). When set, each
     /// macro's leading comment run becomes its `description`.
     comment_sink: ?CommentSink = null,
-    /// Byte offset of the current macro's opening `|`, used to find its docstring.
+    /// Byte offset where the current macro's header starts (its name token),
+    /// used to find its docstring.
     header_start: u32 = 0,
 
-    const State = enum { init, in_params, past_id, deferred_param };
+    /// Macro grammar under Track O: `name params | body ;` (no leading `|`).
+    /// `expect_id` reads the name in HEADER mode; `in_params` reads params until
+    /// the header/body `|`; `deferred_param` reads the name after a `~`.
+    const State = enum { expect_id, in_params, deferred_param };
 
     const EOF_TOKEN: Token = .{
         .type = .eof,
@@ -123,14 +127,15 @@ const MacroParser = struct {
     };
 
     fn init(allocator: Allocator, source: []const u8, comment_sink: ?CommentSink) MacroParser {
-        var lexer = Lexer{ .source = source, .comment_sink = comment_sink };
+        // A macro starts with its name in HEADER mode (where `~`/`|` wall).
+        var lexer = Lexer{ .source = source, .comment_sink = comment_sink, .mode = .header };
         const first_token = lexer.nextToken();
 
         return .{
             .allocator = allocator,
             .lexer = lexer,
             .token = first_token,
-            .state = .init,
+            .state = .expect_id,
             .comment_sink = comment_sink,
         };
     }
@@ -138,9 +143,8 @@ const MacroParser = struct {
     fn parse(self: *MacroParser) Allocator.Error!AstMacroModule {
         while (self.token.type != .eof) {
             switch (self.state) {
-                .init => self.handleInit(),
+                .expect_id => try self.handleExpectId(),
                 .in_params => try self.handleInParams(),
-                .past_id => try self.handlePastId(),
                 .deferred_param => try self.handleDeferredParam(),
             }
         }
@@ -149,20 +153,10 @@ const MacroParser = struct {
     }
 
 
-    fn handleInit(self: *MacroParser) void {
-        if (self.token.type == .macro_bracket) {
-            self.header_start = self.token.start;
-            self.state = .in_params;
-            self.token = self.lexer.nextToken();
-        } else {
-            // Unexpected token outside a macro definition, skip
-            self.token = self.lexer.nextToken();
-        }
-    }
-
-    fn handleInParams(self: *MacroParser) Allocator.Error!void {
+    fn handleExpectId(self: *MacroParser) Allocator.Error!void {
         if (isTerm(self.token.type)) {
-            // First term is the macro identifier
+            // The header begins at its name (no leading `|` under Track O).
+            self.header_start = self.token.start;
             const id_position: Position = .{ .start = self.token.start, .end = self.token.end };
             const identifier = try self.processIdentifier();
 
@@ -177,21 +171,21 @@ const MacroParser = struct {
                 self.current_id = .{ .err = self.errorAtToken("Invalid escape sequences in macro identifier") };
             }
 
-            self.state = .past_id;
+            self.state = .in_params;
             self.token = self.lexer.nextToken();
-        } 
-        else 
-        if (self.token.type == .macro_bracket) {
-            // Missing ID, still parse the body
+        } else if (self.token.type == .macro_separator) {
+            // Header opened straight with `|`: missing name, still parse the body.
+            self.header_start = self.token.start;
             self.current_id = .{ .err = self.errorAtToken("Macro is missing an identifier") };
             try self.parseMacroBody();
-        } 
-        else {
+        } else {
+            // A stray token between macros (e.g. a `;` with no preceding body);
+            // skip it and keep looking for the next header.
             self.token = self.lexer.nextToken();
         }
     }
 
-    fn handlePastId(self: *MacroParser) Allocator.Error!void {
+    fn handleInParams(self: *MacroParser) Allocator.Error!void {
         if (isTerm(self.token.type)) {
             // Value parameter
             const param_position: Position = .{ .start = self.token.start, .end = self.token.end };
@@ -213,11 +207,11 @@ const MacroParser = struct {
         if (self.token.type == .deferred_macro_param_symbol) {
             self.state = .deferred_param;
             self.token = self.lexer.nextToken();
-        } 
-        else 
-        if (self.token.type == .macro_bracket) {
+        }
+        else
+        if (self.token.type == .macro_separator) {
             try self.parseMacroBody();
-        } 
+        }
         else {
             try self.parameters.append(self.allocator, .{
                 .err = self.errorAtToken("Unexpected token in macro parameters"),
@@ -240,32 +234,34 @@ const MacroParser = struct {
                     .err = self.errorAtToken("Invalid escape sequences in parameter name"),
                 });
             }
-            self.state = .past_id;
+            self.state = .in_params;
             self.token = self.lexer.nextToken();
-        } 
-        else 
-        if (self.token.type == .macro_bracket) {
+        }
+        else
+        if (self.token.type == .macro_separator) {
             // Missing deferred param name
             try self.parameters.append(self.allocator, .{
                 .err = self.errorAtToken("Missing parameter name for deferred argument"),
             });
             try self.parseMacroBody();
-        } 
+        }
         else {
             try self.parameters.append(self.allocator, .{
                 .err = self.errorAtToken("Expected parameter name after '~'"),
             });
-            self.state = .past_id;
+            self.state = .in_params;
             self.token = self.lexer.nextToken();
         }
     }
 
 
     fn parseMacroBody(self: *MacroParser) Allocator.Error!void {
+        // The body lexes in BODY mode and runs to the `;` terminator (or EOF).
+        self.lexer.mode = .body;
         const result = try expr_parser.parseFromLexer(
             self.allocator,
             &self.lexer,
-            &.{.macro_bracket},
+            &.{.macro_break},
         );
 
         // Build macro node
@@ -274,13 +270,13 @@ const MacroParser = struct {
         // Restore lexer position to where the expression parser stopped
         self.lexer.setState(result.lexer_state);
 
-        if (result.last_token_type == .macro_bracket) {
-            // The `|` that ended this body opens the next macro's header.
-            self.header_start = result.last_token_start;
-            self.state = .in_params;
+        if (result.last_token_type == .macro_break) {
+            // The `;` ended this body; the next macro's header lexes in HEADER mode.
+            self.lexer.mode = .header;
+            self.state = .expect_id;
             self.token = self.lexer.nextToken();
         } else {
-            // End of input
+            // EOF terminated the final body (`;` is EOF-optional).
             self.token = EOF_TOKEN;
         }
     }
@@ -522,7 +518,7 @@ test "parse single macro" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    const module = try parseMacroModule(alloc, "| double x | * :x 2");
+    const module = try parseMacroModule(alloc, "double x | * :x 2 ;");
 
     try std.testing.expectEqual(@as(usize, 1), module.macros.len);
     const macro = module.macros[0].macro;
@@ -537,7 +533,7 @@ test "parse multiple macros" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    const module = try parseMacroModule(alloc, "| double x | * :x 2 | triple x | * :x 3");
+    const module = try parseMacroModule(alloc, "double x | * :x 2 ; triple x | * :x 3 ;");
 
     try std.testing.expectEqual(@as(usize, 2), module.macros.len);
     try std.testing.expectEqualStrings("double", module.macros[0].macro.id.valid.name);
@@ -549,7 +545,7 @@ test "parse macro with deferred parameter" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    const module = try parseMacroModule(alloc, "| run-if cond ~body | if :cond :body");
+    const module = try parseMacroModule(alloc, "run-if cond ~body | if :cond :body ;");
 
     try std.testing.expectEqual(@as(usize, 1), module.macros.len);
     const macro = module.macros[0].macro;
@@ -565,7 +561,7 @@ test "parse macro with no parameters" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    const module = try parseMacroModule(alloc, "| get-zero | + 0 0");
+    const module = try parseMacroModule(alloc, "get-zero | + 0 0 ;");
 
     try std.testing.expectEqual(@as(usize, 1), module.macros.len);
     try std.testing.expectEqual(@as(usize, 0), module.macros[0].macro.parameters.len);
@@ -576,7 +572,7 @@ test "duplicate macro id produces error" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    const module = try parseMacroModule(alloc, "| foo x | + :x 1 | foo y | + :y 2");
+    const module = try parseMacroModule(alloc, "foo x | + :x 1 ; foo y | + :y 2 ;");
 
     try std.testing.expectEqual(@as(usize, 2), module.macros.len);
     // Second macro should have an error ID
@@ -588,7 +584,7 @@ test "validate macro module" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    const module = try parseMacroModule(alloc, "| double x | * :x 2");
+    const module = try parseMacroModule(alloc, "double x | * :x 2 ;");
     const result = try validateMacroModule(alloc, module);
 
     switch (result) {
@@ -607,7 +603,7 @@ test "validate and execute macro" {
     const alloc = arena.allocator();
 
     // Parse and validate the macro module
-    const module = try parseMacroModule(alloc, "| double x | * :x 2");
+    const module = try parseMacroModule(alloc, "double x | * :x 2 ;");
     const macro_result = try validateMacroModule(alloc, module);
     const macros = switch (macro_result) {
         .ok => |valid_macros| valid_macros,
@@ -642,8 +638,8 @@ test "end-to-end: macro with deferred parameter" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    // Macro: |do-twice ~action| proc :action :action
-    const module = try parseMacroModule(alloc, "| do-twice ~action | proc :action :action");
+    // Macro: do-twice ~action | proc :action :action ;
+    const module = try parseMacroModule(alloc, "do-twice ~action | proc :action :action ;");
     const macro_result = try validateMacroModule(alloc, module);
     const macros = switch (macro_result) {
         .ok => |valid_macros| valid_macros,
@@ -676,7 +672,7 @@ test "end-to-end: multiple macros in module" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    const source = "| double x | * :x 2 | quadruple x | double (double :x)";
+    const source = "double x | * :x 2 ; quadruple x | double (double :x) ;";
     const module = try parseMacroModule(alloc, source);
     const macro_result = try validateMacroModule(alloc, module);
     const macros = switch (macro_result) {
@@ -710,7 +706,7 @@ test "docstring: leading comment run attaches to the macro" {
     defer arena.deinit();
     const a = arena.allocator();
 
-    const source = "## doubles its arg\n## (second line)\n| double x | * :x 2";
+    const source = "## doubles its arg\n## (second line)\ndouble x | * :x 2 ;";
     const result = try parseMacroModuleWithComments(a, source);
 
     try std.testing.expectEqual(@as(usize, 1), result.module.macros.len);
@@ -725,7 +721,7 @@ test "docstring: a blank line detaches the comment" {
     defer arena.deinit();
     const a = arena.allocator();
 
-    const source = "## just a note\n\n| double x | * :x 2";
+    const source = "## just a note\n\ndouble x | * :x 2 ;";
     const result = try parseMacroModuleWithComments(a, source);
 
     const m = result.module.macros[0].macro;
@@ -738,7 +734,7 @@ test "docstring: each macro gets its own (second enters via body-stop path)" {
     const a = arena.allocator();
 
     const source =
-        "## first\n| double x | * :x 2\n## second\n| quad x | double (double :x)";
+        "## first\ndouble x | * :x 2 ;\n## second\nquad x | double (double :x) ;";
     const result = try parseMacroModuleWithComments(a, source);
 
     try std.testing.expectEqual(@as(usize, 2), result.module.macros.len);

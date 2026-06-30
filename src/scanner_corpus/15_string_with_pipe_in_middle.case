@@ -1,5 +1,5 @@
-terminator: |
+terminator: ;
 boundary: 18
 description: pipe at the START of a string body, also one later; only the un-quoted one terminates
 ---
-say "|a" "|b" "|c"|done
+say ";a" ";b" ";c";done

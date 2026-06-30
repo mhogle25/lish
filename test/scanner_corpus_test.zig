@@ -3,10 +3,10 @@
 //! Cases come from `lish.scanner_corpus` (which @embedFiles them from
 //! `src/scanner_corpus/`). Two runners share the corpus:
 //!
-//!   - `findPipeBoundary` drives the full `Lexer`, the canonical tokenizer, on
-//!     the `|` (macro-body) cases.
+//!   - `findMacroBreakBoundary` drives the full `Lexer`, the canonical
+//!     tokenizer, on the `;` (macro-body terminator) cases.
 //!   - `findExpressionBoundary` drives `lish.boundary`, the focused scanner that
-//!     embedders call, on *every* case (both `|` and folio's `}`). This is what
+//!     embedders call, on *every* case (both `;` and folio's `}`). This is what
 //!     pins that shared function to the lexer's lexical rules.
 
 const std = @import("std");
@@ -14,7 +14,7 @@ const lish = @import("lish");
 const Lexer = lish.Lexer;
 
 /// The opener that nests a given terminator: `{` for folio's `}` regions; the
-/// macro `|` does not nest.
+/// macro `;` does not nest.
 fn openFor(terminator: u8) ?u8 {
     return switch (terminator) {
         '}' => '{',
@@ -22,30 +22,30 @@ fn openFor(terminator: u8) ?u8 {
     };
 }
 
-/// Tokenize the source and return the byte offset of the first `macro_bracket`
-/// (`|`) token. Returns null if the source contains no such token.
-fn findPipeBoundary(source: []const u8) ?u32 {
-    var lex = Lexer{ .source = source };
+/// Tokenize the source (a macro body, so BODY lexer mode) and return the byte
+/// offset of the first `macro_break` (`;`) token, or null if there is none.
+fn findMacroBreakBoundary(source: []const u8) ?u32 {
+    var lex = Lexer{ .source = source, .mode = .body };
     while (true) {
         const t = lex.nextToken();
         switch (t.type) {
             .eof => return null,
-            .macro_bracket => return t.start,
+            .macro_break => return t.start,
             else => {},
         }
     }
 }
 
-test "scanner corpus: every `|` case matches lish's lexer" {
-    var pipe_count: usize = 0;
+test "scanner corpus: every `;` case matches lish's lexer" {
+    var break_count: usize = 0;
 
     for (lish.scanner_corpus.cases) |case| {
         const parsed = try lish.scanner_corpus.parse(case.text);
-        if (parsed.terminator != '|') continue;
-        pipe_count += 1;
+        if (parsed.terminator != ';') continue;
+        break_count += 1;
 
-        const found = findPipeBoundary(parsed.source) orelse {
-            std.debug.print("\nCASE FAILED: {s}\n  no `|` token found in source\n", .{case.name});
+        const found = findMacroBreakBoundary(parsed.source) orelse {
+            std.debug.print("\nCASE FAILED: {s}\n  no `;` token found in source\n", .{case.name});
             return error.BoundaryNotFound;
         };
         if (found != parsed.expected_boundary) {
@@ -57,7 +57,7 @@ test "scanner corpus: every `|` case matches lish's lexer" {
         }
     }
 
-    try std.testing.expect(pipe_count > 0);
+    try std.testing.expect(break_count > 0);
 }
 
 test "scanner corpus: findExpressionBoundary matches every case" {

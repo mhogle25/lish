@@ -1,5 +1,5 @@
-terminator: |
+terminator: ;
 boundary: 17
 description: backslash escape inside a string doesn't terminate it prematurely
 ---
-say "a\"b|inside"|next
+say "a\"b;inside";next

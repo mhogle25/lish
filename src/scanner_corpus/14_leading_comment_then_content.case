@@ -1,6 +1,6 @@
-terminator: |
+terminator: ;
 boundary: 26
 description: body begins with a comment, then real content, then terminator
 ---
 ## leading doc ##
-do-thing|next
+do-thing;next

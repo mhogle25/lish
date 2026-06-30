@@ -3,8 +3,8 @@
 //! Hosts that splice lish into their own syntax need the same answer: given the
 //! text right after an opening delimiter, where is the terminator that closes
 //! it, skipping any terminator that sits inside a string, a comment, or a
-//! nested bracket pair? folio's `{...}` regions and the macro grammar's `|...|`
-//! bodies both ask this. This is the single place that answers it.
+//! nested bracket pair? folio's `{...}` regions and the macro grammar's
+//! `| body ;` bodies both ask this. This is the single place that answers it.
 //!
 //! It mirrors `lexer.zig`'s string and comment rules exactly; the corpus in
 //! `src/scanner_corpus/` pins the two together so they can't drift.
@@ -23,7 +23,7 @@ const tok = @import("token.zig");
 /// nesting is tracked: each `open` raises the depth and each `terminator` lowers
 /// it, so the boundary is the `terminator` seen at depth 0 (folio's `{`/`}`).
 /// When `open` is null the terminator does not nest, so the first
-/// unquoted/uncommented `terminator` is the boundary (the macro `|`).
+/// unquoted/uncommented `terminator` is the boundary (the macro body `;`).
 ///
 /// Strings (`"`/`'`, with `\` escapes) and `##` comments are skipped, so a
 /// terminator inside them counts as content.

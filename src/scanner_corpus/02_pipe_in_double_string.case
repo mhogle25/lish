@@ -1,5 +1,5 @@
-terminator: |
+terminator: ;
 boundary: 22
 description: pipe inside a double-quoted string is content, not boundary
 ---
-say "literal | inside"|next
+say "literal ; inside";next

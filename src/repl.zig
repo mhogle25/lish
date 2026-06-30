@@ -314,8 +314,8 @@ pub fn registerConfigOps(registry: *exec_mod.Registry, config: *ReplConfig, allo
     }));
 
     _ = try process_mod.loadMacroModule(registry,
-        \\|on| $some
-        \\|off| $none
+        \\on | $some ;
+        \\off | $none ;
     );
 }
 
