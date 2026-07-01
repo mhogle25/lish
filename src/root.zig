@@ -100,4 +100,5 @@ test {
     _ = highlight;
     _ = repl;
     _ = @import("stdlib_test.zig");
+    _ = @import("boundary_test.zig");
 }

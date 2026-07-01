@@ -278,9 +278,8 @@ fn powerCheckedOp(args: Args) ExecError!?Value {
     return accumulator;
 }
 
-// A negative exponent has magnitude < 1 for |base| > 1, so it truncates toward
-// zero (integer semantics, like `/`); base 1/-1 are their own reciprocals and
-// base 0 is lenient 0. Shared by every integer power path (checked/sat/wrap).
+// Negative exponent: |base^exp| < 1 for |base| > 1, so it truncates to 0 (like `/`);
+// base 1/-1 are their own reciprocals. Shared by all integer power paths.
 fn intPowNegExp(base: i64, exp: i64) i64 {
     return switch (base) {
         1 => 1,
@@ -289,41 +288,42 @@ fn intPowNegExp(base: i64, exp: i64) i64 {
     };
 }
 
-// Exact integer exponentiation by squaring, entirely in i64. int ** int is
-// integer math: detouring through f64 (as std.math.pow forces) both loses
-// precision past 2^53 and traps on overflow, so we multiply directly. Returns
-// null on i64 overflow; callers turn that into saturation (the `**` default) or
-// $none (the `**?` checked form).
+// Exact integer exponentiation by squaring; null on i64 overflow. The direct i64
+// multiply avoids the f64 round-trip, which loses precision past 2^53 and traps.
 fn intPowChecked(base: i64, exp: i64) ?i64 {
     if (exp < 0) return intPowNegExp(base, exp);
+
     var result: i64 = 1;
     var b = base;
     var e = exp;
+
     while (e > 0) : (e >>= 1) {
         if (e & 1 == 1) result = std.math.mul(i64, result, b) catch return null;
         if (e > 1) b = std.math.mul(i64, b, b) catch return null;
     }
+
     return result;
 }
 
-// Saturating integer power: on overflow, pin to the i64 bound matching the true
-// result's sign (negative only when the base is negative and the exponent odd).
+// On overflow, pin to the i64 bound matching the result's sign.
 fn intPowSat(base: i64, exp: i64) i64 {
     return intPowChecked(base, exp) orelse
         if (base < 0 and @mod(exp, 2) != 0) std.math.minInt(i64) else std.math.maxInt(i64);
 }
 
-// Wrapping integer power: multiplies modulo 2^64 (wraps on overflow), mirroring
-// `*%`. Modular exponentiation at the fixed 2^64 modulus, NOT arbitrary `a^b mod m`.
+// Exponentiation modulo 2^64 (wraps), mirroring `*%`; not arbitrary `a^b mod m`.
 fn intPowWrap(base: i64, exp: i64) i64 {
     if (exp < 0) return intPowNegExp(base, exp);
+
     var result: i64 = 1;
     var b = base;
     var e = exp;
+
     while (e > 0) : (e >>= 1) {
         if (e & 1 == 1) result *%= b;
         if (e > 1) b *%= b;
     }
+
     return result;
 }
 
@@ -369,13 +369,19 @@ fn shiftRightOp(args: Args) ExecError!?Value {
 // A negative distance shifts the opposite direction (symmetric); a distance at
 // or beyond the bit width saturates to 0 (via std.math.shl/shr).
 fn shlInt(base: i64, dist: i64) i64 {
-    if (dist < 0) return shrInt(base, -dist);
-    return std.math.shl(i64, base, @as(u64, @intCast(dist)));
+    if (dist < 0) return std.math.shr(i64, base, shiftAmount(dist));
+    return std.math.shl(i64, base, shiftAmount(dist));
 }
 
 fn shrInt(base: i64, dist: i64) i64 {
-    if (dist < 0) return shlInt(base, -dist);
-    return std.math.shr(i64, base, @as(u64, @intCast(dist)));
+    if (dist < 0) return std.math.shl(i64, base, shiftAmount(dist));
+    return std.math.shr(i64, base, shiftAmount(dist));
+}
+
+// |dist| as u64; `-dist` would overflow on minInt, so negate in the u64 domain.
+fn shiftAmount(dist: i64) u64 {
+    const bits: u64 = @bitCast(dist);
+    return if (dist < 0) ~bits +% 1 else bits;
 }
 
 

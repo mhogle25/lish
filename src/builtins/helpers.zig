@@ -72,9 +72,8 @@ pub fn intFold(
     return accumulator;
 }
 
-/// Left-fold integer-only arguments with a checked `int_op` that returns null on
-/// overflow. On overflow the whole operation yields `$none` (lish null) so the
-/// caller composes recovery with `or`/`given`/`panic`. Mirrors `intFold`.
+/// Like `intFold` but the `int_op` returns null on overflow, in which case the
+/// whole fold yields `$none` (so the caller recovers via `or`/`given`/`panic`).
 pub fn checkedIntFold(
     args: Args,
     int_op: *const fn (i64, i64) ?i64,

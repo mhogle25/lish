@@ -243,16 +243,14 @@ fn rangeOp(args: Args) ExecError!?Value {
     var items = std.ArrayListUnmanaged(?Value).empty;
 
     var current = start;
-    if (step > 0) {
-        while (current <= end) : (current += step) {
-            try helpers.checkListLength(args, items.items.len + 1);
-            try items.append(alloc, .{ .int = current });
-        }
-    } else {
-        while (current >= end) : (current += step) {
-            try helpers.checkListLength(args, items.items.len + 1);
-            try items.append(alloc, .{ .int = current });
-        }
+    while (true) {
+        const done = if (step > 0) current > end else current < end;
+        if (done) break;
+        try helpers.checkListLength(args, items.items.len + 1);
+        try items.append(alloc, .{ .int = current });
+
+        // Stop rather than trap when the next step would overflow past the endpoint.
+        current = std.math.add(i64, current, step) catch break;
     }
 
     return .{ .list = items.items };
@@ -278,16 +276,14 @@ fn untilOp(args: Args) ExecError!?Value {
     var items = std.ArrayListUnmanaged(?Value).empty;
 
     var current = start;
-    if (step > 0) {
-        while (current < end) : (current += step) {
-            try helpers.checkListLength(args, items.items.len + 1);
-            try items.append(alloc, .{ .int = current });
-        }
-    } else {
-        while (current > end) : (current += step) {
-            try helpers.checkListLength(args, items.items.len + 1);
-            try items.append(alloc, .{ .int = current });
-        }
+    while (true) {
+        const done = if (step > 0) current >= end else current <= end;
+        if (done) break;
+        try helpers.checkListLength(args, items.items.len + 1);
+        try items.append(alloc, .{ .int = current });
+
+        // Stop rather than trap when the next step would overflow past the i64 bound.
+        current = std.math.add(i64, current, step) catch break;
     }
 
     return .{ .list = items.items };

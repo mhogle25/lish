@@ -160,17 +160,16 @@ pub fn toCondition(condition: bool) ?Value {
     return if (condition) some() else NONE;
 }
 
-/// Saturating, non-panicking f64 -> i64. A raw `@intFromFloat` traps (crashing
-/// the host) on a non-finite or out-of-range float; this clamps instead: NaN maps
-/// to 0, values at or beyond the i64 bounds saturate to them. Matches lish's
-/// lenient numeric conventions (division by zero -> 0, over-width shift -> 0): a
-/// coercion never aborts the process.
+/// Saturating f64 -> i64: NaN -> 0, out-of-range clamps to the i64 bounds. A raw
+/// `@intFromFloat` would trap on those, and a coercion must never abort the host.
 pub fn floatToInt(float_val: f64) i64 {
     if (std.math.isNan(float_val)) return 0;
+
     const max_f: f64 = @floatFromInt(std.math.maxInt(i64));
     const min_f: f64 = @floatFromInt(std.math.minInt(i64));
     if (float_val >= max_f) return std.math.maxInt(i64);
     if (float_val <= min_f) return std.math.minInt(i64);
+
     return @intFromFloat(float_val);
 }
 

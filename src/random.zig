@@ -45,10 +45,16 @@ fn randomF64(io: std.Io) f64 {
 }
 
 fn randomIntRangeAtMost(io: std.Io, comptime T: type, at_least: T, at_most: T) T {
-    const range = @as(u64, @intCast(at_most - at_least)) +| 1;
-    if (range == 0) return at_least;
-    const r = randomU64(io) % range;
-    return at_least + @as(T, @intCast(r));
+    // `at_most - at_least` overflows for a signed span wider than i64 max, so work
+    // in the unsigned domain: bit-cast and subtract (exact since at_most >= at_least).
+    const U = std.meta.Int(.unsigned, @bitSizeOf(T));
+    const lo: U = @bitCast(at_least);
+    const span: U = @as(U, @bitCast(at_most)) -% lo;
+
+    const range = @as(u64, span) +| 1; // inclusive count; saturates for the full 2^64 range
+    const r: U = @intCast(randomU64(io) % range);
+
+    return @bitCast(lo +% r);
 }
 
 fn randomIntRangeLessThan(io: std.Io, comptime T: type, at_least: T, less_than: T) T {
