@@ -201,6 +201,37 @@ test "let: shadow does not leak past inner body" {
     try std.testing.expectEqual(@as(i64, 15), result.?.int);
 }
 
+test "dispatch: computed head via sub-expression" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // The head is evaluated: (concat "co" "ncat") -> "concat", then called.
+    const result = try testing.evalWithBuiltins(arena.allocator(), "(concat \"co\" \"ncat\") \"f\" \"oo\"");
+    try std.testing.expectEqualStrings("foo", result.?.string);
+}
+
+test "dispatch: scope thunk as head resolves a bound op name" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try testing.evalWithBuiltins(arena.allocator(), "let op \"concat\" (:op \"f\" \"oo\")");
+    try std.testing.expectEqualStrings("foo", result.?.string);
+}
+
+test "dispatch: computed scope key" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // The : key is evaluated: (concat "h" "p") -> "hp", looked up in scope.
+    const result = try testing.evalWithBuiltins(arena.allocator(), "let hp 42 :(concat \"h\" \"p\")");
+    try std.testing.expectEqual(@as(i64, 42), result.?.int);
+}
+
+test "dispatch: indirect scope key" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // ::k -- inner :k yields "hp", the outer : looks that up (cf. bash ${!name}).
+    const result = try testing.evalWithBuiltins(arena.allocator(), "let hp 42 (let k \"hp\" ::k)");
+    try std.testing.expectEqual(@as(i64, 42), result.?.int);
+}
+
 test "let: sibling proc expressions do not see binding" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

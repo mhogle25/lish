@@ -39,6 +39,17 @@ Quoted strings support escape sequences:
 say $some :myVar
 ```
 
+A call's head and a `:` key are both *evaluated*, so either can be computed instead
+of literal. The head resolves against operations/macros; the `:` key resolves
+against scope bindings. Each can be a bare name, a `(...)` sub-expression, or a `:`
+reference, composed freely:
+```
+(concat "co" "ncat") "f" "oo"      ## computed head: builds the name "concat", then calls it -> "foo"
+let op "concat" (:op "f" "oo")     ## dispatch an operation named by a binding -> "foo"
+let hp 42 :(concat "h" "p")        ## computed scope key -> 42
+let hp 42 (let k "hp" ::k)         ## indirect: :k is "hp", the outer : looks that up -> 42 (cf. bash ${!name})
+```
+
 Lists and blocks (`[...]` is sugar for `list`, `{...}` is sugar for `proc`):
 ```
 [1 2 3]
@@ -74,6 +85,7 @@ setbit n b | | :n (<< 1 :b) ;   ## header `|`, then the body's bitwise-OR `|`
 
 - `$term`: single-term expression (evaluates the term as a zero-argument call)
 - `:name`: scope thunk (looks up a named entry in the current scope; used to access macro parameters)
+- Computed dispatch: a call's head and a `:` key are evaluated, so either can be a `(...)` or `:` expression, not just a literal name (head -> operations/macros, `:` key -> scope bindings)
 - `[...]`: list sugar
 - `{...}`: block sugar (desugars to `proc`; evaluates each sub-expression in order, returns the last)
 - `name params | body ;`: macro definition (`|` separates header from body, `;` terminates the body)
