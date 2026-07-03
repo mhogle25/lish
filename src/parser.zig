@@ -283,8 +283,9 @@ pub const Parser = struct {
     }
 
     fn intLiteral(self: *Parser) Allocator.Error!*AstNode {
-        const parsed_int = std.fmt.parseInt(i64, self.token.lexeme, 10) catch {
-            return self.logicalErr("An unexpected numeric token was encountered");
+        const parsed_int = std.fmt.parseInt(i64, self.token.lexeme, 10) catch |err| switch (err) {
+            error.Overflow => return self.logicalErrFmt("Integer literal {s} is out of range for a 64-bit integer (max 9223372036854775807); write it with a decimal point for an approximate float", self.token.lexeme),
+            error.InvalidCharacter => return self.logicalErrFmt("Malformed integer literal {s}", self.token.lexeme),
         };
 
         return ast.makeValueLiteral(self.allocator, .{ .start = self.token.start, .end = self.token.end }, .{ .int = parsed_int });
@@ -292,7 +293,7 @@ pub const Parser = struct {
 
     fn floatLiteral(self: *Parser) Allocator.Error!*AstNode {
         const parsed_float = std.fmt.parseFloat(f64, self.token.lexeme) catch {
-            return self.logicalErr("An unexpected numeric token was encountered");
+            return self.logicalErrFmt("Malformed float literal {s}", self.token.lexeme);
         };
 
         return ast.makeValueLiteral(self.allocator, .{ .start = self.token.start, .end = self.token.end }, .{ .float = parsed_float });
@@ -687,6 +688,11 @@ pub const Parser = struct {
         return ast.makeLogicalErr(self.allocator, .{ .start = self.token.start, .end = self.token.end }, message);
     }
 
+    fn logicalErrFmt(self: *Parser, comptime fmt: []const u8, arg: []const u8) Allocator.Error!*AstNode {
+        const message = try std.fmt.allocPrint(self.allocator, fmt, .{arg});
+        return ast.makeLogicalErr(self.allocator, .{ .start = self.token.start, .end = self.token.end }, message);
+    }
+
     fn expressionNestingErr(self: *Parser) Allocator.Error!*AstNode {
         return self.syntaxErr("Expression nesting threshold reached");
     }
@@ -837,6 +843,29 @@ test "parse empty input produces error" {
     const node = try parse(arena.allocator(), "");
     try std.testing.expect(node.body == .expression);
     try std.testing.expect(node.body.expression.id.body == .err);
+}
+
+test "parse: integer literal past i64 max is an out-of-range error naming the value" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const node = try parse(arena.allocator(), "9223372036854775808");
+    const id = node.body.expression.id;
+    try std.testing.expect(id.body == .err);
+
+    const message = id.body.err.message;
+    try std.testing.expect(std.mem.indexOf(u8, message, "9223372036854775808") != null);
+    try std.testing.expect(std.mem.indexOf(u8, message, "out of range") != null);
+}
+
+test "parse: i64 max itself still parses cleanly" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const node = try parse(arena.allocator(), "9223372036854775807");
+    const id = node.body.expression.id;
+    try std.testing.expect(id.body == .value_literal);
+    try std.testing.expectEqual(@as(i64, std.math.maxInt(i64)), id.body.value_literal.int);
 }
 
 test "parse with eof_at stops at macro terminator" {
