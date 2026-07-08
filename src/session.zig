@@ -14,6 +14,9 @@ const MacroDirResult = process_mod.MacroDirResult;
 const RegistryFragment = process_mod.RegistryFragment;
 const ValidationError = validation_mod.ValidationError;
 
+/// Default eval-arena capacity retained across resets (SessionConfig.eval_retain_limit).
+pub const DEFAULT_EVAL_RETAIN_LIMIT: usize = 4 * 1024 * 1024;
+
 /// When transient runtime values (the eval arena) are reclaimed.
 pub const EvalReset = enum {
     /// Reset before every execute(): a result is valid only until the next
@@ -37,6 +40,9 @@ pub const SessionConfig = struct {
     stderr: ?*std.Io.Writer = null,
     bounds: exec_mod.Bounds = .{},
     eval_reset: EvalReset = .per_execute,
+    /// Eval-arena capacity kept warm across resets; growth beyond it is released
+    /// back to the OS. Null retains everything (footprint stays at the worst run).
+    eval_retain_limit: ?usize = DEFAULT_EVAL_RETAIN_LIMIT,
 };
 
 pub const Session = struct {
@@ -47,6 +53,7 @@ pub const Session = struct {
     parse_arena: std.heap.ArenaAllocator, // persistent: cached parses
     eval_arena: std.heap.ArenaAllocator, // transient: reset each execute()
     eval_reset: EvalReset,
+    eval_retain_limit: ?usize,
     session_allocator: Allocator,
 
     pub fn init(allocator: Allocator, config: SessionConfig) !Session {
@@ -71,6 +78,7 @@ pub const Session = struct {
             .parse_arena = std.heap.ArenaAllocator.init(allocator),
             .eval_arena = std.heap.ArenaAllocator.init(allocator),
             .eval_reset = config.eval_reset,
+            .eval_retain_limit = config.eval_retain_limit,
             .session_allocator = allocator,
         };
 
@@ -110,7 +118,7 @@ pub const Session = struct {
 
     fn prepareEnv(self: *Session) void {
         if (self.eval_reset == .per_execute) {
-            _ = self.eval_arena.reset(.retain_capacity); // reclaim the previous execution's transients
+            self.reclaimEvalArena(); // reclaim the previous execution's transients
         }
         self.env.registry = &self.registry;
         self.env.allocator = self.eval_arena.allocator();
@@ -137,7 +145,15 @@ pub const Session = struct {
     /// Reclaim transient runtime values (the eval arena). Automatic in the default
     /// per_execute mode; call this explicitly under .manual when done with a batch.
     pub fn resetEval(self: *Session) void {
-        _ = self.eval_arena.reset(.retain_capacity);
+        self.reclaimEvalArena();
+    }
+
+    fn reclaimEvalArena(self: *Session) void {
+        const mode: std.heap.ArenaAllocator.ResetMode = if (self.eval_retain_limit) |limit|
+            .{ .retain_with_limit = limit }
+        else
+            .retain_capacity;
+        _ = self.eval_arena.reset(mode);
     }
 
     /// Clear the cache and reset the parse arena (cached parses). Transient runtime
@@ -265,4 +281,37 @@ test "session: manual eval reset keeps results alive across executions" {
     session.resetEval();
     const after = (try session.execute("range 0 3")).ok.?;
     try std.testing.expectEqual(@as(i64, 0), (try after.getL())[0].?.int);
+}
+
+test "session: eval arena shrinks back to the retain limit after a big run" {
+    const limit = 256 * 1024;
+    var session = try Session.init(std.testing.allocator, .{
+        .io = std.Io.failing,
+        .fragments = &.{&builtins.registerAll},
+        .eval_retain_limit = limit,
+    });
+    defer session.deinit();
+
+    // A big run inflates the arena well past the limit.
+    _ = try session.execute("range 0 100000");
+    try std.testing.expect(session.eval_arena.queryCapacity() > limit);
+
+    // The next execute's reset releases everything beyond the limit.
+    _ = try session.execute("+ 1 2");
+    try std.testing.expect(session.eval_arena.queryCapacity() <= limit);
+}
+
+test "session: null retain limit keeps the high-water mark" {
+    var session = try Session.init(std.testing.allocator, .{
+        .io = std.Io.failing,
+        .fragments = &.{&builtins.registerAll},
+        .eval_retain_limit = null,
+    });
+    defer session.deinit();
+
+    _ = try session.execute("range 0 100000");
+    const peak = session.eval_arena.queryCapacity();
+
+    _ = try session.execute("+ 1 2");
+    try std.testing.expectEqual(peak, session.eval_arena.queryCapacity());
 }
