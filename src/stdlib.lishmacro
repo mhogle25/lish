@@ -124,7 +124,7 @@ between lo hi v |
 
 ## numeric: $some when v is an int or float.
 numeric v |
-   or (is (type :v) "int") (is (type :v) "float") ;
+   or (is (type :v) int) (is (type :v) float) ;
 
 ## blank: $some when s is empty or whitespace-only.
 blank s |
