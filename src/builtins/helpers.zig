@@ -4,26 +4,31 @@ const val = @import("../value.zig");
 
 const Value = val.Value;
 const Args = exec.Args;
+const Env = exec.Env;
 const ExecError = exec.ExecError;
 
-pub const OUT_OF_SPACE_MESSAGE = "ran out of space while getting the string";
+/// getS into `buf`, failing loud with a self-diagnosing .out_of_space error
+/// naming the op, the value's type, and the buffer size.
+pub fn getString(env: *Env, op_name: []const u8, value: Value, buf: []u8) error{RuntimeError}![]const u8 {
+    return value.getS(buf) catch env.failFmt(.out_of_space, "'{s}': a {s} does not fit in the {d}-byte string buffer", .{ op_name, value.typeName(), buf.len });
+}
 
 /// Fail if `n` exceeds env.bounds.max_list_length.
 /// No-op when the bound is null (unlimited).
-pub fn checkListLength(args: Args, n: usize) ExecError!void {
-    if (args.env.bounds.max_list_length) |limit| {
+pub fn checkListLength(env: *Env, n: usize) ExecError!void {
+    if (env.bounds.max_list_length) |limit| {
         if (n > limit) {
-            return args.env.failFmt(.invalid_argument, "List length {d} exceeds limit {d}", .{ n, limit });
+            return env.failFmt(.invalid_argument, "List length {d} exceeds limit {d}", .{ n, limit });
         }
     }
 }
 
 /// Fail if `n` (in bytes) exceeds env.bounds.max_string_length.
 /// No-op when the bound is null (unlimited).
-pub fn checkStringLength(args: Args, n: usize) ExecError!void {
-    if (args.env.bounds.max_string_length) |limit| {
+pub fn checkStringLength(env: *Env, n: usize) ExecError!void {
+    if (env.bounds.max_string_length) |limit| {
         if (n > limit) {
-            return args.env.failFmt(.invalid_argument, "String length {d} exceeds limit {d}", .{ n, limit });
+            return env.failFmt(.invalid_argument, "String length {d} exceeds limit {d}", .{ n, limit });
         }
     }
 }

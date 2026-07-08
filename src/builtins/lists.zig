@@ -120,7 +120,7 @@ pub fn register(registry: *Registry, allocator: Allocator) Allocator.Error!void 
 }
 
 fn listOp(args: Args) ExecError!?Value {
-    try helpers.checkListLength(args, args.count());
+    try helpers.checkListLength(args.env, args.count());
     const items = try args.env.allocator.alloc(?Value, args.count());
     for (0..args.count()) |i| {
         items[i] = try args.at(i).get();
@@ -135,15 +135,15 @@ fn flatOp(args: Args) ExecError!?Value {
         if (maybe_value) |value| {
             if (value == .list) {
                 for (value.list) |item| {
-                    try helpers.checkListLength(args, result.items.len + 1);
+                    try helpers.checkListLength(args.env, result.items.len + 1);
                     try result.append(args.env.allocator, item);
                 }
             } else {
-                try helpers.checkListLength(args, result.items.len + 1);
+                try helpers.checkListLength(args.env, result.items.len + 1);
                 try result.append(args.env.allocator, value);
             }
         } else {
-            try helpers.checkListLength(args, result.items.len + 1);
+            try helpers.checkListLength(args.env, result.items.len + 1);
             try result.append(args.env.allocator, null);
         }
     }
@@ -246,7 +246,7 @@ fn rangeOp(args: Args) ExecError!?Value {
     while (true) {
         const done = if (step > 0) current > end else current < end;
         if (done) break;
-        try helpers.checkListLength(args, items.items.len + 1);
+        try helpers.checkListLength(args.env, items.items.len + 1);
         try items.append(alloc, .{ .int = current });
 
         // Stop rather than trap when the next step would overflow past the endpoint.
@@ -279,7 +279,7 @@ fn untilOp(args: Args) ExecError!?Value {
     while (true) {
         const done = if (step > 0) current >= end else current <= end;
         if (done) break;
-        try helpers.checkListLength(args, items.items.len + 1);
+        try helpers.checkListLength(args.env, items.items.len + 1);
         try items.append(alloc, .{ .int = current });
 
         // Stop rather than trap when the next step would overflow past the i64 bound.
@@ -350,7 +350,7 @@ fn zipOp(args: Args) ExecError!?Value {
 
     const alloc = args.env.allocator;
     const len = @min(left.len, right.len);
-    try helpers.checkListLength(args, len);
+    try helpers.checkListLength(args.env, len);
     const pairs = try alloc.alloc(?Value, len);
     for (0..len) |i| {
         const pair = try alloc.alloc(?Value, 2);
@@ -408,7 +408,7 @@ fn flattenOp(args: Args) ExecError!?Value {
     for (0..args.count()) |i| {
         const maybe_value = try args.at(i).get();
         try flattenInto(maybe_value, &result, args.env.allocator);
-        try helpers.checkListLength(args, result.items.len);
+        try helpers.checkListLength(args.env, result.items.len);
     }
     return .{ .list = result.items };
 }
@@ -416,7 +416,7 @@ fn flattenOp(args: Args) ExecError!?Value {
 fn sortOp(args: Args) ExecError!?Value {
     try args.expectCount(1);
     const list = try args.at(0).resolveList();
-    try helpers.checkListLength(args, list.len);
+    try helpers.checkListLength(args.env, list.len);
     const alloc = args.env.allocator;
     const sorted = try alloc.dupe(?Value, list);
     std.sort.pdq(?Value, sorted, {}, helpers.naturalLessThan);
@@ -434,7 +434,7 @@ fn sortbyOp(args: Args) ExecError!?Value {
     const name     = try args.env.allocator.dupe(u8, raw_name);
 
     const list = try args.at(1).resolveList();
-    try helpers.checkListLength(args, list.len);
+    try helpers.checkListLength(args.env, list.len);
     const body = args.items[2];
     const alloc = args.env.allocator;
 
@@ -511,7 +511,7 @@ fn sortwithOp(args: Args) ExecError!?Value {
     const b_name = try args.env.allocator.dupe(u8, raw_b);
 
     const list = try args.at(2).resolveList();
-    try helpers.checkListLength(args, list.len);
+    try helpers.checkListLength(args.env, list.len);
 
     const sorted = try args.env.allocator.dupe(?Value, list);
     var ctx = SortWithContext{
@@ -540,7 +540,7 @@ fn fillbyOp(args: Args) ExecError!?Value {
         const n = n_value.getI() catch return args.env.failFmt(.type_mismatch, "'fillby' expects an integer count, got {s}", .{n_value.typeName()});
         if (n < 0) return args.env.fail(.invalid_argument, "'fillby' count cannot be negative");
 
-        try helpers.checkListLength(args, @intCast(n));
+        try helpers.checkListLength(args.env, @intCast(n));
         const items = try alloc.alloc(?Value, @intCast(n));
         for (items) |*slot| slot.* = try args.at(1).get();
         return .{ .list = items };
@@ -558,7 +558,7 @@ fn fillbyOp(args: Args) ExecError!?Value {
     const n = n_value.getI() catch return args.env.failFmt(.type_mismatch, "'fillby' expects an integer count, got {s}", .{n_value.typeName()});
     if (n < 0) return args.env.fail(.invalid_argument, "'fillby' count cannot be negative");
 
-    try helpers.checkListLength(args, @intCast(n));
+    try helpers.checkListLength(args.env, @intCast(n));
     const body  = args.items[2];
     const items = try alloc.alloc(?Value, @intCast(n));
     for (items, 0..) |*slot, idx| {

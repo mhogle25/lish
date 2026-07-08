@@ -73,7 +73,7 @@ fn mapOp(args: Args) ExecError!?Value {
     const name     = try args.env.allocator.dupe(u8, raw_name);
 
     const list = try args.at(1).resolveList();
-    try helpers.checkListLength(args, list.len);
+    try helpers.checkListLength(args.env, list.len);
     const body = args.items[2];
 
     const results = try args.env.allocator.alloc(?Value, list.len);
@@ -125,7 +125,7 @@ fn filterOp(args: Args) ExecError!?Value {
         try iter_scope.setValue(args.env.allocator, name, item);
         const result = try predicate.proc(args.env, &iter_scope);
         if (result != null) {
-            try helpers.checkListLength(args, results.items.len + 1);
+            try helpers.checkListLength(args.env, results.items.len + 1);
             try results.append(args.env.allocator, item);
         }
     }

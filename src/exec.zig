@@ -59,7 +59,7 @@ pub const ErrorCategory = enum {
     bounds_violation,          // index access out of valid range
     arithmetic,                // divide by zero, integer overflow, etc.
     invalid_argument,          // right type, unacceptable value
-    out_of_space,              // out of space
+    out_of_space,              // fixed scratch buffer exhausted
     user,                      // explicit script-raised (panic)
     internal,                  // interpreter bug / shouldn't-happen
 };
@@ -95,7 +95,7 @@ pub const Thunk = struct {
                     return env.fail(.invalid_argument, "Scope thunk ID resolved to none");
 
                 var id_buf: [256]u8 = undefined;
-                const id_string = id_value.getS(&id_buf) catch return env.fail(.out_of_space, "Ran out of space while getting an id");
+                const id_string = id_value.getS(&id_buf) catch return env.failFmt(.out_of_space, "Scope id: a {s} does not fit in the {d}-byte buffer", .{ id_value.typeName(), id_buf.len });
 
                 const entry = scope.get(id_string) orelse
                     return env.failFmt(.unknown_op, "Scope entry not found: '{s}'", .{id_string});
@@ -275,7 +275,7 @@ pub const Arg = struct {
     /// Evaluate and get as string.
     pub fn resolveString(self: Arg, buf: []u8) ExecError![]const u8 {
         const result = try self.resolve();
-        return result.getS(buf) catch return self.env.fail(.out_of_space, "Ran out of space while resolving a string");
+        return result.getS(buf) catch return self.env.failFmt(.out_of_space, "Resolved a {s} that does not fit in the {d}-byte buffer", .{ result.typeName(), buf.len });
     }
 
     /// Evaluate and get as integer.

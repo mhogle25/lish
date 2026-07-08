@@ -12,8 +12,6 @@ const Operation = exec.Operation;
 const Param = exec.Param;
 const Allocator = std.mem.Allocator;
 
-const OUT_OF_SPACE_MESSAGE = helpers.OUT_OF_SPACE_MESSAGE;
-
 const x_param = [_]Param{.{ .name = "x" }};
 
 pub fn register(registry: *Registry, allocator: Allocator) Allocator.Error!void {
@@ -83,7 +81,7 @@ fn stringOp(args: Args) ExecError!?Value {
         .string => value,
         .int, .float, .list => {
             var buf: [256]u8 = undefined;
-            const str = value.getS(&buf) catch return args.env.failFmt(.out_of_space, "'string' {s}", .{ OUT_OF_SPACE_MESSAGE });
+            const str = try helpers.getString(args.env, "string", value, &buf);
             const owned = try args.env.allocator.dupe(u8, str);
             return .{ .string = owned };
         },
@@ -105,7 +103,7 @@ fn inspectOp(args: Args) ExecError!?Value {
 
     var buf: [4096]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buf);
-    writeInspect(&writer, maybe_value) catch return args.env.fail(.string_too_large, "'inspect' output exceeded buffer");
+    writeInspect(&writer, maybe_value) catch return args.env.failFmt(.out_of_space, "'inspect' output exceeded its {d}-byte buffer", .{buf.len});
 
     const owned = try args.env.allocator.dupe(u8, writer.buffered());
     return .{ .string = owned };
