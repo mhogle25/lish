@@ -4,11 +4,12 @@ pub const TokenType = enum {
     identifier,
     int,
     float,
+
     /// The `|` that separates a macro header from its body. Emitted only in
     /// HEADER lexer mode; in BODY mode `|` is an ordinary operator/term char.
     macro_separator,
-    /// The `;` that terminates a macro body. A base wall (emitted in every mode).
     macro_break,
+    
     call_expression_symbol,
     deferred_macro_param_symbol,
     call_scope_thunk_symbol,
@@ -227,9 +228,8 @@ pub fn escSymToChar(symbol: u8) ?u8 {
 /// base walls AND the header-only `|`/`~`), so a header term can name a literal
 /// `|`/`~`/`;` via `\|`/`\~`/`\;`.
 pub fn idenEscSymToChar(symbol: u8) ?u8 {
-    return if (isHeaderWall(symbol))
-        symbol
-    else
+    return if (isHeaderWall(symbol)) 
+        symbol else
         escSymToChar(symbol);
 }
 

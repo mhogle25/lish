@@ -30,6 +30,7 @@ pub const AstMacro = struct {
     id: AstMacroId,
     parameters: []const AstMacroParam,
     body: *const AstNode,
+
     /// Docstring: the `##` comment run immediately preceding the macro's header,
     /// as a raw source slice (markers and newlines included), or "" if none.
     /// Only populated by `parseMacroModuleWithComments`; empty otherwise.
@@ -43,6 +44,7 @@ pub const AstMacroId = union(enum) {
 
 pub const MacroIdData = struct {
     name: []const u8,
+
     /// Source span of the identifier. `.synthetic` for macros built in memory
     /// (the AstBuilder) rather than parsed. Carried for tooling (the LSP).
     position: Position = .synthetic,
@@ -56,6 +58,7 @@ pub const AstMacroParam = union(enum) {
 pub const MacroParamData = struct {
     id: []const u8,
     param_type: MacroParamType,
+
     /// Source span of the parameter name (excluding any `~`). `.synthetic` for
     /// in-memory macros. Carried for tooling (the LSP).
     position: Position = .synthetic,
@@ -108,13 +111,11 @@ const MacroParser = struct {
     /// Comment sink shared with the lexer (and sub-parsers). When set, each
     /// macro's leading comment run becomes its `description`.
     comment_sink: ?CommentSink = null,
+
     /// Byte offset where the current macro's header starts (its name token),
     /// used to find its docstring.
     header_start: u32 = 0,
 
-    /// Macro grammar under Track O: `name params | body ;` (no leading `|`).
-    /// `expect_id` reads the name in HEADER mode; `in_params` reads params until
-    /// the header/body `|`; `deferred_param` reads the name after a `~`.
     const State = enum { expect_id, in_params, deferred_param };
 
     const EOF_TOKEN: Token = .{
@@ -155,7 +156,6 @@ const MacroParser = struct {
 
     fn handleExpectId(self: *MacroParser) Allocator.Error!void {
         if (isTerm(self.token.type)) {
-            // The header begins at its name (no leading `|` under Track O).
             self.header_start = self.token.start;
             const id_position: Position = .{ .start = self.token.start, .end = self.token.end };
             const identifier = try self.processIdentifier();
@@ -163,22 +163,27 @@ const MacroParser = struct {
             if (identifier) |id_str| {
                 if (self.id_set.contains(id_str)) {
                     self.current_id = .{ .err = self.errorAtToken("Duplicate macro identifier") };
-                } else {
+                } 
+                else {
                     try self.id_set.put(self.allocator, id_str, {});
                     self.current_id = .{ .valid = .{ .name = id_str, .position = id_position } };
                 }
-            } else {
+            } 
+            else {
                 self.current_id = .{ .err = self.errorAtToken("Invalid escape sequences in macro identifier") };
             }
 
             self.state = .in_params;
             self.token = self.lexer.nextToken();
-        } else if (self.token.type == .macro_separator) {
+        } 
+        else 
+        if (self.token.type == .macro_separator) {
             // Header opened straight with `|`: missing name, still parse the body.
             self.header_start = self.token.start;
             self.current_id = .{ .err = self.errorAtToken("Macro is missing an identifier") };
             try self.parseMacroBody();
-        } else {
+        } 
+        else {
             // A stray token between macros (e.g. a `;` with no preceding body);
             // skip it and keep looking for the next header.
             self.token = self.lexer.nextToken();
@@ -195,7 +200,8 @@ const MacroParser = struct {
                 try self.parameters.append(self.allocator, .{
                     .valid = .{ .id = param_id, .param_type = .value, .position = param_position },
                 });
-            } else {
+            } 
+            else {
                 try self.parameters.append(self.allocator, .{
                     .err = self.errorAtToken("Invalid escape sequences in parameter name"),
                 });
@@ -229,7 +235,8 @@ const MacroParser = struct {
                 try self.parameters.append(self.allocator, .{
                     .valid = .{ .id = param_id, .param_type = .deferred, .position = param_position },
                 });
-            } else {
+            } 
+            else {
                 try self.parameters.append(self.allocator, .{
                     .err = self.errorAtToken("Invalid escape sequences in parameter name"),
                 });
@@ -275,7 +282,8 @@ const MacroParser = struct {
             self.lexer.mode = .header;
             self.state = .expect_id;
             self.token = self.lexer.nextToken();
-        } else {
+        } 
+        else {
             // EOF terminated the final body (`;` is EOF-optional).
             self.token = EOF_TOKEN;
         }
@@ -290,7 +298,8 @@ const MacroParser = struct {
                 .description = self.docstringBefore(self.header_start),
             };
             try self.macros.append(self.allocator, .{ .macro = macro });
-        } else {
+        } 
+        else {
             try self.macros.append(self.allocator, .{
                 .err = .{
                     .message = "Macro is missing an identifier",
