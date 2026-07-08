@@ -1,5 +1,8 @@
 const std = @import("std");
 
+/// Nesting depth at which writeTo/format stop descending and emit `[ ... ]`.
+pub const MAX_DISPLAY_DEPTH: usize = 1000;
+
 /// The core value type for the shell language.
 /// Represents one of four types: string, integer, float, or list.
 pub const Value = union(enum) {
@@ -40,37 +43,17 @@ pub const Value = union(enum) {
         };
     }
 
-    pub fn getS(self: Value, buf: []u8) []const u8 {
+    pub fn getS(self: Value, buf: []u8) ![]const u8 {
         return switch (self) {
             .string => |str| str,
-            .int    => |int_val| std.fmt.bufPrint(buf, "{d}", .{int_val}) catch "?",
-            .float  => |float_val| std.fmt.bufPrint(buf, "{d}", .{float_val}) catch "?",
+            .int    => |int_val| try std.fmt.bufPrint(buf, "{d}", .{int_val}),
+            .float  => |float_val| try std.fmt.bufPrint(buf, "{d}", .{float_val}),
             .list   => {
                 var writer = std.Io.Writer.fixed(buf);
-                self.writeTo(&writer) catch return "?";
+                try self.format(&writer);
                 return writer.buffered();
             },
         };
-    }
-
-    pub fn writeTo(self: Value, writer: anytype) !void {
-        switch (self) {
-            .string => |str| try writer.writeAll(str),
-            .int    => |int_val| try writer.print("{d}", .{int_val}),
-            .float  => |float_val| try writer.print("{d}", .{float_val}),
-            .list   => |items| {
-                try writer.writeAll("[ ");
-                for (items, 0..) |item, i| {
-                    if (i > 0) try writer.writeAll(", ");
-                    if (item) |inner_val| {
-                        try inner_val.writeTo(writer);
-                    } else {
-                        try writer.writeAll(NONE_ID);
-                    }
-                }
-                try writer.writeAll(" ]");
-            },
-        }
     }
 
     pub fn getL(self: Value) error{TypeMismatch}![]const ?Value {
@@ -80,69 +63,137 @@ pub const Value = union(enum) {
         };
     }
 
-    pub fn eql(lhs: Value, rhs: Value) bool {
-        const Tag = std.meta.Tag(Value);
-        const lhs_tag: Tag = lhs;
-        const rhs_tag: Tag = rhs;
-
-        if (lhs_tag != rhs_tag) return false;
-
-        return switch (lhs) {
-            .string => |lhs_str| std.mem.eql(u8, lhs_str, rhs.string),
-            .int    => |lhs_int| lhs_int == rhs.int,
-            .float  => |lhs_float| lhs_float == rhs.float,
-            .list   => |lhs_items| {
-                const rhs_items = rhs.list;
-                if (lhs_items.len != rhs_items.len) return false;
-                for (lhs_items, rhs_items) |lhs_item, rhs_item| {
-                    const lhs_exists = lhs_item != null;
-                    const rhs_exists = rhs_item != null;
-                    if (lhs_exists != rhs_exists) return false;
-                    if (lhs_exists and rhs_exists) {
-                        if (!eql(lhs_item.?, rhs_item.?)) return false;
-                    }
-                }
-                return true;
-            },
-        };
-    }
-
-    /// Deep-copy into `allocator` so the value outlives the arena it was produced
-    /// in. Scalars pass through by value; strings and lists are copied recursively.
-    /// Use this to keep a result past the next session execute().
-    pub fn dupe(self: Value, allocator: std.mem.Allocator) std.mem.Allocator.Error!Value {
-        return switch (self) {
-            .int, .float => self,
-            .string => |str| .{ .string = try allocator.dupe(u8, str) },
-            .list => |items| blk: {
-                const copy = try allocator.alloc(?Value, items.len);
-                for (items, copy) |item, *dst| {
-                    dst.* = if (item) |inner| try inner.dupe(allocator) else null;
-                }
-                break :blk .{ .list = copy };
-            },
-        };
-    }
-
-    pub fn format(self: Value, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+    fn writeToDepth(self: Value, writer: *std.Io.Writer, depth: usize) std.Io.Writer.Error!void {
         switch (self) {
             .string => |str| try writer.writeAll(str),
             .int    => |int_val| try writer.print("{d}", .{int_val}),
             .float  => |float_val| try writer.print("{d}", .{float_val}),
             .list   => |items| {
+                if (depth >= MAX_DISPLAY_DEPTH) {
+                    try writer.writeAll("[ ... ]");
+                    return;
+                }
+
                 try writer.writeAll("[ ");
                 for (items, 0..) |item, i| {
-                    if (i > 0) try writer.writeAll(", ");
+                    if (i > 0) {
+                        try writer.writeAll(", ");
+                    }
+
                     if (item) |inner_val| {
-                        try inner_val.format(writer);
+                        try inner_val.writeToDepth(writer, depth + 1);
                     } else {
                         try writer.writeAll(NONE_ID);
                     }
                 }
+
                 try writer.writeAll(" ]");
             },
         }
     }
+
+    /// Deep structural equality. Scalar and flat-list comparisons never
+    /// allocate; nested lists are walked with a worklist from `allocator`,
+    /// so nesting depth is unbounded (no native recursion to overflow).
+    pub fn eql(lhs: Value, rhs: Value, allocator: std.mem.Allocator) std.mem.Allocator.Error!bool {
+        switch (shallowEql(lhs, rhs)) {
+            .equal     => return true,
+            .not_equal => return false,
+            .descend   => {},
+        }
+
+        var pending = std.ArrayListUnmanaged(ListPair).empty;
+        defer pending.deinit(allocator);
+
+        var current: ListPair = .{ .lhs = lhs.list, .rhs = rhs.list };
+        while (true) {
+            for (current.lhs, current.rhs) |lhs_item, rhs_item| {
+                if ((lhs_item == null) != (rhs_item == null)) return false;
+                const lhs_inner = lhs_item orelse continue;
+
+                switch (shallowEql(lhs_inner, rhs_item.?)) {
+                    .equal     => {},
+                    .not_equal => return false,
+                    .descend   => try pending.append(allocator, .{ .lhs = lhs_inner.list, .rhs = rhs_item.?.list }),
+                }
+            }
+
+            current = pending.pop() orelse return true;
+        }
+    }
+
+    /// Deep-copy into `allocator` so the value outlives the arena it was produced
+    /// in. Scalars pass through by value; strings and lists are copied. Nested
+    /// lists are walked with a worklist, so nesting depth is unbounded.
+    /// Use this to keep a result past the next session execute().
+    pub fn dupe(self: Value, allocator: std.mem.Allocator) std.mem.Allocator.Error!Value {
+        switch (self) {
+            .int, .float => return self,
+            .string => |str| return .{ .string = try allocator.dupe(u8, str) },
+            .list => {},
+        }
+
+        var pending = std.ArrayListUnmanaged(CopyTask).empty;
+        defer pending.deinit(allocator);
+
+        const root = try allocator.alloc(?Value, self.list.len);
+        var current: CopyTask = .{ .source = self.list, .destination = root };
+        while (true) {
+            for (current.source, current.destination) |item, *slot| {
+                const inner = item orelse {
+                    slot.* = null;
+                    continue;
+                };
+
+                switch (inner) {
+                    .int, .float => slot.* = inner,
+                    .string => |str| slot.* = .{ .string = try allocator.dupe(u8, str) },
+                    .list => |items| {
+                        const copy = try allocator.alloc(?Value, items.len);
+                        slot.* = .{ .list = copy };
+                        try pending.append(allocator, .{ .source = items, .destination = copy });
+                    },
+                }
+            }
+
+            current = pending.pop() orelse break;
+        }
+
+        return .{ .list = root };
+    }
+
+    /// Render for display. Lists nested past MAX_DISPLAY_DEPTH render as `[ ... ]`.
+    pub fn format(self: Value, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+        return self.writeToDepth(writer, 0);
+    }
+};
+
+/// One shallow comparison step for eql: scalars and strings settle immediately;
+/// two lists of equal length need their elements walked.
+const ShallowEql = enum { equal, not_equal, descend };
+
+fn shallowEql(lhs: Value, rhs: Value) ShallowEql {
+    const Tag = std.meta.Tag(Value);
+    const lhs_tag: Tag = lhs;
+    const rhs_tag: Tag = rhs;
+    if (lhs_tag != rhs_tag) return .not_equal;
+
+    return switch (lhs) {
+        .string => |lhs_str| if (std.mem.eql(u8, lhs_str, rhs.string)) .equal else .not_equal,
+        .int    => |lhs_int| if (lhs_int == rhs.int) .equal else .not_equal,
+        .float  => |lhs_float| if (lhs_float == rhs.float) .equal else .not_equal,
+        .list   => |lhs_items| if (lhs_items.len == rhs.list.len) .descend else .not_equal,
+    };
+}
+
+const ListPair = struct {
+    lhs: []const ?Value,
+    rhs: []const ?Value,
+};
+
+const CopyTask = struct {
+    source:      []const ?Value,
+    destination: []?Value,
 };
 
 /// The string identifier for the null/absent value in lish.
@@ -270,7 +321,7 @@ test "value float" {
 test "value string" {
     const val: Value = .{ .string = "hello" };
     var buf: [64]u8 = undefined;
-    try std.testing.expectEqualStrings("hello", val.getS(&buf));
+    try std.testing.expectEqualStrings("hello", try val.getS(&buf));
     try std.testing.expectError(error.TypeMismatch, val.getI());
 }
 
@@ -294,9 +345,9 @@ test "value equality" {
     const different: Value = .{ .int = 6 };
     const different_type: Value = .{ .string = "5" };
 
-    try std.testing.expect(first.eql(same));
-    try std.testing.expect(!first.eql(different));
-    try std.testing.expect(!first.eql(different_type));
+    try std.testing.expect(try first.eql(same, std.testing.allocator));
+    try std.testing.expect(!(try first.eql(different, std.testing.allocator)));
+    try std.testing.expect(!(try first.eql(different_type, std.testing.allocator)));
 }
 
 test "condition" {
@@ -354,4 +405,57 @@ fn freeValue(allocator: std.mem.Allocator, value: Value) void {
         },
         .int, .float => {},
     }
+}
+
+test "value: eql and dupe handle deep nesting without native recursion" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // A chain this deep overflows the native stack if any walk recurses.
+    const depth = 100_000;
+    var left: Value = .{ .int = 7 };
+    var right: Value = .{ .int = 7 };
+    var other: Value = .{ .int = 8 };
+    for (0..depth) |_| {
+        left = try wrapInList(alloc, left);
+        right = try wrapInList(alloc, right);
+        other = try wrapInList(alloc, other);
+    }
+
+    try std.testing.expect(try left.eql(right, alloc));
+    try std.testing.expect(!(try left.eql(other, alloc)));
+
+    const copy = try left.dupe(alloc);
+    try std.testing.expect(try left.eql(copy, alloc));
+}
+
+test "value: format truncates lists past MAX_DISPLAY_DEPTH" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var shallow: Value = .{ .int = 7 };
+    for (0..MAX_DISPLAY_DEPTH - 1) |_| shallow = try wrapInList(alloc, shallow);
+
+    var deep: Value = .{ .int = 7 };
+    for (0..MAX_DISPLAY_DEPTH + 5) |_| deep = try wrapInList(alloc, deep);
+
+    var shallow_buf: [8 * 1024]u8 = undefined;
+    var shallow_writer = std.Io.Writer.fixed(&shallow_buf);
+    try shallow.format(&shallow_writer);
+    try std.testing.expect(std.mem.indexOf(u8, shallow_writer.buffered(), "7") != null);
+    try std.testing.expect(std.mem.indexOf(u8, shallow_writer.buffered(), "[ ... ]") == null);
+
+    var deep_buf: [8 * 1024]u8 = undefined;
+    var deep_writer = std.Io.Writer.fixed(&deep_buf);
+    try deep.format(&deep_writer);
+    try std.testing.expect(std.mem.indexOf(u8, deep_writer.buffered(), "[ ... ]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, deep_writer.buffered(), "7") == null);
+}
+
+fn wrapInList(allocator: std.mem.Allocator, value: Value) !Value {
+    const items = try allocator.alloc(?Value, 1);
+    items[0] = value;
+    return .{ .list = items };
 }

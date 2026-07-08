@@ -370,10 +370,37 @@ fn flattenInto(maybe_value: ?Value, result: *std.ArrayListUnmanaged(?Value), all
         try result.append(alloc, value);
         return;
     }
-    for (value.list) |item| {
-        try flattenInto(item, result, alloc);
+
+    // Walk with an index-frame stack, so nesting depth is unbounded (no
+    // native recursion to overflow).
+    var stack = std.ArrayListUnmanaged(FlattenFrame).empty;
+    defer stack.deinit(alloc);
+    try stack.append(alloc, .{ .items = value.list });
+
+    while (stack.items.len > 0) {
+        const frame = &stack.items[stack.items.len - 1];
+        if (frame.index >= frame.items.len) {
+            _ = stack.pop();
+            continue;
+        }
+
+        const item = frame.items[frame.index];
+        frame.index += 1;
+
+        // Appending may grow the stack and move `frame`; it is not read again
+        // this iteration.
+        if (item != null and item.? == .list) {
+            try stack.append(alloc, .{ .items = item.?.list });
+        } else {
+            try result.append(alloc, item);
+        }
     }
 }
+
+const FlattenFrame = struct {
+    items: []const ?Value,
+    index: usize = 0,
+};
 
 fn flattenOp(args: Args) ExecError!?Value {
     try args.expectMinCount(1);
@@ -758,6 +785,14 @@ test "collection: flatten variadic" {
     defer arena.deinit();
     const result = try testing.evalWithBuiltins(arena.allocator(), "length (flatten [1 2] [3 4])");
     try std.testing.expectEqual(@as(i64, 4), result.?.int);
+}
+
+test "collection: flatten handles deep nesting without native recursion" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // A chain this deep overflows the native stack if the flatten walk recurses.
+    const result = try testing.evalWithBuiltins(arena.allocator(), "length (flatten (fold acc 0 x 100000 (list :acc)))");
+    try std.testing.expectEqual(@as(i64, 1), result.?.int);
 }
 
 test "collection: flatten vs flat" {

@@ -11,6 +11,8 @@ const Operation = exec.Operation;
 const Param = exec.Param;
 const Allocator = std.mem.Allocator;
 
+const OUT_OF_SPACE_MESSAGE = helpers.OUT_OF_SPACE_MESSAGE;
+
 const string_param = [_]Param{.{ .name = "string", .type = .string }};
 const pattern_target = [_]Param{ .{ .name = "pattern", .type = .string }, .{ .name = "target", .type = .string } };
 // `needle` is a substring (string haystack) or element (list haystack), so it stays generic.
@@ -99,7 +101,7 @@ fn concatOp(args: Args) ExecError!?Value {
         const maybe_value = try args.at(i).get();
         if (maybe_value) |value| {
             var buf: [256]u8 = undefined;
-            const str = value.getS(&buf);
+            const str = value.getS(&buf) catch return args.env.failFmt(.out_of_space, "'concat' {s}", . { OUT_OF_SPACE_MESSAGE }); 
             try helpers.checkStringLength(args, result.items.len + str.len);
             try result.appendSlice(args.env.allocator, str);
         }
@@ -122,7 +124,8 @@ fn joinOp(args: Args) ExecError!?Value {
         const maybe_value = try args.at(i).get();
         if (maybe_value) |value| {
             var buf: [256]u8 = undefined;
-            const str = value.getS(&buf);
+            const str = value.getS(&buf) catch return args.env.failFmt(.out_of_space, "'join' {s}", .{ OUT_OF_SPACE_MESSAGE });
+
             try helpers.checkStringLength(args, result.items.len + str.len);
             try result.appendSlice(args.env.allocator, str);
         }
@@ -286,7 +289,8 @@ fn formatOp(args: Args) ExecError!?Value {
             const arg_val = try args.at(arg_index).get();
             if (arg_val) |value| {
                 var buf: [256]u8 = undefined;
-                const str = value.getS(&buf);
+                const str = value.getS(&buf) catch return args.env.failFmt(.out_of_space, "'format' {s}", .{ OUT_OF_SPACE_MESSAGE });
+
                 try helpers.checkStringLength(args, result.items.len + str.len);
                 try result.appendSlice(alloc, str);
             }
@@ -331,13 +335,14 @@ fn inOp(args: Args) ExecError!?Value {
     return switch (haystack) {
         .string => |haystack_str| {
             var needle_buf: [256]u8 = undefined;
-            const needle_str = needle.getS(&needle_buf);
+            const needle_str = needle.getS(&needle_buf) catch return args.env.failFmt(.out_of_space, "'in' {s}", .{ OUT_OF_SPACE_MESSAGE });
+
             if (std.mem.indexOf(u8, haystack_str, needle_str) != null) return needle;
             return null;
         },
         .list => |items| {
             for (items) |item| {
-                if (item != null and needle.eql(item.?)) return needle;
+                if (item != null and try needle.eql(item.?, args.env.allocator)) return needle;
             }
             return null;
         },
@@ -352,13 +357,13 @@ fn findOp(args: Args) ExecError!?Value {
     return switch (haystack) {
         .string => |haystack_str| {
             var needle_buf: [256]u8 = undefined;
-            const needle_str = needle.getS(&needle_buf);
+            const needle_str = needle.getS(&needle_buf) catch return args.env.failFmt(.out_of_space, "'find' {s}", .{ OUT_OF_SPACE_MESSAGE });
             const index = std.mem.indexOf(u8, haystack_str, needle_str) orelse return null;
             return .{ .int = @intCast(index) };
         },
         .list => |items| {
             for (items, 0..) |item, i| {
-                if (item != null and needle.eql(item.?)) return .{ .int = @intCast(i) };
+                if (item != null and try needle.eql(item.?, args.env.allocator)) return .{ .int = @intCast(i) };
             }
             return null;
         },

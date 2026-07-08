@@ -59,6 +59,7 @@ pub const ErrorCategory = enum {
     bounds_violation,          // index access out of valid range
     arithmetic,                // divide by zero, integer overflow, etc.
     invalid_argument,          // right type, unacceptable value
+    out_of_space,              // out of space
     user,                      // explicit script-raised (panic)
     internal,                  // interpreter bug / shouldn't-happen
 };
@@ -94,7 +95,7 @@ pub const Thunk = struct {
                     return env.fail(.invalid_argument, "Scope thunk ID resolved to none");
 
                 var id_buf: [256]u8 = undefined;
-                const id_string = id_value.getS(&id_buf);
+                const id_string = id_value.getS(&id_buf) catch return env.fail(.out_of_space, "Ran out of space while getting an id");
 
                 const entry = scope.get(id_string) orelse
                     return env.failFmt(.unknown_op, "Scope entry not found: '{s}'", .{id_string});
@@ -196,19 +197,22 @@ const InlineEntry = struct {
 };
 
 pub const Scope = struct {
-    parent:         ?*const Scope                          = null,
-    inline_entries: [INLINE_CAP]InlineEntry                = undefined,
-    inline_count:   usize                                  = 0,
+    parent:         ?*const Scope                           = null,
+    inline_entries: [INLINE_CAP]InlineEntry                 = undefined,
+    inline_count:   usize                                   = 0,
     overflow:       ?std.StringHashMapUnmanaged(ScopeEntry) = null,
 
     pub fn get(self: *const Scope, key: []const u8) ?ScopeEntry {
         for (self.inline_entries[0..self.inline_count]) |*entry| {
             if (std.mem.eql(u8, entry.key, key)) return entry.entry;
         }
+
         if (self.overflow) |map| {
             if (map.get(key)) |entry| return entry;
         }
+
         if (self.parent) |parent| return parent.get(key);
+
         return null;
     }
 
@@ -229,6 +233,7 @@ pub const Scope = struct {
             self.inline_count += 1;
             return;
         }
+
         try self.spillToOverflow(allocator);
         try self.overflow.?.put(allocator, key, entry);
     }
@@ -270,7 +275,7 @@ pub const Arg = struct {
     /// Evaluate and get as string.
     pub fn resolveString(self: Arg, buf: []u8) ExecError![]const u8 {
         const result = try self.resolve();
-        return result.getS(buf);
+        return result.getS(buf) catch return self.env.fail(.out_of_space, "Ran out of space while resolving a string");
     }
 
     /// Evaluate and get as integer.

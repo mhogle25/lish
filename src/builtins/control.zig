@@ -83,7 +83,7 @@ fn matchOp(args: Args) ExecError!?Value {
         const matches = if (target == null and pattern == null)
             true
         else if (target != null and pattern != null)
-            target.?.eql(pattern.?)
+            try target.?.eql(pattern.?, args.env.allocator)
         else
             false;
 

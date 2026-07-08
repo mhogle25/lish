@@ -101,7 +101,7 @@ fn isOp(args: Args) ExecError!?Value {
     for (values[1..]) |other| {
         if (first == null and other == null) continue;
         if (first == null or other == null) return null;
-        if (!first.?.eql(other.?)) return null;
+        if (!(try first.?.eql(other.?, args.env.allocator))) return null;
     }
     return first orelse val.some();
 }
@@ -112,7 +112,7 @@ fn isntOp(args: Args) ExecError!?Value {
     const right = try args.at(1).get();
 
     if (left == null and right == null) return null;
-    if (left != null and right != null and left.?.eql(right.?)) return null;
+    if (left != null and right != null and try left.?.eql(right.?, args.env.allocator)) return null;
     return left orelse val.some();
 }
 
@@ -202,5 +202,17 @@ test "comparison: compare incompatible types returns none" {
     defer arena.deinit();
     const result = try testing.evalWithBuiltins(arena.allocator(), "compare 1 \"hello\"");
     try std.testing.expect(result == null);
+}
+
+test "comparison: is compares deeply nested values without native recursion" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // Chains this deep overflow the native stack if the compare recurses.
+    const equal = try testing.evalWithBuiltins(arena.allocator(), "is (fold acc 0 x 50000 (list :acc)) (fold acc 0 x 50000 (list :acc))");
+    try std.testing.expect(equal != null);
+
+    const differs = try testing.evalWithBuiltins(arena.allocator(), "is (fold acc 0 x 50000 (list :acc)) (fold acc 1 x 50000 (list :acc))");
+    try std.testing.expect(differs == null);
 }
 

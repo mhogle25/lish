@@ -6,6 +6,7 @@ const Value = val.Value;
 const Args = exec.Args;
 const ExecError = exec.ExecError;
 
+pub const OUT_OF_SPACE_MESSAGE = "ran out of space while getting the string";
 
 /// Fail if `n` exceeds env.bounds.max_list_length.
 /// No-op when the bound is null (unlimited).

@@ -33,7 +33,7 @@ pub fn writeResult(writer: *std.Io.Writer, value: value_mod.Value) std.Io.Writer
     try writer.writeAll("=> ");
     switch (value) {
         .string => |str| try writer.print("\"{s}\"", .{str}),
-        else => try value.writeTo(writer),
+        else => try value.format(writer),
     }
 }
 

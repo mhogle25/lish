@@ -2,6 +2,7 @@ const std = @import("std");
 const exec = @import("../exec.zig");
 const val = @import("../value.zig");
 const tok = @import("../token.zig");
+const helpers = @import("helpers.zig");
 
 const Value = val.Value;
 const Args = exec.Args;
@@ -11,10 +12,13 @@ const Operation = exec.Operation;
 const Param = exec.Param;
 const Allocator = std.mem.Allocator;
 
+const OUT_OF_SPACE_MESSAGE = helpers.OUT_OF_SPACE_MESSAGE;
+
 const x_param = [_]Param{.{ .name = "x" }};
 
 pub fn register(registry: *Registry, allocator: Allocator) Allocator.Error!void {
     const g = registry.group(allocator, "types");
+
     try g.register("type", Operation.fromFn(typeOp, .{
         .signature = .{ .params = &x_param, .returns = .string },
         .description = "Name of a value's type: int, float, string, list, or none.",
@@ -79,7 +83,7 @@ fn stringOp(args: Args) ExecError!?Value {
         .string => value,
         .int, .float, .list => {
             var buf: [256]u8 = undefined;
-            const str = value.getS(&buf);
+            const str = value.getS(&buf) catch return args.env.failFmt(.out_of_space, "'string' {s}", .{ OUT_OF_SPACE_MESSAGE });
             const owned = try args.env.allocator.dupe(u8, str);
             return .{ .string = owned };
         },
