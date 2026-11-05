@@ -69,6 +69,7 @@ File extensions used by lish:
 | `fuel`              | `$off`  | Maximum total expression evaluations per top-level execute. Halts long-running scripts with a fuel-exhausted error. Positive integer to enable, `$off` for unlimited. |
 | `max-list-length`   | `$off`  | Maximum element count for any list constructed at runtime (`range`, `fill`, `map`, `filter`, etc.). Positive integer to enable, `$off` for unlimited. |
 | `max-string-length` | `$off`  | Maximum byte length for any string constructed at runtime (`concat`, `join`, `format`, `replace`). Positive integer to enable, `$off` for unlimited. |
+| `max-eval-bytes`    | `$off`  | Maximum total bytes one evaluation may allocate. Halts runaway allocation with a memory-exhausted error instead of growing until the OS kills the process. Positive integer to enable, `$off` for unlimited. |
 
 The config file is evaluated as a single lish expression. Use `proc` to sequence multiple settings:
 

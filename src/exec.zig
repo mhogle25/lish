@@ -50,6 +50,7 @@ pub const SourceId = union(enum) {
 /// exhausted" from "type mismatch" without parsing the message text.
 pub const ErrorCategory = enum {
     fuel_exhausted,            // bounds: fuel
+    memory_exhausted,          // bounds: max_eval_bytes
     recursion_depth_exceeded,  // bounds: call depth
     list_too_large,            // bounds: max_list_length
     string_too_large,          // bounds: max_string_length
@@ -672,6 +673,10 @@ pub const Bounds = struct {
     /// Null = unlimited. The host resets this counter before each execute.
     fuel: ?usize = null,
 
+    /// Maximum bytes the eval allocator may hand out per top-level evaluation.
+    /// Enforced by EvalQuota (Session wires it). Null = unlimited.
+    max_eval_bytes: ?usize = null,
+
     /// Maximum element count for any list constructed at runtime
     /// (`list`, `range`, `until`, `fill`, `fillby`, `map`, `filter`, `flat`,
     /// `flatten`, `zip`, `sort`, `sortby`, `sortwith`, `split`, `reduce`).
@@ -682,6 +687,70 @@ pub const Bounds = struct {
     /// (`concat`, `join`, `format`, `replace`, `reverse`, `string`).
     /// Null = unlimited.
     max_string_length: ?usize = null,
+};
+
+/// Headroom past max_eval_bytes so the budget-exhausted error can still format.
+const EVAL_BUDGET_GRACE: usize = 4 * 1024;
+
+/// Counting allocator enforcing Bounds.max_eval_bytes: wrap the eval arena with
+/// this (Session does) so a runaway evaluation fails cleanly instead of growing
+/// until the OS kills the process.
+pub const EvalQuota = struct {
+    backing: Allocator,
+    env: *Env,
+
+    pub fn allocator(self: *EvalQuota) Allocator {
+        return .{ .ptr = self, .vtable = &vtable };
+    }
+
+    const vtable: Allocator.VTable = .{
+        .alloc = alloc,
+        .resize = resize,
+        .remap = remap,
+        .free = free,
+    };
+
+    fn denies(self: *EvalQuota, additional: usize) bool {
+        const limit = self.env.bounds.max_eval_bytes orelse return false;
+        if (self.env.eval_bytes_used + additional <= limit + EVAL_BUDGET_GRACE) return false;
+
+        self.env.memory_budget_tripped = true;
+        return true;
+    }
+
+    fn alloc(context: *anyopaque, len: usize, alignment: std.mem.Alignment, ret_addr: usize) ?[*]u8 {
+        const self: *EvalQuota = @ptrCast(@alignCast(context));
+        if (self.denies(len)) return null;
+
+        const result = self.backing.rawAlloc(len, alignment, ret_addr);
+        if (result != null) self.env.eval_bytes_used += len;
+        return result;
+    }
+
+    fn resize(context: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) bool {
+        const self: *EvalQuota = @ptrCast(@alignCast(context));
+        const growth = new_len -| memory.len;
+        if (growth > 0 and self.denies(growth)) return false;
+
+        const resized = self.backing.rawResize(memory, alignment, new_len, ret_addr);
+        if (resized) self.env.eval_bytes_used += growth;
+        return resized;
+    }
+
+    fn remap(context: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
+        const self: *EvalQuota = @ptrCast(@alignCast(context));
+        const growth = new_len -| memory.len;
+        if (growth > 0 and self.denies(growth)) return null;
+
+        const result = self.backing.rawRemap(memory, alignment, new_len, ret_addr);
+        if (result != null) self.env.eval_bytes_used += growth;
+        return result;
+    }
+
+    fn free(context: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ret_addr: usize) void {
+        const self: *EvalQuota = @ptrCast(@alignCast(context));
+        self.backing.rawFree(memory, alignment, ret_addr);
+    }
 };
 
 // Env
@@ -705,6 +774,12 @@ pub const Env = struct {
     /// `bounds.fuel` at the start of each top-level execute.
     /// Null = unlimited (no decrement, no check).
     fuel_remaining: ?usize = null,
+
+    /// Bytes handed out by the eval allocator this evaluation (see EvalQuota).
+    eval_bytes_used: usize = 0,
+
+    /// Set when EvalQuota denies an allocation over bounds.max_eval_bytes.
+    memory_budget_tripped: bool = false,
 
     /// Source position of the Thunk currently being evaluated. Updated on
     /// every Thunk.proc entry, restored on exit. Read by env.fail to attach
@@ -762,7 +837,12 @@ pub const Env = struct {
             fuel.* -= 1;
         }
 
-        // Resolution lives in the active unit's slot array; the AST is never written.
+        if (self.bounds.max_eval_bytes) |limit| {
+            if (self.eval_bytes_used > limit) {
+                return self.failFmt(.memory_exhausted, "Memory budget exhausted ({d} bytes allocated, max {d})", .{ self.eval_bytes_used, limit });
+            }
+        }
+
         if (expression.site >= self.unit_slots.len) return self.dispatchDynamic(expression, scope);
 
         const slot = &self.unit_slots[expression.site];

@@ -17,6 +17,7 @@ const op_max_call_depth    = "max-call-depth";
 const op_fuel              = "fuel";
 const op_max_list_length   = "max-list-length";
 const op_max_string_length = "max-string-length";
+const op_max_eval_bytes    = "max-eval-bytes";
 const op_indent_width      = "indent-width";
 const op_history_size      = "history-size";
 const op_prompt            = "prompt";
@@ -164,6 +165,22 @@ fn maxStringLengthOp(config: *ReplConfig, args: exec_mod.Args) exec_mod.ExecErro
     return null;
 }
 
+fn maxEvalBytesOp(config: *ReplConfig, args: exec_mod.Args) exec_mod.ExecError!?value_mod.Value {
+    const value = try (try args.single()).get();
+    if (value == null) {
+        config.bounds.max_eval_bytes = null;
+        return null;
+    }
+
+    const n = value.?.getI() catch return args.env.failFmt(.type_mismatch, "{s} expects an integer or $off, got {s}", .{ op_max_eval_bytes, value.?.typeName() });
+
+    if (n < 1) return args.env.fail(.invalid_argument, op_max_eval_bytes ++ " must be a positive integer");
+
+    config.bounds.max_eval_bytes = @intCast(n);
+
+    return null;
+}
+
 fn macrosOp(config: *ReplConfig, args: exec_mod.Args) exec_mod.ExecError!?value_mod.Value {
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const path = try (try args.single()).resolveString(&path_buf);
@@ -291,6 +308,11 @@ pub fn registerConfigOps(registry: *exec_mod.Registry, config: *ReplConfig, allo
     try g.register(op_max_string_length, exec_mod.Operation.fromBoundFn(ReplConfig, maxStringLengthOp, config, .{
         .signature = .{ .params = &n_off, .returns = .none },
         .description = "REPL config: maximum string length, or $off to disable.",
+    }));
+
+    try g.register(op_max_eval_bytes, exec_mod.Operation.fromBoundFn(ReplConfig, maxEvalBytesOp, config, .{
+        .signature = .{ .params = &n_off, .returns = .none },
+        .description = "REPL config: maximum bytes one evaluation may allocate, or $off to disable.",
     }));
 
     try g.register("macros", exec_mod.Operation.fromBoundFn(ReplConfig, macrosOp, config, .{

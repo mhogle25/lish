@@ -54,6 +54,7 @@ pub const Session = struct {
     eval_arena: std.heap.ArenaAllocator, // transient: reset each execute()
     eval_reset: EvalReset,
     eval_retain_limit: ?usize,
+    eval_quota: exec_mod.EvalQuota,
     session_allocator: Allocator,
 
     pub fn init(allocator: Allocator, config: SessionConfig) !Session {
@@ -79,6 +80,7 @@ pub const Session = struct {
             .eval_arena = std.heap.ArenaAllocator.init(allocator),
             .eval_reset = config.eval_reset,
             .eval_retain_limit = config.eval_retain_limit,
+            .eval_quota = undefined, // set in prepareEnv via self pointer
             .session_allocator = allocator,
         };
 
@@ -120,11 +122,14 @@ pub const Session = struct {
         if (self.eval_reset == .per_execute) {
             self.reclaimEvalArena(); // reclaim the previous execution's transients
         }
+        self.eval_quota = .{ .backing = self.eval_arena.allocator(), .env = &self.env };
         self.env.registry = &self.registry;
-        self.env.allocator = self.eval_arena.allocator();
+        self.env.allocator = self.eval_quota.allocator();
         self.env.runtime_error = null;
         self.env.call_depth = 0;
         self.env.fuel_remaining = self.env.bounds.fuel;
+        self.env.eval_bytes_used = 0;
+        self.env.memory_budget_tripped = false;
     }
 
     /// Load macro files from a directory.
@@ -314,4 +319,48 @@ test "session: null retain limit keeps the high-water mark" {
 
     _ = try session.execute("+ 1 2");
     try std.testing.expectEqual(peak, session.eval_arena.queryCapacity());
+}
+
+test "session: max_eval_bytes turns gradual runaway allocation into a runtime error" {
+    var session = try Session.init(std.testing.allocator, .{
+        .io = std.Io.failing,
+        .fragments = &.{&builtins.registerAll},
+        .bounds = .{ .max_eval_bytes = 64 * 1024 },
+    });
+    defer session.deinit();
+
+    const result = try session.execute("fold acc 0 x 1000000 (list :acc :x)");
+    switch (result) {
+        .runtime_err => |err| try std.testing.expectEqual(exec_mod.ErrorCategory.memory_exhausted, err.category),
+        else => return error.TestUnexpectedResult,
+    }
+
+    const ok = try session.execute("+ 1 2");
+    try std.testing.expectEqual(@as(i64, 3), ok.ok.?.int);
+}
+
+test "session: max_eval_bytes denies one oversized allocation cleanly" {
+    var session = try Session.init(std.testing.allocator, .{
+        .io = std.Io.failing,
+        .fragments = &.{&builtins.registerAll},
+        .bounds = .{ .max_eval_bytes = 64 * 1024 },
+    });
+    defer session.deinit();
+
+    const result = try session.execute("range 0 1000000");
+    switch (result) {
+        .runtime_err => |err| try std.testing.expectEqual(exec_mod.ErrorCategory.memory_exhausted, err.category),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "session: null max_eval_bytes leaves big evaluations alone" {
+    var session = try Session.init(std.testing.allocator, .{
+        .io = std.Io.failing,
+        .fragments = &.{&builtins.registerAll},
+    });
+    defer session.deinit();
+
+    const result = try session.execute("length (range 0 100000)");
+    try std.testing.expectEqual(@as(i64, 100001), result.ok.?.int);
 }
