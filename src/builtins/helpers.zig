@@ -7,9 +7,13 @@ const Args = exec.Args;
 const Env = exec.Env;
 const ExecError = exec.ExecError;
 
-/// getS into `buf`, failing loud with a self-diagnosing .out_of_space error
-/// naming the op, the value's type, and the buffer size.
-pub fn getString(env: *Env, op_name: []const u8, value: Value, buf: []u8) error{RuntimeError}![]const u8 {
+pub fn getString(env: *Env, op_name: []const u8, value: Value, buf: []u8) ExecError![]const u8 {
+    if (value == .list) {
+        return value.sourceText(env.allocator, env.bounds.max_string_length) catch |err| switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            error.StringTooLarge => env.failFmt(.string_too_large, "'{s}': list text longer than max_string_length ({d})", .{ op_name, env.bounds.max_string_length.? }),
+        };
+    }
     return value.getS(buf) catch env.failFmt(.out_of_space, "'{s}': a {s} does not fit in the {d}-byte string buffer", .{ op_name, value.typeName(), buf.len });
 }
 

@@ -1,7 +1,6 @@
 const std = @import("std");
 const exec = @import("../exec.zig");
 const val = @import("../value.zig");
-const tok = @import("../token.zig");
 const helpers = @import("helpers.zig");
 
 const Value = val.Value;
@@ -100,48 +99,13 @@ fn stringOp(args: Args) ExecError!?Value {
 fn inspectOp(args: Args) ExecError!?Value {
     try args.expectCount(1);
     const maybe_value = try args.at(0).get();
+    const value = maybe_value orelse return .{ .string = val.NONE_SOURCE };
 
-    var buf: [4096]u8 = undefined;
-    var writer = std.Io.Writer.fixed(&buf);
-    writeInspect(&writer, maybe_value) catch return args.env.failFmt(.out_of_space, "'inspect' output exceeded its {d}-byte buffer", .{buf.len});
-
-    const owned = try args.env.allocator.dupe(u8, writer.buffered());
-    return .{ .string = owned };
-}
-
-fn writeInspect(writer: *std.Io.Writer, maybe_value: ?Value) !void {
-    const value = maybe_value orelse {
-        try writer.writeAll("$none");
-        return;
+    const text = value.sourceText(args.env.allocator, args.env.bounds.max_string_length) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.StringTooLarge => return args.env.failFmt(.string_too_large, "'inspect': output longer than max_string_length ({d})", .{args.env.bounds.max_string_length.?}),
     };
-    switch (value) {
-        .string => |s| try writeQuoted(writer, s),
-        .int => |n| try writer.print("{d}", .{n}),
-        .float => |x| try writer.print("{d}", .{x}),
-        .list => |items| {
-            try writer.writeByte(tok.LIST_OPEN);
-            for (items, 0..) |item, i| {
-                if (i > 0) try writer.writeByte(' ');
-                try writeInspect(writer, item);
-            }
-            try writer.writeByte(tok.LIST_CLOSE);
-        },
-    }
-}
-
-fn writeQuoted(writer: *std.Io.Writer, s: []const u8) !void {
-    try writer.writeByte(tok.QUOTE_DOUBLE);
-    for (s) |c| {
-        switch (c) {
-            tok.QUOTE_DOUBLE    => try writer.writeAll("\\\""),
-            tok.BACKSLASH       => try writer.writeAll("\\\\"),
-            tok.NEWLINE         => try writer.writeAll("\\n"),
-            tok.CARRIAGE_RETURN => try writer.writeAll("\\r"),
-            tok.TAB             => try writer.writeAll("\\t"),
-            else => try writer.writeByte(c),
-        }
-    }
-    try writer.writeByte(tok.QUOTE_DOUBLE);
+    return .{ .string = text };
 }
 
 fn typeOp(args: Args) ExecError!?Value {
@@ -221,6 +185,20 @@ test "type conversion: string from none" {
     defer arena.deinit();
     const result = try testing.evalWithBuiltins(arena.allocator(), "string $none");
     try std.testing.expect(result == null);
+}
+
+test "type conversion: string renders a list as source text" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try testing.evalWithBuiltins(arena.allocator(), "string [1 \"a\" $none]");
+    try std.testing.expectEqualStrings("[1 \"a\" $none]", result.?.string);
+}
+
+test "type conversion: string of a big list is not capped by the scratch buffer" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try testing.evalWithBuiltins(arena.allocator(), "length (string (range 0 200))");
+    try std.testing.expect(result.?.int > 256);
 }
 
 test "type inspection: int" {

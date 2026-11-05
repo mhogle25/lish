@@ -670,6 +670,13 @@ test "string: format missing arg leaves placeholder empty" {
     try std.testing.expectEqualStrings("ab", result.?.string);
 }
 
+test "string: concat renders list arguments as source text" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try testing.evalWithBuiltins(arena.allocator(), "concat \"scores: \" [1 2 3]");
+    try std.testing.expectEqualStrings("scores: [1 2 3]", result.?.string);
+}
+
 test "find: substring match" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

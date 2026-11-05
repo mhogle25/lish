@@ -1,6 +1,7 @@
 const std = @import("std");
+const tok = @import("token.zig");
 
-/// Nesting depth at which writeTo/format stop descending and emit `[ ... ]`.
+/// Nesting depth at which format stops descending and emits `[ ... ]`.
 pub const MAX_DISPLAY_DEPTH: usize = 1000;
 
 /// The core value type for the shell language.
@@ -63,33 +64,74 @@ pub const Value = union(enum) {
         };
     }
 
-    fn writeToDepth(self: Value, writer: *std.Io.Writer, depth: usize) std.Io.Writer.Error!void {
+    fn writeSourceDepth(self: Value, writer: *std.Io.Writer, depth: usize) std.Io.Writer.Error!void {
         switch (self) {
-            .string => |str| try writer.writeAll(str),
-            .int    => |int_val| try writer.print("{d}", .{int_val}),
-            .float  => |float_val| try writer.print("{d}", .{float_val}),
-            .list   => |items| {
+            .string, .int, .float => try writeScalarSource(writer, self),
+            .list => |items| {
                 if (depth >= MAX_DISPLAY_DEPTH) {
                     try writer.writeAll("[ ... ]");
                     return;
                 }
 
-                try writer.writeAll("[ ");
+                try writer.writeByte(tok.LIST_OPEN);
                 for (items, 0..) |item, i| {
-                    if (i > 0) {
-                        try writer.writeAll(", ");
-                    }
+                    if (i > 0) try writer.writeByte(' ');
 
                     if (item) |inner_val| {
-                        try inner_val.writeToDepth(writer, depth + 1);
+                        try inner_val.writeSourceDepth(writer, depth + 1);
                     } else {
-                        try writer.writeAll(NONE_ID);
+                        try writeNoneSource(writer);
                     }
                 }
-
-                try writer.writeAll(" ]");
+                try writer.writeByte(tok.LIST_CLOSE);
             },
         }
+    }
+
+    pub fn sourceText(self: Value, allocator: std.mem.Allocator, max_length: ?usize) error{ OutOfMemory, StringTooLarge }![]const u8 {
+        var out = std.Io.Writer.Allocating.init(allocator);
+        errdefer out.deinit();
+        const writer = &out.writer;
+
+        switch (self) {
+            .list => {},
+            else => {
+                writeScalarSource(writer, self) catch return error.OutOfMemory;
+                try checkSourceLength(out.written().len, max_length);
+                return out.toOwnedSlice();
+            },
+        }
+
+        var stack = std.ArrayListUnmanaged(SourceFrame).empty;
+        defer stack.deinit(allocator);
+        writer.writeByte(tok.LIST_OPEN) catch return error.OutOfMemory;
+        try stack.append(allocator, .{ .items = self.list });
+
+        while (stack.items.len > 0) {
+            const frame = &stack.items[stack.items.len - 1];
+            if (frame.index >= frame.items.len) {
+                writer.writeByte(tok.LIST_CLOSE) catch return error.OutOfMemory;
+                _ = stack.pop();
+                try checkSourceLength(out.written().len, max_length);
+                continue;
+            }
+
+            if (frame.index > 0) writer.writeByte(' ') catch return error.OutOfMemory;
+            const item = frame.items[frame.index];
+            frame.index += 1;
+
+            if (item != null and item.? == .list) {
+                writer.writeByte(tok.LIST_OPEN) catch return error.OutOfMemory;
+                try stack.append(allocator, .{ .items = item.?.list });
+            } else if (item) |inner| {
+                writeScalarSource(writer, inner) catch return error.OutOfMemory;
+            } else {
+                writeNoneSource(writer) catch return error.OutOfMemory;
+            }
+            try checkSourceLength(out.written().len, max_length);
+        }
+
+        return out.toOwnedSlice();
     }
 
     /// Deep structural equality. Scalar and flat-list comparisons never
@@ -164,8 +206,47 @@ pub const Value = union(enum) {
 
     /// Render for display. Lists nested past MAX_DISPLAY_DEPTH render as `[ ... ]`.
     pub fn format(self: Value, writer: *std.Io.Writer) std.Io.Writer.Error!void {
-        return self.writeToDepth(writer, 0);
+        return self.writeSourceDepth(writer, 0);
     }
+};
+
+fn writeScalarSource(writer: *std.Io.Writer, value: Value) std.Io.Writer.Error!void {
+    switch (value) {
+        .string => |str| try writeQuotedString(writer, str),
+        .int    => |int_val| try writer.print("{d}", .{int_val}),
+        .float  => |float_val| try writer.print("{d}", .{float_val}),
+        .list   => unreachable,
+    }
+}
+
+fn writeQuotedString(writer: *std.Io.Writer, s: []const u8) std.Io.Writer.Error!void {
+    try writer.writeByte(tok.QUOTE_DOUBLE);
+    for (s) |c| {
+        switch (c) {
+            tok.QUOTE_DOUBLE    => try writer.writeAll("\\\""),
+            tok.BACKSLASH       => try writer.writeAll("\\\\"),
+            tok.NEWLINE         => try writer.writeAll("\\n"),
+            tok.CARRIAGE_RETURN => try writer.writeAll("\\r"),
+            tok.TAB             => try writer.writeAll("\\t"),
+            else => try writer.writeByte(c),
+        }
+    }
+    try writer.writeByte(tok.QUOTE_DOUBLE);
+}
+
+fn writeNoneSource(writer: *std.Io.Writer) std.Io.Writer.Error!void {
+    try writer.writeAll(NONE_SOURCE);
+}
+
+fn checkSourceLength(length: usize, max_length: ?usize) error{StringTooLarge}!void {
+    if (max_length) |limit| {
+        if (length > limit) return error.StringTooLarge;
+    }
+}
+
+const SourceFrame = struct {
+    items: []const ?Value,
+    index: usize = 0,
 };
 
 /// One shallow comparison step for eql: scalars and strings settle immediately;
@@ -198,6 +279,9 @@ const CopyTask = struct {
 
 /// The string identifier for the null/absent value in lish.
 pub const NONE_ID = "none";
+
+/// Source spelling of the absent value (`$none`).
+pub const NONE_SOURCE = std.fmt.comptimePrint("{c}{s}", .{ tok.EXPRESSION_SINGLE, NONE_ID });
 
 /// Truthy/falsy convention: "some" is truthy, null is falsy.
 pub const SOME: Value = .{ .string = "some" };
@@ -458,4 +542,37 @@ fn wrapInList(allocator: std.mem.Allocator, value: Value) !Value {
     const items = try allocator.alloc(?Value, 1);
     items[0] = value;
     return .{ .list = items };
+}
+
+test "value: format renders source style with quoting and $none" {
+    const items = [_]?Value{ .{ .int = 1 }, .{ .string = "a b" }, null };
+    const value: Value = .{ .list = &items };
+
+    var buf: [64]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    try value.format(&writer);
+    try std.testing.expectEqualStrings("[1 \"a b\" $none]", writer.buffered());
+
+    var string_buf: [64]u8 = undefined;
+    var string_writer = std.Io.Writer.fixed(&string_buf);
+    try (Value{ .string = "quote \" and \\ and\n" }).format(&string_writer);
+    try std.testing.expectEqualStrings("\"quote \\\" and \\\\ and\\n\"", string_writer.buffered());
+}
+
+test "value: sourceText matches format and is depth-unbounded" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const items = [_]?Value{ .{ .int = 1 }, .{ .string = "a" }, null };
+    const small: Value = .{ .list = &items };
+    try std.testing.expectEqualStrings("[1 \"a\" $none]", try small.sourceText(alloc, null));
+
+    var deep: Value = .{ .int = 7 };
+    for (0..100_000) |_| deep = try wrapInList(alloc, deep);
+    const text = try deep.sourceText(alloc, null);
+    try std.testing.expectEqual(@as(usize, 200_001), text.len);
+    try std.testing.expectEqual(@as(u8, '7'), text[100_000]);
+
+    try std.testing.expectError(error.StringTooLarge, deep.sourceText(alloc, 10));
 }

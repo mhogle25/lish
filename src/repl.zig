@@ -32,10 +32,7 @@ const n_off = [_]Param{.{ .name = "n", .type = .{ .one_of = &.{ .int, .none } } 
 /// runner so they stay consistent.
 pub fn writeResult(writer: *std.Io.Writer, value: value_mod.Value) std.Io.Writer.Error!void {
     try writer.writeAll("=> ");
-    switch (value) {
-        .string => |str| try writer.print("\"{s}\"", .{str}),
-        else => try value.format(writer),
-    }
+    try value.format(writer);
 }
 
 /// Maximum size of the REPL config file read from `~/.config/lish/config`.
@@ -423,6 +420,19 @@ pub fn runRepl(
 
 
 const testing = std.testing;
+
+test "writeResult renders source style" {
+    var buf: [64]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    try writeResult(&writer, .{ .string = "hi" });
+    try std.testing.expectEqualStrings("=> \"hi\"", writer.buffered());
+
+    const items = [_]?value_mod.Value{ .{ .int = 1 }, .{ .string = "a" }, null };
+    var list_buf: [64]u8 = undefined;
+    var list_writer = std.Io.Writer.fixed(&list_buf);
+    try writeResult(&list_writer, .{ .list = &items });
+    try std.testing.expectEqualStrings("=> [1 \"a\" $none]", list_writer.buffered());
+}
 
 test "applyConfig sets indent-width, history-size, and prompt" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
