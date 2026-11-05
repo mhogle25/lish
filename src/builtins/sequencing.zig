@@ -49,7 +49,6 @@ fn loopOp(args: Args) ExecError!?Value {
         return null;
     }
 
-    // 3-arg form: name, count, body, name is bound to the iteration index.
     var iter_scope = exec.Scope{ .parent = args.scope };
     defer iter_scope.deinit(args.env.allocator);
 
@@ -78,13 +77,11 @@ fn whileOp(args: Args) ExecError!?Value {
     return null;
 }
 
-
 const testing = @import("testing.zig");
 
 test "sequencing: proc" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // proc evaluates all args, returns the last
     const result = try testing.evalWithBuiltins(arena.allocator(), "proc 1 2 3");
     try std.testing.expectEqual(@as(i64, 3), result.?.int);
 }
@@ -92,9 +89,6 @@ test "sequencing: proc" {
 test "block literal as proc" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // {expr1 expr2} is sugar for (proc expr1 expr2)
-    // At top level: the block becomes a sub-expression whose result is the top-level ID
-    // So we use it as an arg: proc {1 2 3} evaluates the block (returns 3)
     const result = try testing.evalWithBuiltins(arena.allocator(), "proc {1 2 3}");
     try std.testing.expectEqual(@as(i64, 3), result.?.int);
 }
@@ -130,8 +124,6 @@ test "loop: negative count errors" {
 test "loop: with index binding" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // Use a fillby to capture the iteration indices via a parallel structure.
-    // Here we just verify the loop accepts the binding form and runs without error.
     const result = try testing.evalWithBuiltins(arena.allocator(), "loop i 3 :i");
     try std.testing.expect(result == null);
 }
@@ -139,7 +131,6 @@ test "loop: with index binding" {
 test "loop: binding accumulates via outer let" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // Use fillby with the index to verify indices are 0..n-1.
     const result = try testing.evalWithBuiltins(arena.allocator(), "fillby i 4 :i");
     const items = result.?.list;
     try std.testing.expectEqual(@as(usize, 4), items.len);
@@ -170,4 +161,3 @@ test "while: re-evaluates condition" {
         "length (fillby 3 (proc (while $none 1) 7))");
     try std.testing.expectEqual(@as(i64, 3), result.?.int);
 }
-

@@ -41,7 +41,6 @@ const SingleTermResult = struct {
     closing_match_depth: i32 = NO_PENDING_CLOSURE,
 };
 
-/// Parse a source string into an AST node.
 pub fn parse(allocator: Allocator, source: []const u8) Allocator.Error!*AstNode {
     var expression_parser = Parser.init(allocator, &.{});
     return expression_parser.get(source);
@@ -55,8 +54,6 @@ pub const ParseWithComments = struct {
     comments: []const tok.CommentSpan,
 };
 
-/// Like `parse`, but also returns every comment span in source order. The
-/// comment list is allocated from `allocator` alongside the AST.
 pub fn parseWithComments(allocator: Allocator, source: []const u8) Allocator.Error!ParseWithComments {
     var comments: std.ArrayListUnmanaged(tok.CommentSpan) = .empty;
     var expression_parser = Parser.init(allocator, &.{});
@@ -64,7 +61,6 @@ pub fn parseWithComments(allocator: Allocator, source: []const u8) Allocator.Err
     return .{ .root = root, .comments = comments.items };
 }
 
-/// Parse using an existing lexer (for macro parser integration).
 pub fn parseFromLexer(allocator: Allocator, lexer: *Lexer, eof_at: []const TokenType) Allocator.Error!ParserResult {
     var expression_parser = Parser.init(allocator, eof_at);
     return expression_parser.getFromLexer(lexer);
@@ -107,8 +103,6 @@ pub const Parser = struct {
         return self.topLevelExpression(1);
     }
 
-    /// Same as `get`, but with a comment sink attached before the first token
-    /// so leading comments are captured too.
     pub fn getWithComments(self: *Parser, source: []const u8, sink: lex_mod.CommentSink) Allocator.Error!*AstNode {
         self.lexer = .{ .source = source, .comment_sink = sink };
         self.token = self.lexer.nextToken();
@@ -127,7 +121,6 @@ pub const Parser = struct {
             .last_token_start = self.token.start,
         };
     }
-
 
     fn topLevelExpression(self: *Parser, nested_count: usize) Allocator.Error!*AstNode {
         if (nested_count > tok.MAX_EXPRESSION_NESTING)
@@ -241,7 +234,6 @@ pub const Parser = struct {
         };
     }
 
-
     fn identifierLiteral(self: *Parser) Allocator.Error!*AstNode {
         return self.textLiteral(tok.idenEscSymToChar);
     }
@@ -278,7 +270,7 @@ pub const Parser = struct {
         const owned = try self.allocator.dupe(u8, self.string_buf.items);
 
         const node = try ast.makeValueLiteral(self.allocator, .{ .start = self.token.start, .end = self.token.end }, .{ .string = owned });
-        node.quote = self.token.quote; // the delimiter for a string literal, null for an identifier
+        node.quote = self.token.quote;
         return node;
     }
 
@@ -298,7 +290,6 @@ pub const Parser = struct {
 
         return ast.makeValueLiteral(self.allocator, .{ .start = self.token.start, .end = self.token.end }, .{ .float = parsed_float });
     }
-
 
     fn handleTopLevel(self: *Parser, nested_count_start: usize) Allocator.Error!usize {
         var expr_count: usize = 0;
@@ -358,7 +349,6 @@ pub const Parser = struct {
 
         return expr_count;
     }
-
 
     const ClosureInfo = struct {
         expr_count: usize,
@@ -570,7 +560,6 @@ pub const Parser = struct {
         return false;
     }
 
-
     fn makeSingleTermNode(self: *Parser, nested_count_start: usize) Allocator.Error!SingleTermResult {
         var nested_count = nested_count_start;
         return switch (self.token.type) {
@@ -632,7 +621,6 @@ pub const Parser = struct {
         };
     }
 
-
     fn isEof(self: *const Parser) bool {
         if (self.token.type == .eof) return true;
 
@@ -651,7 +639,6 @@ pub const Parser = struct {
 
         return false;
     }
-
 
     fn stackPush(self: *Parser, node: *AstNode) Allocator.Error!void {
         return self.node_stack.append(self.allocator, node);
@@ -673,7 +660,6 @@ pub const Parser = struct {
 
         return args;
     }
-
 
     fn syntaxErr(self: *Parser, message: []const u8) Allocator.Error!*AstNode {
         return ast.makeSyntaxErr(self.allocator, .{ .start = self.token.start, .end = self.token.end }, message);
@@ -713,7 +699,6 @@ fn singleTermResult(node: *AstNode) SingleTermResult {
     return .{ .node = node };
 }
 
-
 test "parse simple identifier" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -745,7 +730,6 @@ test "parse parenthesized sub-expression" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    // At top level, parens create a sub-expression that becomes the ID
     const node = try parse(arena.allocator(), "(+ 1 2)");
 
     try std.testing.expect(node.body == .expression);
@@ -872,7 +856,6 @@ test "parse with eof_at stops at macro terminator" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    // Body parses in BODY mode and stops at `;` (the macro body terminator).
     var lexer = Lexer{ .source = "+ 1 2 ;next" };
     const result = try parseFromLexer(arena.allocator(), &lexer, &.{.macro_break});
 
@@ -887,7 +870,6 @@ test "body mode parses | and ~ as operator terms" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    // `| :a :b` is the bitwise-or op applied to two scope refs (no macro here).
     const node = try parse(arena.allocator(), "| :a :b");
     try std.testing.expect(node.body == .expression);
     const expr = node.body.expression;
@@ -914,13 +896,11 @@ test "quote field distinguishes a string literal from a bare identifier" {
     defer arena.deinit();
     const a = arena.allocator();
 
-    // Bare identifier: same value payload, but no quote.
     const id_root = try parse(a, "foo");
     const id_node = id_root.body.expression.id;
     try std.testing.expectEqualStrings("foo", id_node.body.value_literal.string);
     try std.testing.expectEqual(@as(?u8, null), id_node.quote);
 
-    // Quoted string: identical value payload, but the quote records the delimiter.
     const str_root = try parse(a, "\"foo\"");
     const str_node = str_root.body.expression.id;
     try std.testing.expectEqualStrings("foo", str_node.body.value_literal.string);

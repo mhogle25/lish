@@ -9,11 +9,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
     });
 
-    // Cross-language artifact generator. Reflects over `src/token.zig` and emits
-    // the character/escape mirrors the tree-sitter build vendors in via its own
-    // sync step. Run with `zig build gen`; not part of the default build (output
-    // is committed). Op/macro metadata is not emitted here; it is registry-derived
-    // and obtained on demand via `lish --dump-ops` / `lish.introspect`.
+    // Cross-language artifact generator
     const gen_exe = b.addExecutable(.{
         .name = "gen",
         .root_module = b.createModule(.{
@@ -71,9 +67,7 @@ pub fn build(b: *std.Build) void {
     });
     const run_cli_tests = b.addRunArtifact(cli_tests);
 
-    // Scanner corpus: enforces the shared lexical-boundary contract documented
-    // in src/scanner_corpus/. Cases are pulled in via @embedFile so no
-    // filesystem access is needed at test time.
+    // Scanner corpus
     const corpus_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/scanner_corpus_test.zig"),

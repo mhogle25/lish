@@ -11,15 +11,10 @@ const Value = val_mod.Value;
 
 pub const SerializeError = error{InvalidNode};
 
-/// Serialize an AST node to lish source. The node is treated as a top-level
-/// expression, no surrounding parens are emitted even if it contains nested
-/// sub-expressions.
 pub fn serializeExpression(node: *const AstNode, writer: anytype) !void {
     try serializeNode(node, writer, false);
 }
 
-/// Serialize a single macro definition to lish source.
-/// Emits: name param1 ~deferred2 | body ;
 pub fn serializeMacro(macro: AstMacro, writer: anytype) !void {
     switch (macro.id) {
         .valid => |id_data| try writer.writeAll(id_data.name),
@@ -43,7 +38,6 @@ pub fn serializeMacro(macro: AstMacro, writer: anytype) !void {
     try writer.writeByte(tok.MACRO_BREAK);
 }
 
-/// Serialize a slice of macro definitions as a .lishmacro module, one per line.
 pub fn serializeMacroModule(macros: []const AstMacro, writer: anytype) !void {
     for (macros, 0..) |macro, idx| {
         if (idx > 0) try writer.writeByte(tok.NEWLINE);
@@ -51,14 +45,11 @@ pub fn serializeMacroModule(macros: []const AstMacro, writer: anytype) !void {
     }
 }
 
-
 fn serializeNode(node: *const AstNode, writer: anytype, nested: bool) anyerror!void {
     switch (node.body) {
         .value_literal => |v| try serializeValue(v, writer, nested),
         .scope_thunk => |id_node| {
             try writer.writeByte(tok.SCOPE_THUNK);
-            // The id_node is almost always a value_literal.string, emit it bare.
-            // Fall back to full node serialization for unusual cases.
             switch (id_node.body) {
                 .value_literal => |v| switch (v) {
                     .string => |name| try writer.writeAll(name),
@@ -73,15 +64,12 @@ fn serializeNode(node: *const AstNode, writer: anytype, nested: bool) anyerror!v
 }
 
 fn serializeExprNode(expr: AstExpression, writer: anytype, nested: bool) anyerror!void {
-    // $term, single-term expression, no parens regardless of nesting
     if (expr.meta.meta_type == .single_term) {
         try writer.writeByte(tok.EXPRESSION_SINGLE);
         try serializeNode(expr.id, writer, false);
         return;
     }
 
-    // All other expression types (standard, top_level, list_literal, block_literal)
-    // are serialized in desugared form. Parens are added when nested.
     if (nested) try writer.writeByte(tok.EXPRESSION_OPEN);
     try serializeNode(expr.id, writer, true);
     for (expr.args) |arg| {
@@ -97,8 +85,6 @@ fn serializeValue(v: Value, writer: anytype, nested: bool) anyerror!void {
         .int => |int_val| try writer.print("{d}", .{int_val}),
         .float => |float_val| try writer.print("{d}", .{float_val}),
         .list => |items| {
-            // Desugared form: list item1 item2 ...
-            // Parens needed when nested so the parser can delimit it.
             if (nested) try writer.writeByte(tok.EXPRESSION_OPEN);
             try writer.writeAll(ast_mod.LIST_ID);
             for (items) |maybe_item| {
@@ -149,15 +135,13 @@ fn needsQuoting(str: []const u8) bool {
     return looksLikeNumber(str);
 }
 
-/// Returns true if the string would be lexed as an int or float token,
-/// meaning it must be quoted to preserve its string identity.
 fn looksLikeNumber(str: []const u8) bool {
     if (str.len == 0) return false;
 
     var idx: usize = 0;
     if (str[idx] == tok.NEGATIVE_SIGN) {
         idx += 1;
-        if (idx >= str.len) return false; // lone "-" is a valid identifier
+        if (idx >= str.len) return false;
     }
 
     var has_dot = false;
@@ -169,15 +153,14 @@ fn looksLikeNumber(str: []const u8) bool {
         } else if (char == tok.DECIMAL_POINT and !has_dot) {
             has_dot = true;
         } else {
-            return false; // non-numeric character, safe bare word
+            return false;
         }
     }
 
     if (digit_count == 0) return false;
-    if (str[str.len - 1] == tok.DECIMAL_POINT) return false; // trailing dot -> lexed as identifier
+    if (str[str.len - 1] == tok.DECIMAL_POINT) return false;
     return true;
 }
-
 
 const parser_mod = @import("parser.zig");
 const Allocator = std.mem.Allocator;
@@ -196,26 +179,23 @@ fn expectSerializedMacro(macro: AstMacro, expected: []const u8) !void {
     try std.testing.expectEqualStrings(expected, writer.buffered());
 }
 
-
 test "quoting: bare words don't need quotes" {
     try std.testing.expect(!needsQuoting("hello"));
     try std.testing.expect(!needsQuoting("+"));
     try std.testing.expect(!needsQuoting("*"));
     try std.testing.expect(!needsQuoting("my-op"));
     try std.testing.expect(!needsQuoting("snake_case"));
-    try std.testing.expect(!needsQuoting("-")); // lone dash is valid identifier
-    try std.testing.expect(!needsQuoting("5.")); // trailing dot -> identifier
+    try std.testing.expect(!needsQuoting("-"));
+    try std.testing.expect(!needsQuoting("5."));
 }
 
 test "quoting: reserved chars require quotes" {
-    try std.testing.expect(needsQuoting("hello world")); // space
-    try std.testing.expect(needsQuoting("a(b")); // reserved
-    try std.testing.expect(needsQuoting("a:b")); // reserved
-    try std.testing.expect(needsQuoting("a;b")); // `;` is a base wall (macro terminator)
-    try std.testing.expect(needsQuoting("")); // empty
+    try std.testing.expect(needsQuoting("hello world"));
+    try std.testing.expect(needsQuoting("a(b"));
+    try std.testing.expect(needsQuoting("a:b"));
+    try std.testing.expect(needsQuoting("a;b"));
+    try std.testing.expect(needsQuoting(""));
 
-    // `|` and `~` are body operators, not base walls: a bare `|`/`~`/`a|b` term
-    // round-trips as-is, so it must NOT be quoted (Track O).
     try std.testing.expect(!needsQuoting("|"));
     try std.testing.expect(!needsQuoting("~"));
     try std.testing.expect(!needsQuoting("a|b"));
@@ -226,9 +206,8 @@ test "quoting: numbers require quotes" {
     try std.testing.expect(needsQuoting("3.14"));
     try std.testing.expect(needsQuoting("-7"));
     try std.testing.expect(needsQuoting("-2.5"));
-    try std.testing.expect(!needsQuoting("1abc")); // not a pure number
+    try std.testing.expect(!needsQuoting("1abc"));
 }
-
 
 test "serialize: int literal" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -293,7 +272,6 @@ test "serialize: string with backslash and quote" {
     try expectSerialized(node, "\"say \\\"hi\\\"\"");
 }
 
-
 test "serialize: simple expression" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -311,7 +289,6 @@ test "serialize: nested expression" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    // Inner: + 1 2
     const inner_id = try ast_mod.makeValueLiteral(alloc, ast_mod.Position.synthetic, .{ .string = "+" });
     const inner_args = try alloc.dupe(*const AstNode, &.{
         try ast_mod.makeValueLiteral(alloc, ast_mod.Position.synthetic, .{ .int = 1 }),
@@ -319,7 +296,6 @@ test "serialize: nested expression" {
     });
     const inner = try ast_mod.makeExpression(alloc, ast_mod.Position.synthetic, inner_id, inner_args, null, null, .{ .meta_type = .standard });
 
-    // Outer: + <inner> 3
     const outer_id = try ast_mod.makeValueLiteral(alloc, ast_mod.Position.synthetic, .{ .string = "+" });
     const outer_args = try alloc.dupe(*const AstNode, &.{
         inner,
@@ -373,7 +349,6 @@ test "serialize: list value literal nested" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    // length (list 1 2 3)
     const items = [_]?Value{ .{ .int = 1 }, .{ .int = 2 }, .{ .int = 3 } };
     const list_node = try ast_mod.makeValueLiteral(alloc, ast_mod.Position.synthetic, .{ .list = &items });
     const id = try ast_mod.makeValueLiteral(alloc, ast_mod.Position.synthetic, .{ .string = "length" });
@@ -382,10 +357,6 @@ test "serialize: list value literal nested" {
     try expectSerialized(node, "length (list 1 2 3)");
 }
 
-
-/// Parse `src` as a top-level expression, serialize it, and assert the text
-/// round-trips to `expected`. Also re-parses + re-serializes `expected` to pin
-/// idempotence (the serialized form must re-lex to the same AST).
 fn expectRoundTrip(alloc: Allocator, src: []const u8, expected: []const u8) !void {
     const node = try parser_mod.parse(alloc, src);
     try expectSerialized(node, expected);
@@ -399,8 +370,6 @@ test "round-trip: bitwise operator terms serialize bare and re-lex to themselves
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    // `~` and `|` are body operators under Track O: not base walls, so they need
-    // no quoting and re-lex to the same op (the serializer round-trip contract).
     try expectRoundTrip(alloc, "~ 5", "~ 5");
     try expectRoundTrip(alloc, "| :a :b", "| :a :b");
     try expectRoundTrip(alloc, "& 12 (~ 3)", "& 12 (~ 3)");
@@ -474,7 +443,6 @@ test "serialize: macro module" {
         writer.buffered(),
     );
 }
-
 
 test "round-trip: expression" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);

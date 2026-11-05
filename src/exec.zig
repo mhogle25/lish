@@ -81,9 +81,6 @@ pub const Thunk = struct {
     position: Position,
     body:     ThunkBody,
 
-    /// Evaluate this thunk in the given environment and scope. Updates
-    /// env.current_position to this thunk's position for the duration of
-    /// evaluation so any env.fail call inside captures the right location.
     pub fn proc(self: *const Thunk, env: *Env, scope: *const Scope) ExecError!?Value {
         const saved_position = env.current_position;
         env.current_position = self.position;
@@ -187,9 +184,6 @@ pub const ScopeEntry = union(enum) {
     }
 };
 
-// Scopes with up to INLINE_CAP bindings store entries in a flat inline array
-// (linear scan). Larger scopes overflow to a HashMap. Most macro calls bind
-// 1-4 parameters, so the overflow path is almost never reached.
 const INLINE_CAP = 8;
 
 const InlineEntry = struct {
@@ -217,13 +211,10 @@ pub const Scope = struct {
         return null;
     }
 
-    /// Bind an arbitrary thunk to a name with an explicit evaluation scope and the
-    /// unit slots its expressions dispatch against (see `ScopeEntry.closure`).
     pub fn setEntry(self: *Scope, allocator: Allocator, key: []const u8, thunk: *const Thunk, thunk_scope: *const Scope, unit_slots: []ResolvedSlot) Allocator.Error!void {
         try self.put(allocator, key, .{ .closure = .{ .thunk = thunk, .scope = thunk_scope, .unit_slots = unit_slots } });
     }
 
-    /// Bind a pre-evaluated value to a name. No allocation, inline or overflow.
     pub fn setValue(self: *Scope, allocator: Allocator, key: []const u8, value: ?Value) Allocator.Error!void {
         try self.put(allocator, key, .{ .value = value });
     }
@@ -243,7 +234,6 @@ pub const Scope = struct {
         if (self.overflow) |*map| map.deinit(allocator);
     }
 
-    // Migrate inline entries into the overflow HashMap on first spill.
     fn spillToOverflow(self: *Scope, allocator: Allocator) Allocator.Error!void {
         if (self.overflow != null) return;
         self.overflow = std.StringHashMapUnmanaged(ScopeEntry){};
@@ -262,38 +252,32 @@ pub const Arg = struct {
     env: *Env,
     scope: *const Scope,
 
-    /// Evaluate the argument thunk lazily.
     pub fn get(self: Arg) ExecError!?Value {
         return self.thunk.proc(self.env, self.scope);
     }
 
-    /// Evaluate and require a non-null value.
     pub fn resolve(self: Arg) ExecError!Value {
         return try self.get() orelse
             return self.env.fail(.type_mismatch, "Expected a value but got none");
     }
 
-    /// Evaluate and get as string.
     pub fn resolveString(self: Arg, buf: []u8) ExecError![]const u8 {
         const result = try self.resolve();
         return result.getS(buf) catch return self.env.failFmt(.out_of_space, "Resolved a {s} that does not fit in the {d}-byte buffer", .{ result.typeName(), buf.len });
     }
 
-    /// Evaluate and get as integer.
     pub fn resolveInt(self: Arg) ExecError!i64 {
         const result = try self.resolve();
         return result.getI() catch
             return self.env.failFmt(.type_mismatch, "Expected a number, got {s}", .{result.typeName()});
     }
 
-    /// Evaluate and get as float.
     pub fn resolveFloat(self: Arg) ExecError!f64 {
         const result = try self.resolve();
         return result.getF() catch
             return self.env.failFmt(.type_mismatch, "Expected a number, got {s}", .{result.typeName()});
     }
 
-    /// Evaluate and get as list.
     pub fn resolveList(self: Arg) ExecError![]const ?Value {
         const result = try self.resolve();
         return result.getL() catch
@@ -316,7 +300,6 @@ pub const Args = struct {
         return .{ .thunk = self.items[index], .env = self.env, .scope = self.scope };
     }
 
-    /// Get a single argument, asserting exactly one was provided.
     pub fn single(self: Args) ExecError!Arg {
         if (self.items.len != 1) {
             return self.env.fail(.arity_mismatch,
@@ -326,13 +309,11 @@ pub const Args = struct {
         return self.at(0);
     }
 
-    /// Resolve single argument to a value.
     pub fn resolveSingle(self: Args) ExecError!Value {
         const arg = try self.single();
         return arg.resolve();
     }
 
-    /// Evaluate all arguments, returning their optional values.
     pub fn getAll(self: Args) ExecError![]const ?Value {
         const results = try self.env.allocator.alloc(?Value, self.items.len);
         for (self.items, 0..) |_, i| {
@@ -341,7 +322,6 @@ pub const Args = struct {
         return results;
     }
 
-    /// Resolve all arguments (require non-null values).
     pub fn resolveAll(self: Args) ExecError![]const Value {
         const results = try self.env.allocator.alloc(Value, self.items.len);
         for (self.items, 0..) |_, i| {
@@ -350,14 +330,12 @@ pub const Args = struct {
         return results;
     }
 
-    /// Validate that exactly the expected number of arguments was provided.
     pub fn expectCount(self: Args, expected: usize) ExecError!void {
         if (self.items.len != expected) {
             return self.env.failFmt(.arity_mismatch, "Expected {d} argument(s) but got {d}", .{ expected, self.items.len });
         }
     }
 
-    /// Validate at least the minimum number of arguments was provided.
     pub fn expectMinCount(self: Args, minimum: usize) ExecError!void {
         if (self.items.len < minimum) {
             return self.env.failFmt(.arity_mismatch, "Expected at least {d} argument(s) but got {d}", .{ minimum, self.items.len });
@@ -390,7 +368,6 @@ pub const Signature = struct {
     /// The flat `params` list cannot express this; only `let` sets it.
     binding_pairs: bool = false,
 
-    /// Write the display form `name p1 [opt:type] vararg ... -> returns`.
     pub fn render(self: Signature, writer: *std.Io.Writer, name: []const u8) std.Io.Writer.Error!void {
         try writer.writeAll(name);
         for (self.params) |param| {
@@ -436,7 +413,6 @@ pub const Operation = struct {
         return self.callFn(self.context, args);
     }
 
-    /// Wrap a stateless function as an Operation.
     pub fn fromFn(comptime func: fn (Args) ExecError!?Value, meta: Meta) Operation {
         return .{
             .context = null,
@@ -450,8 +426,6 @@ pub const Operation = struct {
         };
     }
 
-    /// Wrap a context-bound function as an Operation.
-    /// The cast from anyopaque to *Context is generated once here at comptime.
     pub fn fromBoundFn(
         comptime Context: type,
         comptime func: fn (*Context, Args) ExecError!?Value,
@@ -500,11 +474,6 @@ pub const Macro = struct {
     /// file. Defaults to `.none` for macros constructed in tests.
     source: SourceId = .none,
 
-    /// Write the macro's call signature, e.g. `clamp lo hi x`. Deferred
-    /// parameters are prefixed with the source's deferred symbol (`~`), matching
-    /// how they are written in a `.lishmacro` head. Unlike an operation, a macro's
-    /// signature is fully recoverable from its structure, so no metadata is
-    /// required of the author; introspection derives it here.
     pub fn writeSignature(self: *const Macro, writer: *std.Io.Writer) std.Io.Writer.Error!void {
         try writer.writeAll(self.id);
         for (self.parameters) |param| {
@@ -514,7 +483,6 @@ pub const Macro = struct {
         }
     }
 
-    /// Execute the macro: bind arguments to parameters, evaluate body.
     pub fn run(
         self: *const Macro,
         arg_thunks: []const *const Thunk,
@@ -529,26 +497,20 @@ pub const Macro = struct {
         }
 
         var macro_scope = Scope{};
-        // Overflow HashMap only allocated if param count exceeds INLINE_CAP (rare).
         defer macro_scope.deinit(env.allocator);
 
         for (self.parameters, arg_thunks) |param, arg_thunk| {
             switch (param.param_type) {
                 .value => {
-                    // Eagerly evaluate the argument in the caller's scope, then bind as a static value.
                     const evaluated = try arg_thunk.proc(env, caller_scope);
                     try macro_scope.setValue(env.allocator, param.id, evaluated);
                 },
                 .deferred => {
-                    // Bind with the caller's scope and unit slots (still active here,
-                    // before the swap) so it re-evaluates in the caller's context.
                     try macro_scope.setEntry(env.allocator, param.id, arg_thunk, caller_scope, env.unit_slots);
                 },
             }
         }
 
-        // Enter the body's unit and switch source for body evaluation. The arg
-        // thunks above were bound under the caller's unit/source on purpose.
         const frame = try env.enterUnit(self.unit_id, self.site_count);
         defer env.exitUnit(frame);
 
@@ -603,15 +565,7 @@ pub const Registry = struct {
         };
     }
 
-    /// Drop all memoized resolutions (they re-resolve lazily). Called automatically
-    /// by every `register*` mutator so the cache can never serve a stale binding;
-    /// the registry maintains this invariant itself rather than trusting callers.
-    ///
-    /// TODO: this is whole-cache invalidation: any registration discards every
-    /// memoized slot. Cheap today because registration happens before/between eval,
-    /// when the cache is cold and nothing is pinned. If we ever add ops that load
-    /// new ops/macros *during* hot evaluation, make this fine-grained (a
-    /// `name -> units` reverse index) and pin-safe.
+    // TODO: fine-grained, pin-safe invalidation (a `name -> units` reverse index) if ops ever load ops/macros during eval
     pub fn clearResolution(self: *Registry) void {
         self.resolution.clear();
     }
@@ -628,21 +582,18 @@ pub const Registry = struct {
         return self.macros.get(id);
     }
 
-    /// Register an op with no category (test ops, ad-hoc registration). Grouped
-    /// builtins go through `group(...).register(...)` so their category is set.
     pub fn registerOperation(self: *Registry, allocator: Allocator, id: []const u8, operation: Operation) Allocator.Error!void {
         try self.operations.put(allocator, id, operation);
-        self.clearResolution(); // the definition set changed; invalidate memoized bindings
+        self.clearResolution();
     }
 
-    /// A registrar that stamps everything it registers with `category`.
     pub fn group(self: *Registry, allocator: Allocator, category: []const u8) GroupRegistrar {
         return .{ .registry = self, .allocator = allocator, .category = category };
     }
 
     pub fn registerMacro(self: *Registry, id: []const u8, macro: *const Macro) Allocator.Error!void {
         try self.macros.put(self.macroAllocator(), id, macro);
-        self.clearResolution(); // the definition set changed; invalidate memoized bindings
+        self.clearResolution();
     }
 
     pub fn deinit(self: *Registry, allocator: Allocator) void {
@@ -651,7 +602,6 @@ pub const Registry = struct {
         self.macro_arena.deinit();
     }
 
-    /// Resolve a name to an op or macro slot, or null if unknown.
     pub fn resolveId(self: *const Registry, name: []const u8) ?ResolvedSlot {
         if (self.getOperation(name)) |op|    return .{ .resolved_op    = op };
         if (self.getMacro(name))    |macro|  return .{ .resolved_macro = macro };
@@ -802,8 +752,6 @@ pub const Env = struct {
         pinned: bool,
     };
 
-    /// Bind a unit's slots as active and pin them. A zero-site unit or a fully
-    /// pinned cache runs un-cached (dynamic dispatch): correct, just slower.
     pub fn enterUnit(self: *Env, unit_id: u32, site_count: u32) Allocator.Error!UnitFrame {
         const previous = self.unit_slots;
         if (site_count > 0) {
@@ -821,17 +769,13 @@ pub const Env = struct {
         self.unit_slots = frame.previous;
     }
 
-    /// Evaluate an expression: resolve its slot in the active unit (once) and
-    /// dispatch. Sites outside the unit's slot array are dispatched dynamically.
     pub fn processExpression(self: *Env, expression: Expression, scope: *const Scope) ExecError!?Value {
-        // Recursion-depth guard: prevents Zig stack overflow from runaway macros.
         self.call_depth += 1;
         defer self.call_depth -= 1;
         if (self.call_depth > self.bounds.max_call_depth) {
             return self.failFmt(.recursion_depth_exceeded, "Recursion depth exceeded (max {d})", .{self.bounds.max_call_depth});
         }
 
-        // Fuel guard: bounds total work per top-level evaluation.
         if (self.fuel_remaining) |*fuel| {
             if (fuel.* == 0) return self.fail(.fuel_exhausted, "Fuel exhausted");
             fuel.* -= 1;
@@ -859,8 +803,6 @@ pub const Env = struct {
         }
     }
 
-    /// Resolve a call site by name at runtime and dispatch it, without memoizing.
-    /// Used for computed names and runtime-built (`NO_SITE`) expressions.
     fn dispatchDynamic(self: *Env, expression: Expression, scope: *const Scope) ExecError!?Value {
         const id_value = try expression.name.proc(self, scope) orelse
             return self.fail(.invalid_argument, "Expression ID resolved to none");
@@ -880,8 +822,6 @@ pub const Env = struct {
         return self.failFmt(.unknown_op, "Unknown operation or macro: '{s}'", .{id_string});
     }
 
-    /// Record a categorized runtime error and return RuntimeError. Captures
-    /// the current source position and source from Env automatically.
     pub fn fail(self: *Env, category: ErrorCategory, message: []const u8) error{RuntimeError} {
         self.runtime_error = .{
             .category = category,
@@ -892,7 +832,6 @@ pub const Env = struct {
         return error.RuntimeError;
     }
 
-    /// Record a categorized formatted runtime error and return RuntimeError.
     pub fn failFmt(self: *Env, category: ErrorCategory, comptime fmt: []const u8, args: anytype) error{RuntimeError} {
         const message = std.fmt.allocPrint(self.allocator, fmt, args) catch "error (allocation failed)";
         self.runtime_error = .{
@@ -928,9 +867,6 @@ pub fn makeExpression(allocator: Allocator, position: Position, id: *const Thunk
 
 // Resolution
 
-/// The resolved slot for a call site's name, without memoizing: a registered op
-/// or macro, else `.dynamic` (computed name, or not yet known). The runtime
-/// dispatcher stores the result of this in the active unit's slot array.
 fn resolveSite(registry: *const Registry, name: *const Thunk) ResolvedSlot {
     const literal = switch (name.body) {
         .value_literal => |v| v orelse return .dynamic,
@@ -951,7 +887,6 @@ test "Macro.writeSignature renders params, marking deferred with ~" {
         .{ .id = "hi", .param_type = .value },
         .{ .id = "body", .param_type = .deferred },
     };
-    // writeSignature reads only id + parameters, never the body.
     const macro = Macro{ .id = "guard", .parameters = &params, .body = undefined };
 
     var buf: [64]u8 = undefined;
@@ -996,14 +931,12 @@ test "scope thunk resolves entry from scope" {
     var registry = Registry.init(alloc);
     var env = Env{ .registry = &registry, .allocator = alloc };
 
-    // Create a scope with "x" bound to 99
     const value_thunk = try makeValueLiteral(alloc, Position.synthetic, .{ .int = 99 });
     const empty_scope = try alloc.create(Scope);
     empty_scope.* = Scope.EMPTY;
     var scope = Scope{};
     try scope.setEntry(alloc, "x", value_thunk, empty_scope, &.{});
 
-    // Create :x (scope thunk that looks up "x")
     const id_thunk = try makeValueLiteral(alloc, Position.synthetic, .{ .string = "x" });
     const lookup_thunk = try makeScopeThunk(alloc, Position.synthetic, id_thunk);
 
@@ -1037,7 +970,6 @@ test "resolveInt names the type it actually received" {
     var env = Env{ .registry = &registry, .allocator = alloc };
     const scope = Scope.EMPTY;
 
-    // A list where an integer is expected: the error should say "got list".
     const thunk = try makeValueLiteral(alloc, Position.synthetic, .{ .list = &.{} });
     const arg = Arg{ .thunk = thunk, .env = &env, .scope = &scope };
 
@@ -1154,7 +1086,6 @@ test "nested expression evaluation" {
     var env = Env{ .registry = &registry, .allocator = alloc };
     const scope = Scope.EMPTY;
 
-    // Build: add (add 1 2) 3 -> expects 6
     const add_id_inner = try makeValueLiteral(alloc, Position.synthetic, .{ .string = "add" });
     const one = try makeValueLiteral(alloc, Position.synthetic, .{ .int = 1 });
     const two = try makeValueLiteral(alloc, Position.synthetic, .{ .int = 2 });
@@ -1185,7 +1116,6 @@ test "macro with value parameters" {
         .description = "Test op: add two integers.",
     }));
 
-    // Define macro: |add-one x| add :x 1
     const params = [_]MacroParameter{
         .{ .id = "x", .param_type = .value },
     };
@@ -1209,7 +1139,6 @@ test "macro with value parameters" {
     var env = Env{ .registry = &registry, .allocator = alloc };
     const scope = Scope.EMPTY;
 
-    // Call: add-one 5 -> expects 6
     const call_id = try makeValueLiteral(alloc, Position.synthetic, .{ .string = "add-one" });
     const five = try makeValueLiteral(alloc, Position.synthetic, .{ .int = 5 });
     const call_thunk = try makeExpression(alloc, Position.synthetic, call_id, &.{five});
@@ -1229,8 +1158,6 @@ test "macro with deferred parameter" {
         .description = "Test op: return its argument unchanged.",
     }));
 
-    // Define macro: |run-deferred ~thunk| passthrough :thunk
-    // The deferred parameter means the thunk is not evaluated until :thunk is referenced
     const params = [_]MacroParameter{
         .{ .id = "thunk", .param_type = .deferred },
     };
@@ -1253,7 +1180,6 @@ test "macro with deferred parameter" {
     var env = Env{ .registry = &registry, .allocator = alloc };
     const scope = Scope.EMPTY;
 
-    // Call: run-deferred 42 -> the literal 42 is passed deferred, resolved when :thunk is accessed
     const call_id = try makeValueLiteral(alloc, Position.synthetic, .{ .string = "run-deferred" });
     const forty_two = try makeValueLiteral(alloc, Position.synthetic, .{ .int = 42 });
     const call_thunk = try makeExpression(alloc, Position.synthetic, call_id, &.{forty_two});
@@ -1288,7 +1214,6 @@ test "macro arity mismatch" {
     var env = Env{ .registry = &registry, .allocator = alloc };
     const scope = Scope.EMPTY;
 
-    // Call with wrong arity: needs-two 1 (missing second arg)
     const call_id = try makeValueLiteral(alloc, Position.synthetic, .{ .string = "needs-two" });
     const one = try makeValueLiteral(alloc, Position.synthetic, .{ .int = 1 });
     const call_thunk = try makeExpression(alloc, Position.synthetic, call_id, &.{one});
@@ -1318,7 +1243,6 @@ test "args validation" {
     try std.testing.expectEqual(@as(i64, 10), try args.at(0).resolveInt());
     try std.testing.expectEqual(@as(i64, 20), try args.at(1).resolveInt());
 
-    // single() should fail with 2 args
     try std.testing.expectError(error.RuntimeError, args.single());
 }
 
@@ -1335,7 +1259,6 @@ test "scope entry closure captures scope" {
 
     var env = Env{ .registry = &registry, .allocator = alloc };
 
-    // Create an inner scope where "y" = 10
     const y_value = try makeValueLiteral(alloc, Position.synthetic, .{ .int = 10 });
     const inner_scope = try alloc.create(Scope);
     inner_scope.* = .{};
@@ -1343,15 +1266,12 @@ test "scope entry closure captures scope" {
     empty_scope.* = Scope.EMPTY;
     try inner_scope.setEntry(alloc, "y", y_value, empty_scope, &.{});
 
-    // Create a thunk that references :y, captured with inner_scope
     const y_id = try makeValueLiteral(alloc, Position.synthetic, .{ .string = "y" });
     const y_ref = try makeScopeThunk(alloc, Position.synthetic, y_id);
 
-    // Create an outer scope where "my-val" is bound to :y with inner_scope as the captured scope
     var outer_scope = Scope{};
     try outer_scope.setEntry(alloc, "my-val", y_ref, inner_scope, &.{});
 
-    // Resolving "my-val" should evaluate :y in inner_scope, finding y=10
     const entry = outer_scope.get("my-val").?;
     const result = try entry.run(&env);
     try std.testing.expectEqual(@as(i64, 10), result.?.int);

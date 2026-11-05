@@ -16,14 +16,10 @@ pub const Value = union(enum) {
         return self == .int or self == .float;
     }
 
-    /// A human-readable name for this value's type, for error messages
-    /// (`string`, `int`, `float`, `list`).
     pub fn typeName(self: Value) []const u8 {
         return @tagName(self);
     }
 
-    /// The type name of an optional value, naming the absent case `none`. Use
-    /// when reporting what an op received in a slot that may hold no value.
     pub fn typeNameOpt(maybe: ?Value) []const u8 {
         return if (maybe) |value| value.typeName() else NONE_ID;
     }
@@ -134,9 +130,6 @@ pub const Value = union(enum) {
         return out.toOwnedSlice();
     }
 
-    /// Deep structural equality. Scalar and flat-list comparisons never
-    /// allocate; nested lists are walked with a worklist from `allocator`,
-    /// so nesting depth is unbounded (no native recursion to overflow).
     pub fn eql(lhs: Value, rhs: Value, allocator: std.mem.Allocator) std.mem.Allocator.Error!bool {
         switch (shallowEql(lhs, rhs)) {
             .equal     => return true,
@@ -164,10 +157,6 @@ pub const Value = union(enum) {
         }
     }
 
-    /// Deep-copy into `allocator` so the value outlives the arena it was produced
-    /// in. Scalars pass through by value; strings and lists are copied. Nested
-    /// lists are walked with a worklist, so nesting depth is unbounded.
-    /// Use this to keep a result past the next session execute().
     pub fn dupe(self: Value, allocator: std.mem.Allocator) std.mem.Allocator.Error!Value {
         switch (self) {
             .int, .float => return self,
@@ -204,7 +193,6 @@ pub const Value = union(enum) {
         return .{ .list = root };
     }
 
-    /// Render for display. Lists nested past MAX_DISPLAY_DEPTH render as `[ ... ]`.
     pub fn format(self: Value, writer: *std.Io.Writer) std.Io.Writer.Error!void {
         return self.writeSourceDepth(writer, 0);
     }
@@ -249,8 +237,7 @@ const SourceFrame = struct {
     index: usize = 0,
 };
 
-/// One shallow comparison step for eql: scalars and strings settle immediately;
-/// two lists of equal length need their elements walked.
+/// One shallow eql step: scalars settle; equal-length lists need their elements walked.
 const ShallowEql = enum { equal, not_equal, descend };
 
 fn shallowEql(lhs: Value, rhs: Value) ShallowEql {
@@ -295,8 +282,6 @@ pub fn toCondition(condition: bool) ?Value {
     return if (condition) some() else NONE;
 }
 
-/// Saturating f64 -> i64: NaN -> 0, out-of-range clamps to the i64 bounds. A raw
-/// `@intFromFloat` would trap on those, and a coercion must never abort the host.
 pub fn floatToInt(float_val: f64) i64 {
     if (std.math.isNan(float_val)) return 0;
 
@@ -332,18 +317,11 @@ pub const LishType = union(enum) {
     collection,
     some,
     none,
-    // TODO: `literal` is string-only. Add numeric literals (int/float, e.g. `3`,
-    // `3.555`) when a concrete "must be 0|1|2"-style op appears: either sibling
-    // variants (`int_literal: i64`, `float_literal: f64`) or by promoting
-    // `literal` to a typed union. Render numbers bare (unquoted) so they read as
-    // values distinct from the quoted strings.
+    // TODO: numeric literals (int/float, rendered bare) when a "must be 0|1|2"-style op appears
     literal: []const u8,
-    // TODO: list shapes (element type, e.g. `list of int`; or tuple shapes like
-    // `[int, string]`) when an op needs them. `list` stays generic until then.
+    // TODO: element/tuple shapes (`list of int`, `[int, string]`) when an op needs them
     one_of: []const LishType,
 
-    /// A union of generic members plus string literals, so a signature can DERIVE
-    /// its literal-set from the op's own source (e.g. `StaticStringMap.keys()`).
     pub fn oneOf(comptime types: []const LishType, comptime names: []const []const u8) LishType {
         return .{ .one_of = comptime blk: {
             var members: [types.len + names.len]LishType = undefined;
@@ -354,8 +332,6 @@ pub const LishType = union(enum) {
         } };
     }
 
-    /// Spell the type in display form. The ONLY place type names are written,
-    /// so changing a convention (e.g. the `$` sentinel sigil) is a one-line edit.
     pub fn render(self: LishType, writer: *std.Io.Writer) std.Io.Writer.Error!void {
         switch (self) {
             .some => try writer.writeAll("$some"),
@@ -440,10 +416,8 @@ test "condition" {
 }
 
 test "floatToInt saturates and never traps on non-finite or out-of-range input" {
-    // In range: ordinary truncation toward zero.
     try std.testing.expectEqual(@as(i64, 3), floatToInt(3.7));
     try std.testing.expectEqual(@as(i64, -3), floatToInt(-3.7));
-    // Non-finite and out-of-range saturate instead of a @intFromFloat trap.
     try std.testing.expectEqual(std.math.maxInt(i64), floatToInt(std.math.inf(f64)));
     try std.testing.expectEqual(std.math.minInt(i64), floatToInt(-std.math.inf(f64)));
     try std.testing.expectEqual(std.math.maxInt(i64), floatToInt(1e300));
@@ -452,7 +426,6 @@ test "floatToInt saturates and never traps on non-finite or out-of-range input" 
 }
 
 test "value dupe survives its source arena" {
-    // Build a string + nested list in a scratch arena that we then throw away.
     var source = std.heap.ArenaAllocator.init(std.testing.allocator);
     const scratch = source.allocator();
 
@@ -468,7 +441,7 @@ test "value dupe survives its source arena" {
     const kept = try original.dupe(std.testing.allocator);
     defer freeValue(std.testing.allocator, kept);
 
-    source.deinit(); // the original's backing memory is now gone
+    source.deinit();
 
     const items = try kept.getL();
     try std.testing.expectEqualStrings("keep me", items[0].?.string);
@@ -478,8 +451,6 @@ test "value dupe survives its source arena" {
     try std.testing.expect(nested[1] == null);
 }
 
-/// Recursively free a value produced by `dupe` (test helper: a real host would
-/// use an arena and free it in one shot).
 fn freeValue(allocator: std.mem.Allocator, value: Value) void {
     switch (value) {
         .string => |str| allocator.free(str),
@@ -496,7 +467,6 @@ test "value: eql and dupe handle deep nesting without native recursion" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    // A chain this deep overflows the native stack if any walk recurses.
     const depth = 100_000;
     var left: Value = .{ .int = 7 };
     var right: Value = .{ .int = 7 };

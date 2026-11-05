@@ -69,8 +69,6 @@ fn matchOp(args: Args) ExecError!?Value {
         return args.env.fail(.arity_mismatch, "'match' expects a target plus at least one pattern/result pair");
     }
 
-    // After the target, an even number of arguments are pattern/result pairs;
-    // an odd remainder means the final argument is the no-match default.
     const has_default = (count - 1) % 2 == 1;
     const pairs_end = if (has_default) count - 1 else count;
 
@@ -102,7 +100,6 @@ fn panicOp(args: Args) ExecError!?Value {
     return args.env.failFmt(.user, "{s}", .{message});
 }
 
-
 const testing = @import("testing.zig");
 
 test "control flow: if-then" {
@@ -126,7 +123,6 @@ test "control flow: if-then-else" {
 test "control flow: when" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // First condition is false (none), second is true (some) -> returns 2
     const result = try testing.evalWithBuiltins(arena.allocator(), "when $none 1 $some 2");
     try std.testing.expectEqual(@as(i64, 2), result.?.int);
 }
@@ -148,7 +144,6 @@ test "control flow: match returns a matched arm's result" {
 test "control flow: match preserves a matched arm whose result is $none" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // The arm for 2 legitimately yields $none; the trailing default must NOT shadow it.
     const result = try testing.evalWithBuiltins(arena.allocator(), "match 2 1 10 2 $none 99");
     try std.testing.expect(result == null);
 }
@@ -180,4 +175,3 @@ test "control flow: panic stringifies a non-string argument" {
     const result = testing.evalWithBuiltins(arena.allocator(), "panic 42");
     try std.testing.expectError(error.RuntimeError, result);
 }
-

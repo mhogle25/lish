@@ -119,7 +119,6 @@ pub const Parser = struct {
                     self.mode = .csi;
                     return .consumed;
                 }
-                // ESC X form ended without matching any sequence.
                 self.reset();
                 return .consumed;
             },
@@ -128,8 +127,6 @@ pub const Parser = struct {
                     self.reset();
                     return .{ .action = action };
                 }
-                // CSI final-byte range (per ECMA-48): ends the sequence even
-                // if we didn't match anything. Stay consumed.
                 if (byte >= 0x40 and byte <= 0x7E) {
                     self.reset();
                 }
@@ -144,8 +141,6 @@ pub const Parser = struct {
     }
 
     fn seedCandidates(self: *Parser) void {
-        // Every recognised sequence starts with ESC. After consuming the ESC,
-        // each is a candidate at position 1.
         self.candidate_count = 0;
         for (SEQUENCES, 0..) |seq, idx| {
             if (seq.pattern.len > 1) {
@@ -155,8 +150,6 @@ pub const Parser = struct {
         }
     }
 
-    /// Advance all live candidates by `byte`, dropping those that don't match.
-    /// Returns the action of any candidate that fully matched.
     fn advance(self: *Parser, byte: u8) ?Action {
         var write_idx: usize = 0;
         var i: usize = 0;
@@ -177,7 +170,6 @@ pub const Parser = struct {
         return null;
     }
 };
-
 
 fn expectAction(expected: Action, step: Step) !void {
     try std.testing.expect(step == .action);

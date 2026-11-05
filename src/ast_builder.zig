@@ -19,7 +19,6 @@ pub const AstBuilder = struct {
         return .{ .allocator = allocator };
     }
 
-
     pub fn int(self: AstBuilder, value: i64) Allocator.Error!*const AstNode {
         return ast_mod.makeValueLiteral(self.allocator, ast_mod.Position.synthetic, .{ .int = value });
     }
@@ -32,22 +31,17 @@ pub const AstBuilder = struct {
         return ast_mod.makeValueLiteral(self.allocator, ast_mod.Position.synthetic, .{ .string = value });
     }
 
-    /// Produces a `:name` scope thunk.
     pub fn scope(self: AstBuilder, name: []const u8) Allocator.Error!*const AstNode {
         const id_node = try ast_mod.makeValueLiteral(self.allocator, ast_mod.Position.synthetic, .{ .string = name });
         return ast_mod.makeScopeThunk(self.allocator, ast_mod.Position.synthetic, id_node);
     }
 
-    /// Produces a `$name` zero-argument call expression.
     pub fn call(self: AstBuilder, name: []const u8) Allocator.Error!*const AstNode {
         const id_node = try ast_mod.makeValueLiteral(self.allocator, ast_mod.Position.synthetic, .{ .string = name });
         return ast_mod.makeExpression(self.allocator, ast_mod.Position.synthetic, id_node, &.{}, null, null,
             .{ .meta_type = .single_term });
     }
 
-
-    /// Start building a standard expression. Chain `.arg()`, finish with `.build()`.
-    /// Use `.asTopLevel()` before `.build()` to set top-level metadata.
     pub fn expr(self: AstBuilder, id: []const u8) ExprBuilder {
         return .{
             .builder = self,
@@ -58,8 +52,6 @@ pub const AstBuilder = struct {
         };
     }
 
-    /// Start building a list literal (`[...]` sugar). Chain `.arg()`, finish with `.build()`.
-    /// Meta type is locked to `.list_literal`.
     pub fn list(self: AstBuilder) ExprBuilder {
         return .{
             .builder = self,
@@ -70,8 +62,6 @@ pub const AstBuilder = struct {
         };
     }
 
-    /// Start building a block literal (`{...}` sugar). Chain `.arg()`, finish with `.build()`.
-    /// Meta type is locked to `.block_literal`.
     pub fn block(self: AstBuilder) ExprBuilder {
         return .{
             .builder = self,
@@ -82,9 +72,6 @@ pub const AstBuilder = struct {
         };
     }
 
-
-    /// Start building a macro definition with the given name.
-    /// Chain `.param()` / `.deferredParam()`, finish with `.body()`.
     pub fn macro(self: AstBuilder, name: []const u8) MacroBuilder {
         return .{
             .builder = self,
@@ -104,8 +91,6 @@ pub const ExprBuilder = struct {
     meta_type: AstExpression.MetaType,
     sticky_err: ?Allocator.Error,
 
-    /// Append an argument node. Returns self for chaining.
-    /// If allocation fails, the error is held and returned by `.build()`.
     pub fn arg(self: *ExprBuilder, node: *const AstNode) *ExprBuilder {
         self.args.append(self.builder.allocator, node) catch |err| {
             self.sticky_err = err;
@@ -113,14 +98,11 @@ pub const ExprBuilder = struct {
         return self;
     }
 
-    /// Override the meta type to `.top_level`. Only meaningful on `b.expr()` builders.
-    /// Returns self for chaining before `.build()`.
     pub fn asTopLevel(self: *ExprBuilder) *ExprBuilder {
         self.meta_type = .top_level;
         return self;
     }
 
-    /// Finish building the expression using the stored meta type.
     pub fn build(self: *ExprBuilder) Allocator.Error!*const AstNode {
         if (self.sticky_err) |err| return err;
         const id_node = try ast_mod.makeValueLiteral(self.builder.allocator, ast_mod.Position.synthetic, .{ .string = self.id });
@@ -137,7 +119,6 @@ pub const MacroBuilder = struct {
     params: std.ArrayListUnmanaged(AstMacroParam),
     sticky_err: ?Allocator.Error,
 
-    /// Append a value parameter (`:name` in macro body). Returns self for chaining.
     pub fn param(self: *MacroBuilder, name: []const u8) *MacroBuilder {
         self.params.append(self.builder.allocator, .{ .valid = .{
             .id = name,
@@ -148,7 +129,6 @@ pub const MacroBuilder = struct {
         return self;
     }
 
-    /// Append a deferred parameter (`~name` in macro definition). Returns self for chaining.
     pub fn deferredParam(self: *MacroBuilder, name: []const u8) *MacroBuilder {
         self.params.append(self.builder.allocator, .{ .valid = .{
             .id = name,
@@ -159,7 +139,6 @@ pub const MacroBuilder = struct {
         return self;
     }
 
-    /// Finish building by providing the body expression node. Returns the completed AstMacro.
     pub fn body(self: *MacroBuilder, body_node: *const AstNode) Allocator.Error!AstMacro {
         if (self.sticky_err) |err| return err;
         const params_slice = try self.params.toOwnedSlice(self.builder.allocator);
@@ -170,7 +149,6 @@ pub const MacroBuilder = struct {
         };
     }
 };
-
 
 const serializer_mod = @import("serializer.zig");
 
@@ -225,7 +203,6 @@ test "builder: nested expression" {
     defer arena.deinit();
     const b = AstBuilder.init(arena.allocator());
 
-    // + (+ 1 2) 3
     var inner = b.expr("+");
     const inner_node = try inner.arg(try b.int(1)).arg(try b.int(2)).build();
 
@@ -289,12 +266,10 @@ test "builder: list vs expr list" {
     defer arena.deinit();
     const b = AstBuilder.init(arena.allocator());
 
-    // b.list() -> .list_literal
     var lb = b.list();
     const list_node = try lb.arg(try b.int(1)).build();
     try std.testing.expectEqual(AstExpression.MetaType.list_literal, list_node.body.expression.meta.meta_type);
 
-    // b.expr("list") -> .standard
     var eb = b.expr("list");
     const expr_node = try eb.arg(try b.int(1)).build();
     try std.testing.expectEqual(AstExpression.MetaType.standard, expr_node.body.expression.meta.meta_type);

@@ -35,8 +35,6 @@ pub const History = struct {
         return .{ .allocator = allocator };
     }
 
-    /// Set the active retained-history size, clamped to [1, HISTORY_CAPACITY].
-    /// Call before the history is used (config applies it at startup).
     pub fn setLimit(self: *History, n: usize) void {
         self.limit = @min(@max(n, 1), HISTORY_CAPACITY);
     }
@@ -52,8 +50,6 @@ pub const History = struct {
         self.write_index = 0;
     }
 
-    /// Append a line to history, skipping consecutive duplicates. Silently
-    /// drops the entry on allocation failure.
     pub fn add(self: *History, line: []const u8) void {
         if (self.count > 0) {
             const last_index = if (self.write_index == 0) self.limit - 1 else self.write_index - 1;
@@ -72,8 +68,6 @@ pub const History = struct {
         if (self.count < self.limit) self.count += 1;
     }
 
-    /// Move to the previous (older) history entry. On first call captures
-    /// the current buffer contents so `down` can restore them later.
     pub fn up(self: *History, buffer: *LineBuffer) void {
         if (self.count == 0) return;
 
@@ -89,13 +83,9 @@ pub const History = struct {
             self.browse_index = if (self.browse_index.? == 0) self.limit - 1 else self.browse_index.? - 1;
         }
 
-        // Browsing up lands the cursor at the end of the recalled entry, so a
-        // further Up keeps moving up through a multiline entry's rows.
         self.loadEntry(self.browse_index.?, buffer, .end);
     }
 
-    /// Move to the next (newer) history entry. Past the newest entry restores
-    /// the buffer that was saved when browsing started.
     pub fn down(self: *History, buffer: *LineBuffer) void {
         if (self.browse_index == null) return;
 
@@ -110,13 +100,9 @@ pub const History = struct {
         }
 
         self.browse_index = (self.browse_index.? + 1) % self.limit;
-        // Mirror of `up`: browsing down lands the cursor at the start (top) of
-        // the recalled entry, so a further Down keeps moving down through it.
         self.loadEntry(self.browse_index.?, buffer, .start);
     }
 
-    /// Reset browse state without clearing entries. Used at the start of a
-    /// fresh input cycle.
     pub fn endBrowse(self: *History) void {
         self.browse_index = null;
     }
@@ -138,7 +124,6 @@ pub const History = struct {
         }
     }
 };
-
 
 fn testInsertString(buffer: *LineBuffer, string: []const u8) void {
     for (string) |byte| {
@@ -182,21 +167,17 @@ test "history: up lands cursor at end, down lands cursor at start" {
     var history = History.init(std.testing.allocator);
     defer history.deinit();
 
-    // Two multiline entries so cursor-at-end vs cursor-at-start is observable.
     history.add("a\nbb");
     history.add("ccc\ndddd");
 
-    // Up to the newest entry: cursor at the end (bottom row).
     history.up(&buffer);
     try std.testing.expectEqualStrings("ccc\ndddd", buffer.slice());
     try std.testing.expectEqual(buffer.length, buffer.cursor);
 
-    // Up to the older entry: still cursor at the end.
     history.up(&buffer);
     try std.testing.expectEqualStrings("a\nbb", buffer.slice());
     try std.testing.expectEqual(buffer.length, buffer.cursor);
 
-    // Down to the newer entry: cursor mirrored to the start (top row).
     history.down(&buffer);
     try std.testing.expectEqualStrings("ccc\ndddd", buffer.slice());
     try std.testing.expectEqual(@as(usize, 0), buffer.cursor);

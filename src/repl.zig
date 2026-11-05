@@ -26,10 +26,6 @@ const Param = exec_mod.Param;
 const on_off = [_]Param{.{ .name = "on", .arity = .optional }};
 const n_off = [_]Param{.{ .name = "n", .type = .{ .one_of = &.{ .int, .none } } }};
 
-/// Write a result value in the canonical `=> <value>` form, strings quoted to
-/// disambiguate them from other types. The caller frames it (the trailing
-/// newline, and the REPL's dim ANSI). Shared by the REPL and the `lish <file>`
-/// runner so they stay consistent.
 pub fn writeResult(writer: *std.Io.Writer, value: value_mod.Value) std.Io.Writer.Error!void {
     try writer.writeAll("=> ");
     try value.format(writer);
@@ -245,8 +241,6 @@ pub const InitConfigResult = struct {
     created: bool,
 };
 
-/// Write the starter config to the standard path if absent. Returns the path and
-/// whether it was created, or null if no config location can be determined.
 pub fn initConfig(io: std.Io, environ: std.process.Environ, allocator: Allocator) !?InitConfigResult {
     const path = configFilePath(environ, allocator) orelse return null;
     errdefer allocator.free(path);
@@ -263,8 +257,6 @@ pub fn initConfig(io: std.Io, environ: std.process.Environ, allocator: Allocator
     return .{ .path = path, .created = false };
 }
 
-/// Register the REPL config ops (and `on`/`off` macros) into `registry`, bound
-/// to `config`. A reusable fragment so tooling can introspect them.
 pub fn registerConfigOps(registry: *exec_mod.Registry, config: *ReplConfig, allocator: Allocator) Allocator.Error!void {
     const g = registry.group(allocator, "repl-config");
     try g.register(op_autopair_insert, exec_mod.Operation.fromBoundFn(ReplConfig, autopairInsertOp, config, .{
@@ -348,12 +340,7 @@ pub fn loadConfig(io: std.Io, environ: std.process.Environ, config: *ReplConfig,
     applyConfig(config, source, allocator);
 }
 
-/// Register the config ops against a throwaway registry and evaluate `source`
-/// (config file contents) to populate `config`. Errors are swallowed: a broken
-/// line just leaves the corresponding default in place.
 fn applyConfig(config: *ReplConfig, source: []const u8, allocator: Allocator) void {
-    // The registry, parse, and eval are throwaway; only values copied into
-    // `config` (via config.allocator) outlive this call.
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     const scratch = arena.allocator();
@@ -418,7 +405,6 @@ pub fn runRepl(
     }
 }
 
-
 const testing = std.testing;
 
 test "writeResult renders source style" {
@@ -463,7 +449,6 @@ test "applyConfig leaves defaults when a setting is invalid" {
     defer arena.deinit();
     var config = ReplConfig.init(arena.allocator());
 
-    // indent-width 0 is rejected; the default stays.
     applyConfig(&config, "indent-width 0", arena.allocator());
     try testing.expectEqual(@as(usize, 4), config.indent_width);
 }

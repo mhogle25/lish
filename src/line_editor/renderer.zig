@@ -12,15 +12,12 @@ fn displayWidth(text: []const u8) usize {
     return std.unicode.utf8CountCodepoints(text) catch text.len;
 }
 
-// Continuation prompt sized to the prompt's display width: dots then a space.
 fn writeContinuation(writer: *std.Io.Writer, prompt_width: usize) std.Io.Writer.Error!void {
     if (prompt_width == 0) return;
     try writer.splatByteAll('.', prompt_width - 1);
     try writer.writeByte(' ');
 }
 
-/// ANSI escape for a token category. Empty string means "no color, default
-/// terminal foreground." Identifiers use no color so plain text reads natural.
 fn ansiFor(category: highlight.Category) []const u8 {
     return switch (category) {
         .comment    => "\x1b[2m",       // dim
@@ -77,21 +74,16 @@ pub const Renderer = struct {
         return .{ .stdout = stdout };
     }
 
-    /// Redraw the input area. Handles single-line and multi-row content
-    /// uniformly. The render origin is the start of the row where the prompt
-    /// begins; rows 1+ get the continuation prompt as their prefix.
     pub fn render(self: *Renderer, content: []const u8, cursor: usize) void {
         var buf: [BUFFER_SIZE + 1024]u8 = undefined;
         var writer = std.Io.Writer.fixed(&buf);
 
-        // Step 1: navigate back to the render origin and clear to end of screen.
         if (self.prev_cursor_row > 0) {
             writer.print("\x1b[{d}A", .{self.prev_cursor_row}) catch return;
         }
         writer.writeAll("\r") catch return;
         writer.writeAll("\x1b[J") catch return;
 
-        // Step 2: emit prompt + content row by row, tracking cursor row/col.
         const prompt_width = displayWidth(self.prompt);
         writer.writeAll(self.prompt) catch return;
 
@@ -120,13 +112,11 @@ pub const Renderer = struct {
         }
         emitRange(&writer, content, line_start, content.len, &hl_state);
 
-        // Cursor at end of content (i.e., past last byte).
         if (!saw_cursor) {
             cursor_row = row_count;
             cursor_col = prompt_width + (content.len - line_start);
         }
 
-        // Step 3: position cursor at the user's logical location.
         const last_row = row_count;
         const rows_to_move_up = last_row - cursor_row;
         if (rows_to_move_up > 0) {
@@ -143,23 +133,16 @@ pub const Renderer = struct {
         self.stdout.flush() catch {};
     }
 
-    /// Reset render state. Call before starting a fresh line to ensure the
-    /// next render doesn't try to navigate back into stale terminal area.
     pub fn reset(self: *Renderer) void {
         self.prev_cursor_row = 0;
     }
 
-    /// Write raw bytes directly to stdout and flush. Used for newlines,
-    /// clear-screen sequences, etc.
     pub fn writeRaw(self: *Renderer, bytes: []const u8) void {
         self.stdout.writeAll(bytes) catch {};
         self.stdout.flush() catch {};
     }
 };
 
-/// Emit `content[from..to]` to the writer, interleaving ANSI colors per the
-/// highlight state. If highlighting is disabled, just emits the slice. Spans
-/// that extend past `to` are clamped (they continue on the next row).
 fn emitRange(
     writer: *std.Io.Writer,
     content: []const u8,
@@ -174,12 +157,10 @@ fn emitRange(
 
     var pos = from;
     while (pos < to) {
-        // Skip spans that have already been fully emitted.
         while (state.current != null and state.current.?.end <= pos) {
             state.advance();
         }
 
-        // No span overlaps the rest of [pos, to). Emit the remainder plain.
         if (state.current == null or state.current.?.start >= to) {
             writer.writeAll(content[pos..to]) catch return;
             return;

@@ -29,7 +29,6 @@ pub const MACRO_FILE_MAX_SIZE = 1024 * 1024;
 /// from disk. Larger files fail with an IO error.
 pub const LISH_FILE_MAX_SIZE = 1024 * 1024;
 
-
 /// Result of processing a raw expression string.
 pub const ProcessResult = union(enum) {
     ok: ?Value,
@@ -68,8 +67,6 @@ pub const MacroDirResult = struct {
 /// Allows modular operation registration.
 pub const RegistryFragment = *const fn (*Registry, Allocator) Allocator.Error!void;
 
-
-/// Parse, validate, and execute a raw expression string in one call.
 pub fn processRaw(
     env: *Env,
     source: []const u8,
@@ -84,9 +81,6 @@ pub fn processRaw(
     }
 }
 
-/// Parse (cached), validate, and execute. The cached unit is allocated in
-/// `parse_allocator` (must outlive the cache); execution allocates transient
-/// values in `env.allocator`.
 pub fn processRawCached(
     env: *Env,
     parse_allocator: Allocator,
@@ -94,12 +88,10 @@ pub fn processRawCached(
     source: []const u8,
     scope: ?*const Scope,
 ) (Allocator.Error)!ProcessResult {
-    // Cache hit: skip parse + validate
     if (expression_cache.get(source)) |unit| {
         return executeUnit(env, unit, scope);
     }
 
-    // Cache miss: parse + validate into parse_allocator, cache, then execute.
     const ast_root = try expr_parser.parse(parse_allocator, source);
     const validation_result = try validation_mod.validate(parse_allocator, ast_root);
 
@@ -130,26 +122,18 @@ fn executeUnit(env: *Env, unit: Unit, scope: ?*const Scope) (Allocator.Error)!Pr
     return .{ .ok = result };
 }
 
-/// Parse a macro module source string, validate it, and register all macros
-/// into the provided registry.
 pub fn loadMacroModule(
     registry: *Registry,
     source: []const u8,
 ) Allocator.Error!MacroLoadResult {
     const alloc = registry.macroAllocator();
 
-    // 1. Parse macro module, collecting comments so each macro's `##` docstring
-    //    is captured (plain parseMacroModule leaves descriptions empty).
     const module = (try macro_parser_mod.parseMacroModuleWithComments(alloc, source)).module;
 
-    // 2. Validate
     const validation_result = try macro_parser_mod.validateMacroModule(alloc, module);
 
     switch (validation_result) {
         .ok => |macros| {
-            // 3. Register all macros. Their body site ids and unit identity were
-            //    assigned during validation; registerMacro invalidates the
-            //    resolution cache so call sites re-resolve against the new registry.
             for (macros) |*macro| {
                 try registry.registerMacro(macro.id, macro);
             }
@@ -162,13 +146,10 @@ pub fn loadMacroModule(
 /// Lish standard library source, bundled into the compiled binary.
 pub const STDLIB_SOURCE = @embedFile("stdlib" ++ MACRO_EXTENSION);
 
-/// Load the bundled standard library macros into a registry.
-/// Library consumers opt into the stdlib by calling this after Session init.
 pub fn loadStdlib(registry: *Registry) Allocator.Error!MacroLoadResult {
     return loadMacroModule(registry, STDLIB_SOURCE);
 }
 
-/// Load multiple registry fragments into a registry.
 pub fn loadFragments(
     registry: *Registry,
     allocator: Allocator,
@@ -179,7 +160,6 @@ pub fn loadFragments(
     }
 }
 
-/// Read a .lishmacro file from disk, parse, validate, and register macros.
 pub fn loadMacroFile(
     io: std.Io,
     allocator: Allocator,
@@ -194,9 +174,6 @@ pub fn loadMacroFile(
     return loadMacroModule(registry, source);
 }
 
-/// Read a `.lish` file (a single expression) from disk, parse, validate, and
-/// evaluate against the given environment. IO errors propagate as a Zig
-/// error union; parse/runtime errors surface inside the ProcessResult.
 pub fn loadLishFile(
     io: std.Io,
     env: *Env,
@@ -208,7 +185,6 @@ pub fn loadLishFile(
     return processRaw(env, source, scope);
 }
 
-/// Scan a directory for .lishmacro files and load each one.
 pub fn loadMacroDir(
     io: std.Io,
     allocator: Allocator,
@@ -253,7 +229,6 @@ pub fn loadMacroDir(
     };
 }
 
-
 const builtins = @import("builtins.zig");
 
 test "processRaw: simple expression" {
@@ -287,7 +262,6 @@ test "processRaw: nested expressions" {
     const result = try processRaw(&env, "+ (+ 1 2) (* 3 4)", null);
     switch (result) {
         .ok => |maybe_value| {
-            // (1+2) + (3*4) = 3 + 12 = 15
             try std.testing.expectEqual(@as(i64, 15), maybe_value.?.int);
         },
         .validation_err => return error.TestUnexpectedResult,
@@ -332,7 +306,6 @@ test "one lowered unit resolves per-registry, never to whoever ran it first" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    // Same name, different behavior per registry.
     var reg_one = Registry.init(alloc);
     defer reg_one.deinit(alloc);
     try reg_one.registerOperation(alloc, "ping", intOp(1));
@@ -341,14 +314,12 @@ test "one lowered unit resolves per-registry, never to whoever ran it first" {
     defer reg_two.deinit(alloc);
     try reg_two.registerOperation(alloc, "ping", intOp(2));
 
-    // Lower the AST exactly once; both registries run the same immutable unit.
     const unit = try validateUnit(alloc, "ping");
     var env_one = Env{ .registry = &reg_one, .allocator = alloc };
     var env_two = Env{ .registry = &reg_two, .allocator = alloc };
 
     try std.testing.expectEqual(@as(i64, 1), (try runUnit(&env_one, unit)).?.int);
     try std.testing.expectEqual(@as(i64, 2), (try runUnit(&env_two, unit)).?.int);
-    // Re-run under one: each registry memoized into its own per-unit slot array.
     try std.testing.expectEqual(@as(i64, 1), (try runUnit(&env_one, unit)).?.int);
 }
 
@@ -362,15 +333,12 @@ test "two units with overlapping local site ids never alias (collision regressio
     try registry.registerOperation(alloc, "a", intOp(1));
     try registry.registerOperation(alloc, "b", intOp(2));
 
-    // Both root expressions are local site 0; under one registry they must still
-    // resolve to their own op. A flat-array-by-site model would alias them.
     const unit_a = try validateUnit(alloc, "a");
     const unit_b = try validateUnit(alloc, "b");
     var env = Env{ .registry = &registry, .allocator = alloc };
 
     try std.testing.expectEqual(@as(i64, 1), (try runUnit(&env, unit_a)).?.int);
     try std.testing.expectEqual(@as(i64, 2), (try runUnit(&env, unit_b)).?.int);
-    // a's slot stayed its own after b ran and memoized site 0.
     try std.testing.expectEqual(@as(i64, 1), (try runUnit(&env, unit_a)).?.int);
 }
 
@@ -379,7 +347,6 @@ test "evicted unit re-resolves correctly on next use" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    // Capacity 2 forces eviction once a third distinct unit runs.
     var registry = Registry.initCapacity(alloc, 2);
     defer registry.deinit(alloc);
     try registry.registerOperation(alloc, "a", intOp(1));
@@ -393,9 +360,8 @@ test "evicted unit re-resolves correctly on next use" {
 
     try std.testing.expectEqual(@as(i64, 1), (try runUnit(&env, unit_a)).?.int);
     try std.testing.expectEqual(@as(i64, 2), (try runUnit(&env, unit_b)).?.int);
-    try std.testing.expectEqual(@as(i64, 3), (try runUnit(&env, unit_c)).?.int); // evicts a (LRU)
-    try std.testing.expectEqual(@as(usize, 2), registry.resolution.count());     // stays bounded
-    // a was evicted; re-running re-resolves from scratch and is still correct.
+    try std.testing.expectEqual(@as(i64, 3), (try runUnit(&env, unit_c)).?.int);
+    try std.testing.expectEqual(@as(usize, 2), registry.resolution.count());
     try std.testing.expectEqual(@as(i64, 1), (try runUnit(&env, unit_a)).?.int);
 }
 
@@ -404,7 +370,6 @@ test "recursion does not evict a live ancestor unit (pinning)" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    // Capacity 1: while a unit recurses, its own and the caller's slots are pinned.
     var registry = Registry.initCapacity(alloc, 1);
     defer registry.deinit(alloc);
     try builtins.registerAll(&registry, alloc);
@@ -412,7 +377,6 @@ test "recursion does not evict a live ancestor unit (pinning)" {
     try std.testing.expect(load == .ok);
 
     var env = Env{ .registry = &registry, .allocator = alloc };
-    // If a pinned ancestor were evicted, its freed slots would corrupt this result.
     const result = try processRaw(&env, "countdown 50", null);
     switch (result) {
         .ok => |maybe_value| try std.testing.expectEqual(@as(i64, 0), maybe_value.?.int),
@@ -484,7 +448,6 @@ test "processRaw: with scope" {
     try builtins.registerAll(&registry, alloc);
     var env = Env{ .registry = &registry, .allocator = alloc };
 
-    // Set up a scope with "x" = 10
     const value_thunk = try exec_mod.makeValueLiteral(alloc, exec_mod.Position.synthetic, .{ .int = 10 });
     const empty_scope = try alloc.create(Scope);
     empty_scope.* = Scope.EMPTY;
@@ -509,14 +472,12 @@ test "loadMacroModule: load and execute macros" {
     var registry = Registry.init(alloc);
     try builtins.registerAll(&registry, alloc);
 
-    // Load a macro module
     const load_result = try loadMacroModule(&registry,"double x | * :x 2 ;");
     switch (load_result) {
         .ok => |count| try std.testing.expectEqual(@as(usize, 1), count),
         .io_error, .validation_err => return error.TestUnexpectedResult,
     }
 
-    // Execute using the loaded macro
     var env = Env{ .registry = &registry, .allocator = alloc };
     const result = try processRaw(&env, "double 21", null);
     switch (result) {
@@ -563,7 +524,6 @@ test "loadMacroModule: validation errors" {
 
     var registry = Registry.init(alloc);
 
-    // Duplicate macro IDs should produce validation errors
     const load_result = try loadMacroModule(&registry,"foo x | + :x 1 ; foo y | + :y 2 ;");
     switch (load_result) {
         .ok, .io_error => return error.TestUnexpectedResult,
@@ -597,7 +557,6 @@ test "processRaw: full pipeline with macros and scope" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    // Set up registry with builtins + macros
     var registry = Registry.init(alloc);
     try builtins.registerAll(&registry, alloc);
     const load_result = try loadMacroModule(
@@ -606,7 +565,6 @@ test "processRaw: full pipeline with macros and scope" {
     );
     try std.testing.expectEqual(MacroLoadResult{ .ok = 1 }, load_result);
 
-    // Set up scope with x = 100
     const value_thunk = try exec_mod.makeValueLiteral(alloc, exec_mod.Position.synthetic, .{ .int = 100 });
     const empty_scope = try alloc.create(Scope);
     empty_scope.* = Scope.EMPTY;
@@ -636,7 +594,6 @@ test "processRawCached: cache hit skips parsing" {
     var expression_cache = try ExpressionCache.init(std.testing.allocator, 16);
     defer expression_cache.deinit();
 
-    // First call: cache miss (parse + validate + cache + execute)
     const result1 = try processRawCached(&env, env.allocator, &expression_cache, "+ 1 2", null);
     switch (result1) {
         .ok => |maybe_value| try std.testing.expectEqual(@as(i64, 3), maybe_value.?.int),
@@ -645,7 +602,6 @@ test "processRawCached: cache hit skips parsing" {
     }
     try std.testing.expectEqual(@as(usize, 1), expression_cache.count());
 
-    // Second call: cache hit (execute only)
     const result2 = try processRawCached(&env, env.allocator, &expression_cache, "+ 1 2", null);
     switch (result2) {
         .ok => |maybe_value| try std.testing.expectEqual(@as(i64, 3), maybe_value.?.int),
@@ -702,7 +658,6 @@ test "processRawCached: validation errors are not cached" {
     try std.testing.expectEqual(@as(usize, 0), expression_cache.count());
 }
 
-
 test "let: let-binding does not leak into a called macro's body" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -711,7 +666,6 @@ test "let: let-binding does not leak into a called macro's body" {
     var registry = Registry.init(alloc);
     try builtins.registerAll(&registry, alloc);
 
-    // `grab` references :y, which is NOT one of its params, it should never resolve
     const load_result = try loadMacroModule(&registry, "grab | proc :y ;");
     switch (load_result) {
         .ok => {},
@@ -719,12 +673,11 @@ test "let: let-binding does not leak into a called macro's body" {
     }
 
     var env = Env{ .registry = &registry, .allocator = alloc };
-    // outer `let` binds y=42; macro is called from the body; macro must not see :y
     const result = try processRaw(&env, "let y 42 (grab)", null);
     switch (result) {
         .ok             => return error.TestUnexpectedResult,
         .validation_err => return error.TestUnexpectedResult,
-        .runtime_err => {}, // expected, :y not in macro scope
+        .runtime_err => {},
     }
 }
 
@@ -736,7 +689,6 @@ test "let: inside macro body, both macro param and let-binding visible" {
     var registry = Registry.init(alloc);
     try builtins.registerAll(&registry, alloc);
 
-    // scale x -> let doubled = x*2 in (doubled + x)
     const load_result = try loadMacroModule(
         &registry,
         "scale x | let doubled (* :x 2) (+ :doubled :x) ;",
@@ -769,7 +721,6 @@ test "let: macro arguments evaluate in caller's let scope" {
     }
 
     var env = Env{ .registry = &registry, .allocator = alloc };
-    // y from outer let is read when the macro's value-param is evaluated
     const result = try processRaw(&env, "let y 5 (double :y)", null);
     switch (result) {
         .ok => |maybe_value| try std.testing.expectEqual(@as(i64, 10), maybe_value.?.int),
@@ -785,8 +736,6 @@ test "let: deferred param captures let scope as a closure" {
     var registry = Registry.init(alloc);
     try builtins.registerAll(&registry, alloc);
 
-    // run-it takes a deferred body; the body is `(+ :y 100)` which references the
-    // outer let-binding via the deferred param's captured scope
     const load_result = try loadMacroModule(&registry, "run-it ~body | proc :body ;");
     switch (load_result) {
         .ok => {},
@@ -816,7 +765,6 @@ test "loadStdlib: loads bundled stdlib without error" {
     }
 }
 
-
 test "bounds: recursion depth halts runaway macro" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -825,7 +773,6 @@ test "bounds: recursion depth halts runaway macro" {
     var registry = Registry.init(alloc);
     try builtins.registerAll(&registry, alloc);
 
-    // A macro that calls itself with no termination condition.
     const load = try loadMacroModule(&registry, "forever | forever ;");
     try std.testing.expect(load == .ok);
 
@@ -853,7 +800,6 @@ test "bounds: fuel exhaustion halts long loop" {
     env.bounds.fuel = 50;
     env.fuel_remaining = env.bounds.fuel;
 
-    // Sub-expression body forces a processExpression call per iteration.
     const result = try processRaw(&env, "loop 1000 (+ 1 1)", null);
     switch (result) {
         .runtime_err => |re| {
@@ -872,7 +818,6 @@ test "bounds: unlimited fuel does not interfere" {
     try builtins.registerAll(&registry, alloc);
 
     var env = Env{ .registry = &registry, .allocator = alloc };
-    // fuel defaults to null -> unlimited
 
     const result = try processRaw(&env, "+ 1 2 3", null);
     switch (result) {
@@ -929,14 +874,12 @@ test "bounds: string length cap halts huge concat" {
     var registry = Registry.init(alloc);
     try builtins.registerAll(&registry, alloc);
 
-    // Define a doubling macro and chain it.
     const load = try loadMacroModule(&registry, "double s | concat :s :s ;");
     try std.testing.expect(load == .ok);
 
     var env = Env{ .registry = &registry, .allocator = alloc };
     env.bounds.max_string_length = 100;
 
-    // Each double doubles; 10 nestings = 2^10 = 1024 chars, exceeding 100.
     const result = try processRaw(&env,
         "double (double (double (double (double (double (double (double (double (double \"x\")))))))))", null);
     switch (result) {
@@ -955,7 +898,6 @@ test "bounds: shallow recursion under limit works fine" {
     var registry = Registry.init(alloc);
     try builtins.registerAll(&registry, alloc);
 
-    // Counts down from :n to 0.
     const load = try loadMacroModule(&registry, "countdown n | if (> :n 0) (countdown (- :n 1)) :n ;");
     try std.testing.expect(load == .ok);
 

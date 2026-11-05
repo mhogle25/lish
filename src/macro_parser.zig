@@ -16,7 +16,6 @@ const CommentSpan = tok.CommentSpan;
 const AstNode = ast_mod.AstNode;
 const Position = ast_mod.Position;
 
-
 pub const AstMacroModule = struct {
     macros: []const AstMacroNode,
 };
@@ -74,7 +73,6 @@ pub const MacroError = struct {
     end: u32,
 };
 
-
 pub fn parseMacroModule(allocator: Allocator, source: []const u8) Allocator.Error!AstMacroModule {
     var parser = MacroParser.init(allocator, source, null);
     return parser.parse();
@@ -94,7 +92,6 @@ pub fn parseMacroModuleWithComments(allocator: Allocator, source: []const u8) Al
     const module = try parser.parse();
     return .{ .module = module, .comments = comments.items };
 }
-
 
 const MacroParser = struct {
     allocator: Allocator,
@@ -128,7 +125,6 @@ const MacroParser = struct {
     };
 
     fn init(allocator: Allocator, source: []const u8, comment_sink: ?CommentSink) MacroParser {
-        // A macro starts with its name in HEADER mode (where `~`/`|` wall).
         var lexer = Lexer{ .source = source, .comment_sink = comment_sink, .mode = .header };
         const first_token = lexer.nextToken();
 
@@ -152,7 +148,6 @@ const MacroParser = struct {
 
         return .{ .macros = self.macros.items };
     }
-
 
     fn handleExpectId(self: *MacroParser) Allocator.Error!void {
         if (isTerm(self.token.type)) {
@@ -178,21 +173,17 @@ const MacroParser = struct {
         } 
         else 
         if (self.token.type == .macro_separator) {
-            // Header opened straight with `|`: missing name, still parse the body.
             self.header_start = self.token.start;
             self.current_id = .{ .err = self.errorAtToken("Macro is missing an identifier") };
             try self.parseMacroBody();
         } 
         else {
-            // A stray token between macros (e.g. a `;` with no preceding body);
-            // skip it and keep looking for the next header.
             self.token = self.lexer.nextToken();
         }
     }
 
     fn handleInParams(self: *MacroParser) Allocator.Error!void {
         if (isTerm(self.token.type)) {
-            // Value parameter
             const param_position: Position = .{ .start = self.token.start, .end = self.token.end };
             const identifier = try self.processIdentifier();
 
@@ -228,7 +219,6 @@ const MacroParser = struct {
 
     fn handleDeferredParam(self: *MacroParser) Allocator.Error!void {
         if (isTerm(self.token.type)) {
-            // Deferred parameter
             const param_position: Position = .{ .start = self.token.start, .end = self.token.end };
             const identifier = try self.processIdentifier();
             if (identifier) |param_id| {
@@ -246,7 +236,6 @@ const MacroParser = struct {
         }
         else
         if (self.token.type == .macro_separator) {
-            // Missing deferred param name
             try self.parameters.append(self.allocator, .{
                 .err = self.errorAtToken("Missing parameter name for deferred argument"),
             });
@@ -261,9 +250,7 @@ const MacroParser = struct {
         }
     }
 
-
     fn parseMacroBody(self: *MacroParser) Allocator.Error!void {
-        // The body lexes in BODY mode and runs to the `;` terminator (or EOF).
         self.lexer.mode = .body;
         const result = try expr_parser.parseFromLexer(
             self.allocator,
@@ -271,20 +258,16 @@ const MacroParser = struct {
             &.{.macro_break},
         );
 
-        // Build macro node
         try self.finishMacro(result.node);
 
-        // Restore lexer position to where the expression parser stopped
         self.lexer.setState(result.lexer_state);
 
         if (result.last_token_type == .macro_break) {
-            // The `;` ended this body; the next macro's header lexes in HEADER mode.
             self.lexer.mode = .header;
             self.state = .expect_id;
             self.token = self.lexer.nextToken();
         } 
         else {
-            // EOF terminated the final body (`;` is EOF-optional).
             self.token = EOF_TOKEN;
         }
     }
@@ -311,38 +294,28 @@ const MacroParser = struct {
             });
         }
 
-        // Reset for next macro
         self.current_id = null;
         self.parameters.clearRetainingCapacity();
     }
 
-    /// The macro's docstring: the maximal run of comments ending immediately
-    /// before `header_start`, where every gap (comment-to-comment and
-    /// last-comment-to-header) is whitespace only. Returned as a raw source
-    /// slice, or "" if there's no sink or no adjacent comment.
     fn docstringBefore(self: *MacroParser, header_start: u32) []const u8 {
         const sink = self.comment_sink orelse return "";
         const items = sink.list.items;
         const source = self.lexer.source;
 
-        // Comments are appended in source order; skip any that start at or after
-        // the header (they belong to a later macro, already collected).
         var run_end = items.len;
         while (run_end > 0 and items[run_end - 1].start >= header_start) run_end -= 1;
         if (run_end == 0) return "";
         run_end -= 1;
 
-        // The nearest comment must be adjacent to the header to be its docstring.
         if (!isAdjacentGap(source[items[run_end].end..header_start])) return "";
 
-        // Extend the run backward across adjacent comments.
         var run_start = run_end;
         while (run_start > 0 and isAdjacentGap(source[items[run_start - 1].end..items[run_start].start]))
             run_start -= 1;
 
         return source[items[run_start].start..items[run_end].end];
     }
-
 
     fn processIdentifier(self: *MacroParser) Allocator.Error!?[]const u8 {
         if (self.token.hasInvalidEscapes()) return null;
@@ -385,9 +358,6 @@ const MacroParser = struct {
     }
 };
 
-/// True when `slice` (the gap between a comment and what follows) is whitespace
-/// only AND spans at most one line break, i.e. they are on adjacent lines. A
-/// blank line (two line breaks) detaches the comment, so it is not a docstring.
 fn isAdjacentGap(slice: []const u8) bool {
     var newlines: usize = 0;
     for (slice) |c| switch (c) {
@@ -400,7 +370,6 @@ fn isAdjacentGap(slice: []const u8) bool {
     };
     return true;
 }
-
 
 pub const MacroValidationResult = union(enum) {
     ok: []const exec.Macro,
@@ -437,7 +406,6 @@ fn validateMacro(
 ) Allocator.Error!?exec.Macro {
     const init_error_count = errors.count();
 
-    // Validate ID
     const id = switch (macro.id) {
         .valid => |id_data| id_data.name,
         .err => |macro_error| {
@@ -446,7 +414,6 @@ fn validateMacro(
         },
     };
 
-    // Validate parameters
     var valid_params = std.ArrayListUnmanaged(exec.MacroParameter).empty;
     for (macro.parameters) |param_node| {
         switch (param_node) {
@@ -466,8 +433,6 @@ fn validateMacro(
         }
     }
 
-    // Validate body expression (reuse expression validation). The body is its own
-    // unit: a fresh counter hands out site ids local to it, starting at 0.
     var site_counter: u32 = 0;
     const body_thunk = try validation_mod.validateStep(allocator, macro.body, errors, &site_counter) orelse return null;
     if (body_thunk.body != .expression) {
@@ -487,10 +452,6 @@ fn validateMacro(
     };
 }
 
-/// Clean a raw docstring comment run into one-line prose: per line strip leading
-/// `#` markers and surrounding space, drop blank lines, join with spaces. Done
-/// once at load so `exec.Macro.description`, hover, and `--dump-macros` all read
-/// like an op's description. Empty in, empty out.
 fn cleanDocstring(allocator: Allocator, raw: []const u8) Allocator.Error![]const u8 {
     if (raw.len == 0) return "";
     var out: std.ArrayListUnmanaged(u8) = .empty;
@@ -518,7 +479,6 @@ fn macroErrToValidationErr(macro_error: MacroError) validation_mod.ValidationErr
         .end = macro_error.end,
     };
 }
-
 
 const builtins = @import("builtins.zig");
 
@@ -584,7 +544,6 @@ test "duplicate macro id produces error" {
     const module = try parseMacroModule(alloc, "foo x | + :x 1 ; foo y | + :y 2 ;");
 
     try std.testing.expectEqual(@as(usize, 2), module.macros.len);
-    // Second macro should have an error ID
     try std.testing.expect(module.macros[1].macro.id == .err);
 }
 
@@ -611,7 +570,6 @@ test "validate and execute macro" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    // Parse and validate the macro module
     const module = try parseMacroModule(alloc, "double x | * :x 2 ;");
     const macro_result = try validateMacroModule(alloc, module);
     const macros = switch (macro_result) {
@@ -619,14 +577,12 @@ test "validate and execute macro" {
         .err => return error.TestUnexpectedResult,
     };
 
-    // Set up registry with builtins + the macro
     var registry = exec.Registry.init(alloc);
     try builtins.registerAll(&registry, alloc);
     for (macros) |*macro| {
         try registry.registerMacro(macro.id, macro);
     }
 
-    // Parse and validate an expression that calls the macro
     const ast_root = try expr_parser.parse(alloc, "double 21");
     const expr_result = try validation_mod.validate(alloc, ast_root);
     const expression = switch (expr_result) {
@@ -634,7 +590,6 @@ test "validate and execute macro" {
         .err => return error.TestUnexpectedResult,
     };
 
-    // Execute
     var env = exec.Env{ .registry = &registry, .allocator = alloc };
     const scope = exec.Scope.EMPTY;
     const value = try env.processExpression(expression, &scope);
@@ -647,7 +602,6 @@ test "end-to-end: macro with deferred parameter" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    // Macro: do-twice ~action | proc :action :action ;
     const module = try parseMacroModule(alloc, "do-twice ~action | proc :action :action ;");
     const macro_result = try validateMacroModule(alloc, module);
     const macros = switch (macro_result) {
@@ -661,7 +615,6 @@ test "end-to-end: macro with deferred parameter" {
         try registry.registerMacro(macro.id, macro);
     }
 
-    // do-twice 42 -> evaluates 42 twice, returns last = 42
     const ast_root = try expr_parser.parse(alloc, "do-twice 42");
     const expr_result = try validation_mod.validate(alloc, ast_root);
     const expression = switch (expr_result) {
@@ -695,7 +648,6 @@ test "end-to-end: multiple macros in module" {
         try registry.registerMacro(macro.id, macro);
     }
 
-    // quadruple 3 -> double(double(3)) -> double(6) -> 12
     const ast_root = try expr_parser.parse(alloc, "quadruple 3");
     const expr_result = try validation_mod.validate(alloc, ast_root);
     const expression = switch (expr_result) {

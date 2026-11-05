@@ -87,15 +87,6 @@ fn stringOp(args: Args) ExecError!?Value {
     };
 }
 
-/// Debug representation of any value. Distinct from `string` which gives
-/// value-as-text:
-///   strings -> "quoted" with escapes
-///   lists   -> [a b c] (sub-expression sugar; not a top-level form)
-///   none    -> $none
-///   ints/floats -> same as `string`
-///
-/// Intended for logs and REPL inspection, not programmatic round-trip.
-/// For AST -> source -> AST use the `serializer` module.
 fn inspectOp(args: Args) ExecError!?Value {
     try args.expectCount(1);
     const maybe_value = try args.at(0).get();
@@ -120,7 +111,6 @@ fn typeOp(args: Args) ExecError!?Value {
     } };
 }
 
-
 const testing = @import("testing.zig");
 
 test "type conversion: int from float" {
@@ -133,7 +123,6 @@ test "type conversion: int from float" {
 test "type conversion: int saturates a non-finite float instead of crashing" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // Converting +inf used to trap in @intFromFloat; now it saturates.
     const result = try testing.evalWithBuiltins(arena.allocator(), "int (/ 1.0 0.0)");
     try std.testing.expectEqual(std.math.maxInt(i64), result.?.int);
 }
@@ -298,4 +287,3 @@ test "inspect: wrong arity fails" {
     const result = testing.evalWithBuiltins(arena.allocator(), "inspect 1 2");
     try std.testing.expectError(error.RuntimeError, result);
 }
-

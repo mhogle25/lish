@@ -30,8 +30,6 @@ pub fn registerAll(registry: *Registry, allocator: Allocator) Allocator.Error!vo
     }));
 }
 
-// Each op pulls bytes from io and converts to the needed type.
-
 fn randomU64(io: std.Io) u64 {
     var bytes: [8]u8 = undefined;
     io.random(&bytes);
@@ -39,19 +37,16 @@ fn randomU64(io: std.Io) u64 {
 }
 
 fn randomF64(io: std.Io) f64 {
-    // Use the top 53 bits of a u64 to get a uniform float in [0, 1).
     const bits = randomU64(io) >> 11;
     return @as(f64, @floatFromInt(bits)) * (1.0 / @as(f64, @floatFromInt(@as(u64, 1) << 53)));
 }
 
 fn randomIntRangeAtMost(io: std.Io, comptime T: type, at_least: T, at_most: T) T {
-    // `at_most - at_least` overflows for a signed span wider than i64 max, so work
-    // in the unsigned domain: bit-cast and subtract (exact since at_most >= at_least).
     const U = std.meta.Int(.unsigned, @bitSizeOf(T));
     const lo: U = @bitCast(at_least);
     const span: U = @as(U, @bitCast(at_most)) -% lo;
 
-    const range = @as(u64, span) +| 1; // inclusive count; saturates for the full 2^64 range
+    const range = @as(u64, span) +| 1;
     const r: U = @intCast(randomU64(io) % range);
 
     return @bitCast(lo +% r);
@@ -65,10 +60,6 @@ fn requireIo(args: Args) ExecError!std.Io {
     return args.env.io orelse args.env.fail(.internal, "random ops require an Io context");
 }
 
-
-/// `? x y`, random value in [x, y] (both inclusive).
-/// For integers, both endpoints are reachable.
-/// For floats, [x, y) is used internally; hitting exactly y is not representable.
 fn randInclusiveOp(args: Args) ExecError!?Value {
     try args.expectCount(2);
     const x = try args.at(0).resolve();
@@ -91,9 +82,6 @@ fn randInclusiveOp(args: Args) ExecError!?Value {
     }
 }
 
-/// `?< x y`, random value in [x, y) (upper-exclusive).
-/// For integers, y is never returned.
-/// For floats, standard [x, y) semantics.
 fn randExclusiveOp(args: Args) ExecError!?Value {
     try args.expectCount(2);
     const x = try args.at(0).resolve();
@@ -116,14 +104,12 @@ fn randExclusiveOp(args: Args) ExecError!?Value {
     }
 }
 
-/// `?? a b c ...`, pick one argument at random. Only the chosen argument is evaluated.
 fn randPickOp(args: Args) ExecError!?Value {
     try args.expectMinCount(1);
     const io = try requireIo(args);
     const index = randomIntRangeLessThan(io, usize, 0, args.count());
     return args.at(index).get();
 }
-
 
 const builtins = @import("builtins.zig");
 const process = @import("process.zig");
@@ -212,8 +198,6 @@ test "??: picks from provided values" {
 }
 
 test "let: binds ? once, body sees the same roll on every reference" {
-    // Without let: (- (? 0 1000000) (? 0 1000000)) is almost never 0.
-    // With let:    (let r (? 0 1000000) (- :r :r)) is always 0.
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();

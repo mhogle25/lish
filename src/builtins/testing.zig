@@ -29,8 +29,6 @@ pub fn evalWithBuiltins(alloc: Allocator, source: []const u8) ExecError!?Value {
     };
 }
 
-/// Like `evalWithBuiltins` but also loads the bundled stdlib macros. Used by
-/// tests that exercise stdlib macros built on top of the builtin ops.
 pub fn evalWithStdlib(alloc: Allocator, source: []const u8) ExecError!?Value {
     const process_mod = @import("../process.zig");
     var registry = Registry.init(alloc);
@@ -48,7 +46,6 @@ pub fn evalWithStdlib(alloc: Allocator, source: []const u8) ExecError!?Value {
     };
 }
 
-// Enter the unit (binding its slot array) and evaluate its root expression.
 fn runUnit(env: *exec.Env, unit: exec.Unit) ExecError!?Value {
     const frame = try env.enterUnit(unit.unit_id, unit.site_count);
     defer env.exitUnit(frame);

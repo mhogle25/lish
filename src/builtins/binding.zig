@@ -89,8 +89,6 @@ fn unpackOp(args: Args) ExecError!?Value {
     var extended_scope = exec.Scope{ .parent = args.scope };
     defer extended_scope.deinit(args.env.allocator);
 
-    // The source must be an indexable collection (list or string, like `at`);
-    // anything else (including $none) is a misuse.
     const source = (try args.items[source_index].proc(args.env, &extended_scope)) orelse
         return args.env.fail(.type_mismatch, "'unpack' expects a list or string, got none");
     const len: usize = switch (source) {
@@ -99,7 +97,6 @@ fn unpackOp(args: Args) ExecError!?Value {
         else => return args.env.failFmt(.type_mismatch, "'unpack' expects a list or string, got {s}", .{source.typeName()}),
     };
 
-    // Bind each name positionally; a name past the source length gets $none.
     var name_buf: [256]u8 = undefined;
     var i: usize = 0;
     while (i < source_index) : (i += 1) {
@@ -140,7 +137,6 @@ fn pipeOp(args: Args) ExecError!?Value {
 
     return current;
 }
-
 
 const testing = @import("testing.zig");
 
@@ -196,7 +192,6 @@ test "let: inner shadows outer" {
 test "let: shadow does not leak past inner body" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // Inner let shadows x with 10, but outer body after inner should see x=5
     const result = try testing.evalWithBuiltins(arena.allocator(), "let x 5 (+ (let x 10 :x) :x)");
     try std.testing.expectEqual(@as(i64, 15), result.?.int);
 }
@@ -204,7 +199,6 @@ test "let: shadow does not leak past inner body" {
 test "dispatch: computed head via sub-expression" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // The head is evaluated: (concat "co" "ncat") -> "concat", then called.
     const result = try testing.evalWithBuiltins(arena.allocator(), "(concat \"co\" \"ncat\") \"f\" \"oo\"");
     try std.testing.expectEqualStrings("foo", result.?.string);
 }
@@ -219,7 +213,6 @@ test "dispatch: scope thunk as head resolves a bound op name" {
 test "dispatch: computed scope key" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // The : key is evaluated: (concat "h" "p") -> "hp", looked up in scope.
     const result = try testing.evalWithBuiltins(arena.allocator(), "let hp 42 :(concat \"h\" \"p\")");
     try std.testing.expectEqual(@as(i64, 42), result.?.int);
 }
@@ -227,7 +220,6 @@ test "dispatch: computed scope key" {
 test "dispatch: indirect scope key" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // ::k -- inner :k yields "hp", the outer : looks that up (cf. bash ${!name}).
     const result = try testing.evalWithBuiltins(arena.allocator(), "let hp 42 (let k \"hp\" ::k)");
     try std.testing.expectEqual(@as(i64, 42), result.?.int);
 }
@@ -235,7 +227,6 @@ test "dispatch: indirect scope key" {
 test "let: sibling proc expressions do not see binding" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // First sub-expr binds x; second references :x which should not be in scope
     const result = testing.evalWithBuiltins(arena.allocator(), "proc (let x 5 :x) :x");
     try std.testing.expectError(error.RuntimeError, result);
 }
@@ -306,7 +297,6 @@ test "pipe: single step" {
 test "pipe: multi-step rebinds between steps" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // 5 -> +3 -> 8 -> *2 -> 16
     const result = try testing.evalWithBuiltins(arena.allocator(), "pipe x 5 (+ :x 3) (* :x 2)");
     try std.testing.expectEqual(@as(i64, 16), result.?.int);
 }
@@ -314,7 +304,6 @@ test "pipe: multi-step rebinds between steps" {
 test "pipe: chain of same-op rebinds" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // 1 -> +1 -> 2 -> +1 -> 3 -> +1 -> 4
     const result = try testing.evalWithBuiltins(arena.allocator(), "pipe v 1 (+ :v 1) (+ :v 1) (+ :v 1)");
     try std.testing.expectEqual(@as(i64, 4), result.?.int);
 }
@@ -322,7 +311,6 @@ test "pipe: chain of same-op rebinds" {
 test "pipe: nested pipes with different names" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // outer x = 10; inner pipe y = (* :x 2) = 20; inner step (+ :y 5) -> 25
     const result = try testing.evalWithBuiltins(arena.allocator(),
         "pipe x 10 (pipe y (* :x 2) (+ :y 5))");
     try std.testing.expectEqual(@as(i64, 25), result.?.int);
@@ -331,7 +319,6 @@ test "pipe: nested pipes with different names" {
 test "pipe: inner pipe sees outer binding" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // outer = 7; inner pipe references outer :a inside steps
     const result = try testing.evalWithBuiltins(arena.allocator(),
         "pipe a 7 (pipe b 3 (+ :a :b))");
     try std.testing.expectEqual(@as(i64, 10), result.?.int);
@@ -368,7 +355,6 @@ test "given: a missing else yields none on a none source" {
 test "given: the binding is not visible to the else body" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // :x must resolve to the outer binding, not the (unbound) given name.
     const result = try testing.evalWithBuiltins(arena.allocator(), "let x 7 (given x $none :x :x)");
     try std.testing.expectEqual(@as(i64, 7), result.?.int);
 }
@@ -383,7 +369,6 @@ test "given: the binding does not leak past the body" {
 test "given: the ok body is not evaluated on a none source" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // If the ok body ran, :x would be unbound and this would error; the else wins.
     const result = try testing.evalWithBuiltins(arena.allocator(), "given x $none :x 1");
     try std.testing.expectEqual(@as(i64, 1), result.?.int);
 }
@@ -436,4 +421,3 @@ test "unpack: a none source panics" {
     const result = testing.evalWithBuiltins(arena.allocator(), "unpack a $none :a");
     try std.testing.expectError(error.RuntimeError, result);
 }
-

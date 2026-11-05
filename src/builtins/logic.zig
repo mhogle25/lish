@@ -55,7 +55,6 @@ fn notOp(args: Args) ExecError!?Value {
     return if (result != null) null else val.some();
 }
 
-
 const testing = @import("testing.zig");
 
 test "logic: and short-circuits" {
@@ -84,4 +83,3 @@ test "logic: not" {
     const negated_none = try testing.evalWithBuiltins(arena.allocator(), "not $none");
     try std.testing.expect(negated_none != null);
 }
-

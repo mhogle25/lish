@@ -28,10 +28,9 @@ pub fn main(init: std.process.Init) !void {
     const stdout = &stdout_writer.interface;
     const stderr = &stderr_writer.interface;
 
-    // --help / -h: print usage and exit.
     {
         var probe = init.minimal.args.iterate();
-        _ = probe.next(); // skip argv[0]
+        _ = probe.next();
         while (probe.next()) |arg| {
             if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
                 try stdout.writeAll(HELP);
@@ -40,14 +39,9 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    // --dump-ops / --dump-macros: serialize the full default registry to stdout
-    // and exit. This is the canonical, reproducible source of the op/macro
-    // vocabulary (nothing is committed to disk); a custom host that builds its
-    // own registry can offer the same flag to expose its vocabulary to editor
-    // tooling.
     {
         var probe = init.minimal.args.iterate();
-        _ = probe.next(); // skip argv[0]
+        _ = probe.next();
         while (probe.next()) |arg| {
             const dump_ops = std.mem.eql(u8, arg, "--dump-ops");
             const dump_macros = std.mem.eql(u8, arg, "--dump-macros");
@@ -65,11 +59,9 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    // --init-config: write a commented starter config to the standard path (if
-    // absent) and exit. Never clobbers an existing config.
     {
         var probe = init.minimal.args.iterate();
-        _ = probe.next(); // skip argv[0]
+        _ = probe.next();
         while (probe.next()) |arg| {
             if (!std.mem.eql(u8, arg, "--init-config")) continue;
             const result = repl_mod.initConfig(io, init.minimal.environ, allocator) catch |err| {
@@ -89,14 +81,11 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    // Parse --macros/-m arguments and an optional positional script path. A bare
-    // path (`lish file.lish`) runs that file and exits; with no path we drop into
-    // the REPL.
     var macro_dir_storage: [16][]const u8 = undefined;
     var macro_dir_count: usize = 0;
     var script_path: ?[]const u8 = null;
     var arg_iter = init.minimal.args.iterate();
-    _ = arg_iter.next(); // skip argv[0]
+    _ = arg_iter.next();
 
     while (arg_iter.next()) |arg| {
         if (std.mem.eql(u8, arg, "--macros") or std.mem.eql(u8, arg, "-m")) {
@@ -133,7 +122,6 @@ pub fn main(init: std.process.Init) !void {
 
     _ = try lish.loadStdlib(&session.registry);
 
-    // A script path was given: run it and exit instead of starting the REPL.
     if (script_path) |path| {
         runScript(io, allocator, &session, stdout, stderr, path);
         return;
@@ -152,12 +140,6 @@ pub fn main(init: std.process.Init) !void {
     repl_mod.runRepl(&session, &editor, stdout, stderr);
 }
 
-/// Run a single `.lish` file through the configured session and print its result
-/// value to stdout. Any program output (from `print`/`println` ops) has already
-/// streamed to stdout during evaluation; the returned value is printed after, in
-/// plain form (no REPL `=> ` prefix or ANSI, so the output is clean to capture).
-/// Exits with a nonzero status on a read, validation, or runtime error.
-/// `.lishmacro` files are macro modules, not runnable scripts.
 fn runScript(
     io: std.Io,
     allocator: std.mem.Allocator,
@@ -183,8 +165,6 @@ fn runScript(
     };
 
     switch (result) {
-        // Mark the return value with `=>` (shared with the REPL) so it is
-        // distinguishable from the program's own `say` output.
         .ok => |maybe_value| if (maybe_value) |value| {
             repl_mod.writeResult(stdout, value) catch {};
             stdout.writeByte('\n') catch {};

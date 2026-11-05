@@ -52,8 +52,7 @@ pub fn register(registry: *Registry, allocator: Allocator) Allocator.Error!void 
         .description = "Raise the first argument to each subsequent power, left to right; integer overflow saturates.",
     }));
 
-    // Overflow-explicit integer variants of `+ - * **`. The bare ops saturate on
-    // overflow; these opt into wraparound (modular) or a $none-on-overflow check.
+    // Overflow-explicit integer variants
     try g.register("+%", Operation.fromFn(addWrapOp, .{
         .signature = .{ .params = &int_fold, .returns = .int },
         .description = "Add integers with wraparound (modular) on overflow.",
@@ -215,7 +214,6 @@ fn divideOp(args: Args) ExecError!?Value {
 
 fn divInt(left: i64, right: i64) i64 {
     if (right == 0) return 0;
-    // minInt / -1 is the one overflowing division (+2^63 doesn't fit); saturate it.
     if (left == std.math.minInt(i64) and right == -1) return std.math.maxInt(i64);
     return @divTrunc(left, right);
 }
@@ -230,7 +228,6 @@ fn moduloOp(args: Args) ExecError!?Value {
 
 fn modInt(left: i64, right: i64) i64 {
     if (right == 0) return 0;
-    // x mod 1 or -1 is always 0; guarding -1 also avoids the minInt/-1 divide overflow.
     if (right == -1) return 0;
     return @mod(left, right);
 }
@@ -278,8 +275,6 @@ fn powerCheckedOp(args: Args) ExecError!?Value {
     return accumulator;
 }
 
-// Negative exponent: |base^exp| < 1 for |base| > 1, so it truncates to 0 (like `/`);
-// base 1/-1 are their own reciprocals. Shared by all integer power paths.
 fn intPowNegExp(base: i64, exp: i64) i64 {
     return switch (base) {
         1 => 1,
@@ -288,8 +283,6 @@ fn intPowNegExp(base: i64, exp: i64) i64 {
     };
 }
 
-// Exact integer exponentiation by squaring; null on i64 overflow. The direct i64
-// multiply avoids the f64 round-trip, which loses precision past 2^53 and traps.
 fn intPowChecked(base: i64, exp: i64) ?i64 {
     if (exp < 0) return intPowNegExp(base, exp);
 
@@ -305,13 +298,11 @@ fn intPowChecked(base: i64, exp: i64) ?i64 {
     return result;
 }
 
-// On overflow, pin to the i64 bound matching the result's sign.
 fn intPowSat(base: i64, exp: i64) i64 {
     return intPowChecked(base, exp) orelse
         if (base < 0 and @mod(exp, 2) != 0) std.math.minInt(i64) else std.math.maxInt(i64);
 }
 
-// Exponentiation modulo 2^64 (wraps), mirroring `*%`; not arbitrary `a^b mod m`.
 fn intPowWrap(base: i64, exp: i64) i64 {
     if (exp < 0) return intPowNegExp(base, exp);
 
@@ -366,8 +357,6 @@ fn shiftRightOp(args: Args) ExecError!?Value {
     return helpers.intFold(args, shrInt);
 }
 
-// A negative distance shifts the opposite direction (symmetric); a distance at
-// or beyond the bit width saturates to 0 (via std.math.shl/shr).
 fn shlInt(base: i64, dist: i64) i64 {
     if (dist < 0) return std.math.shr(i64, base, shiftAmount(dist));
     return std.math.shl(i64, base, shiftAmount(dist));
@@ -378,12 +367,10 @@ fn shrInt(base: i64, dist: i64) i64 {
     return std.math.shr(i64, base, shiftAmount(dist));
 }
 
-// |dist| as u64; `-dist` would overflow on minInt, so negate in the u64 domain.
 fn shiftAmount(dist: i64) u64 {
     const bits: u64 = @bitCast(dist);
     return if (dist < 0) ~bits +% 1 else bits;
 }
-
 
 const testing = @import("testing.zig");
 
@@ -432,7 +419,6 @@ test "arithmetic: power" {
 test "arithmetic: power computes exact large integers (no f64 precision loss)" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // 15^15 = 437893890380859375; the old f64 round-trip returned ...859392.
     const result = try testing.evalWithBuiltins(arena.allocator(), "** 15 15");
     try std.testing.expectEqual(@as(i64, 437893890380859375), result.?.int);
 }
@@ -440,7 +426,6 @@ test "arithmetic: power computes exact large integers (no f64 precision loss)" {
 test "arithmetic: power overflow saturates to i64 max instead of crashing" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // 16^16 exceeds the i64 range; the default `**` pins to maxInt (no crash, no wrap).
     const result = try testing.evalWithBuiltins(arena.allocator(), "** 16 16");
     try std.testing.expectEqual(std.math.maxInt(i64), result.?.int);
 }
@@ -448,7 +433,6 @@ test "arithmetic: power overflow saturates to i64 max instead of crashing" {
 test "arithmetic: power saturates to i64 min for a negative overflowing result" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // (-10)^19 overflows negative (base < 0, odd exponent) -> pins to minInt.
     const result = try testing.evalWithBuiltins(arena.allocator(), "** -10 19");
     try std.testing.expectEqual(std.math.minInt(i64), result.?.int);
 }
@@ -467,7 +451,6 @@ test "arithmetic: power negative exponent truncates toward zero (integer path)" 
 test "arithmetic: power of zero to a negative exponent is lenient zero, not a crash" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // Old code: pow(0, -1) -> inf -> @intFromFloat trap. Now: lenient 0.
     const result = try testing.evalWithBuiltins(arena.allocator(), "** 0 -1");
     try std.testing.expectEqual(@as(i64, 0), result.?.int);
 }
@@ -484,7 +467,6 @@ test "arithmetic: default add/subtract saturate at the i64 bounds" {
     defer arena.deinit();
     const hi = try testing.evalWithBuiltins(arena.allocator(), "+ 9223372036854775807 1");
     try std.testing.expectEqual(std.math.maxInt(i64), hi.?.int);
-    // Nuclear-Gandhi underflow: pinned at minInt, not wrapped to a huge positive.
     const lo = try testing.evalWithBuiltins(arena.allocator(), "- -9223372036854775808 1");
     try std.testing.expectEqual(std.math.minInt(i64), lo.?.int);
 }
@@ -499,7 +481,6 @@ test "arithmetic: default multiply saturates toward the true result's sign" {
 test "arithmetic: wrapping ops wrap around instead of saturating" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // maxInt +% 1 wraps to minInt; contrast with the saturating `+`.
     const result = try testing.evalWithBuiltins(arena.allocator(), "+% 9223372036854775807 1");
     try std.testing.expectEqual(std.math.minInt(i64), result.?.int);
 }
@@ -540,10 +521,8 @@ test "arithmetic: checked power returns the value, or $none on overflow" {
 test "arithmetic: wrapping power multiplies modulo 2^64" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // In range: exact (2^10 = 1024).
     const small = try testing.evalWithBuiltins(arena.allocator(), "**% 2 10");
     try std.testing.expectEqual(@as(i64, 1024), small.?.int);
-    // 2^64 wraps to 0 (mod 2^64); the saturating `**` would pin to maxInt instead.
     const wrapped = try testing.evalWithBuiltins(arena.allocator(), "**% 2 64");
     try std.testing.expectEqual(@as(i64, 0), wrapped.?.int);
 }
@@ -560,7 +539,6 @@ test "arithmetic: minInt divided or modded by -1 does not trap" {
 test "bitwise: or (reachable as a body operator post Track O)" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // 1100 | 1010 = 1110
     const result = try testing.evalWithBuiltins(arena.allocator(), "| 12 10");
     try std.testing.expectEqual(@as(i64, 14), result.?.int);
 }
@@ -568,7 +546,6 @@ test "bitwise: or (reachable as a body operator post Track O)" {
 test "bitwise: not (reachable as a body operator post Track O)" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // ~5 = -6 in two's complement.
     const result = try testing.evalWithBuiltins(arena.allocator(), "~ 5");
     try std.testing.expectEqual(@as(i64, -6), result.?.int);
 }
@@ -583,7 +560,6 @@ test "bitwise: and" {
 test "bitwise: and folds variadically" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // 14 & 12 & 10 = 1110 & 1100 & 1010 = 1000
     const result = try testing.evalWithBuiltins(arena.allocator(), "& 14 12 10");
     try std.testing.expectEqual(@as(i64, 8), result.?.int);
 }
@@ -612,7 +588,6 @@ test "bitwise: shift left" {
 test "bitwise: shift left chains each distance" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // ((1 << 2) << 3) = 4 << 3 = 32
     const result = try testing.evalWithBuiltins(arena.allocator(), "<< 1 2 3");
     try std.testing.expectEqual(@as(i64, 32), result.?.int);
 }
@@ -627,7 +602,6 @@ test "bitwise: shift right" {
 test "bitwise: shift right chains each distance" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // ((1024 >> 2) >> 3) = 256 >> 3 = 32
     const result = try testing.evalWithBuiltins(arena.allocator(), ">> 1024 2 3");
     try std.testing.expectEqual(@as(i64, 32), result.?.int);
 }
@@ -644,4 +618,3 @@ test "bitwise: type mismatch on non-integer" {
     defer arena.deinit();
     try std.testing.expectError(error.RuntimeError, testing.evalWithBuiltins(arena.allocator(), "& 12 1.5"));
 }
-

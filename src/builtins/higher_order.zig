@@ -11,7 +11,6 @@ const Operation = exec.Operation;
 const Param = exec.Param;
 const Allocator = std.mem.Allocator;
 
-// `op name list body`: name binds each element, body is evaluated per element.
 const name_list_body = [_]Param{ .{ .name = "name", .role = .binding }, .{ .name = "list", .type = .list }, .{ .name = "body", .role = .body } };
 
 pub fn register(registry: *Registry, allocator: Allocator) Allocator.Error!void {
@@ -274,13 +273,11 @@ fn findbyOp(args: Args) ExecError!?Value {
     return null;
 }
 
-
 const testing = @import("testing.zig");
 
 test "higher-order: map" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // map computes lengths of each string, returns a list of lengths
     const result = try testing.evalWithBuiltins(arena.allocator(), "length (map s [\"ab\" \"cde\"] (length :s))");
     try std.testing.expectEqual(@as(i64, 2), result.?.int);
 }
@@ -305,8 +302,6 @@ test "higher-order: apply" {
 test "higher-order: filter" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // filter keeps elements where (not :x) is truthy.
-    // (not $some) = null (filtered out), (not $none) = some (kept), (not $some) = null (filtered out)
     const result = try testing.evalWithBuiltins(arena.allocator(), "length (filter x [$some $none $some] (not :x))");
     try std.testing.expectEqual(@as(i64, 1), result.?.int);
 }
@@ -328,7 +323,6 @@ test "higher-order: reduce with multiply" {
 test "higher-order: fold counts without a list" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // item runs 0..4; sum of x*x = 0+1+4+9+16 = 30.
     const result = try testing.evalWithBuiltins(arena.allocator(), "fold acc 0 x 5 (+ :acc (* :x :x))");
     try std.testing.expectEqual(@as(i64, 30), result.?.int);
 }
@@ -407,7 +401,6 @@ test "findby: predicate sees outer binding" {
 test "findby: returns first non-zero in compare chain" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // Verifies findby + isnt pattern for multi-criteria comparison
     const result = try testing.evalWithBuiltins(arena.allocator(),
         "findby x [0 0 -1 1 0] (isnt :x 0)");
     try std.testing.expectEqual(@as(i64, -1), result.?.int);
@@ -419,4 +412,3 @@ test "findby: wrong arg count fails" {
     const result = testing.evalWithBuiltins(arena.allocator(), "findby x [1 2 3]");
     try std.testing.expectError(error.RuntimeError, result);
 }
-

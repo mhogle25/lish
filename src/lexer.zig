@@ -89,7 +89,6 @@ pub const Lexer = struct {
             };
         }
 
-        // Skip whitespace and comments
         while (true) {
             while (self.idx < self.source.len and isWhitespace(self.source[self.idx])) {
                 switch (self.source[self.idx]) {
@@ -101,16 +100,14 @@ pub const Lexer = struct {
                 self.idx += 1;
             }
 
-            // Check for ## comment
             if (self.idx + 1 < self.source.len and
                 self.source[self.idx] == tok.COMMENT and
                 self.source[self.idx + 1] == tok.COMMENT)
             {
                 const comment_start = self.idx;
-                self.idx += 2; // skip opening ##
+                self.idx += 2;
                 self.column += 2;
 
-                // Skip until closing ## or newline/EOF
                 while (self.idx < self.source.len) {
                     if (self.source[self.idx] == tok.NEWLINE) break;
                     if (self.source[self.idx] == tok.CARRIAGE_RETURN) break;
@@ -118,7 +115,7 @@ pub const Lexer = struct {
                         self.source[self.idx] == tok.COMMENT and
                         self.source[self.idx + 1] == tok.COMMENT)
                     {
-                        self.idx += 2; // skip closing ##
+                        self.idx += 2;
                         self.column += 2;
                         break;
                     }
@@ -126,7 +123,7 @@ pub const Lexer = struct {
                     self.column += 1;
                 }
                 if (self.comment_sink) |sink| sink.record(@intCast(comment_start), @intCast(self.idx));
-                continue; // loop back to skip more whitespace/comments
+                continue;
             }
 
             break;
@@ -161,8 +158,6 @@ pub const Lexer = struct {
             tok.QUOTE_DOUBLE => self.makeStringLiteralToken(tok.QUOTE_DOUBLE),
             tok.QUOTE_SINGLE => self.makeStringLiteralToken(tok.QUOTE_SINGLE),
 
-            // `|`/`~` wall only in a macro header; in a body they glob as
-            // ordinary operator/term chars (the bitwise ops).
             tok.MACRO_SEPARATOR => if (self.mode == .header)
                 self.singleCharToken(.macro_separator, start)
             else
@@ -272,7 +267,6 @@ pub const Lexer = struct {
     }
 
     fn makeStringLiteralToken(self: *Lexer, quote: u8) Token {
-        // idx is at the opening quote
         if (self.idx + 1 >= self.source.len) {
             const start = self.idx;
             return .{
@@ -285,7 +279,7 @@ pub const Lexer = struct {
             };
         }
 
-        self.idx += 1; // skip opening quote
+        self.idx += 1;
         const start = self.idx;
         const starting_line = self.line;
         const starting_column = self.column;
@@ -295,9 +289,8 @@ pub const Lexer = struct {
             const current = self.source[self.idx];
 
             if (current == quote) {
-                // Found closing quote
                 const end = self.idx;
-                self.idx += 1; // skip closing quote
+                self.idx += 1;
 
                 var token_type: TokenType = .string_literal;
                 if (end - start > tok.STRING_LITERAL_MAX_LENGTH)
@@ -336,7 +329,6 @@ pub const Lexer = struct {
             self.idx += 1;
         }
 
-        // Unterminated
         return .{
             .type = .unterminated_string,
             .lexeme = self.source[start..],
@@ -351,7 +343,7 @@ pub const Lexer = struct {
 
     fn handleCarriageReturn(self: *Lexer) void {
         if (self.idx + 1 < self.source.len and self.source[self.idx + 1] == tok.NEWLINE) {
-            self.idx += 1; // skip the \n in \r\n
+            self.idx += 1;
         }
         self.line += 1;
         self.column = 1;
@@ -366,7 +358,6 @@ pub const Lexer = struct {
 fn isWhitespace(char: u8) bool {
     return std.ascii.isWhitespace(char);
 }
-
 
 test "lex simple expression" {
     var lex = Lexer{ .source = "say \"hello\" 42" };
@@ -391,13 +382,13 @@ test "lex brackets" {
     var lex = Lexer{ .source = "(+ [1 2] {3})" };
 
     try std.testing.expectEqual(TokenType.expression_opening_bracket, lex.nextToken().type);
-    try std.testing.expectEqual(TokenType.identifier, lex.nextToken().type); // +
+    try std.testing.expectEqual(TokenType.identifier, lex.nextToken().type);
     try std.testing.expectEqual(TokenType.list_opening_bracket, lex.nextToken().type);
-    try std.testing.expectEqual(TokenType.int, lex.nextToken().type); // 1
-    try std.testing.expectEqual(TokenType.int, lex.nextToken().type); // 2
+    try std.testing.expectEqual(TokenType.int, lex.nextToken().type);
+    try std.testing.expectEqual(TokenType.int, lex.nextToken().type);
     try std.testing.expectEqual(TokenType.list_closing_bracket, lex.nextToken().type);
     try std.testing.expectEqual(TokenType.block_opening_bracket, lex.nextToken().type);
-    try std.testing.expectEqual(TokenType.int, lex.nextToken().type); // 3
+    try std.testing.expectEqual(TokenType.int, lex.nextToken().type);
     try std.testing.expectEqual(TokenType.block_closing_bracket, lex.nextToken().type);
     try std.testing.expectEqual(TokenType.expression_closing_bracket, lex.nextToken().type);
     try std.testing.expectEqual(TokenType.eof, lex.nextToken().type);
@@ -407,9 +398,9 @@ test "lex symbols" {
     var lex = Lexer{ .source = "$foo :bar" };
 
     try std.testing.expectEqual(TokenType.call_expression_symbol, lex.nextToken().type);
-    try std.testing.expectEqual(TokenType.identifier, lex.nextToken().type); // foo
+    try std.testing.expectEqual(TokenType.identifier, lex.nextToken().type);
     try std.testing.expectEqual(TokenType.call_scope_thunk_symbol, lex.nextToken().type);
-    try std.testing.expectEqual(TokenType.identifier, lex.nextToken().type); // bar
+    try std.testing.expectEqual(TokenType.identifier, lex.nextToken().type);
 }
 
 test "lex header mode: ~ and | are walls" {
@@ -418,13 +409,13 @@ test "lex header mode: ~ and | are walls" {
     const id = lex.nextToken();
     try std.testing.expectEqual(TokenType.identifier, id.type);
     try std.testing.expectEqualStrings("double", id.lexeme);
-    try std.testing.expectEqual(TokenType.identifier, lex.nextToken().type); // x
+    try std.testing.expectEqual(TokenType.identifier, lex.nextToken().type);
 
     const tilde = lex.nextToken();
     try std.testing.expectEqual(TokenType.deferred_macro_param_symbol, tilde.type);
     const body = lex.nextToken();
     try std.testing.expectEqual(TokenType.identifier, body.type);
-    try std.testing.expectEqualStrings("body", body.lexeme); // ~body splits
+    try std.testing.expectEqualStrings("body", body.lexeme);
 
     try std.testing.expectEqual(TokenType.macro_separator, lex.nextToken().type);
     try std.testing.expectEqual(TokenType.eof, lex.nextToken().type);
@@ -454,9 +445,9 @@ test "lex body mode: | is an operator term, split by base walls" {
     try std.testing.expectEqual(TokenType.identifier, bor.type);
     try std.testing.expectEqualStrings("|", bor.lexeme);
     try std.testing.expectEqual(TokenType.call_scope_thunk_symbol, lex.nextToken().type);
-    try std.testing.expectEqual(TokenType.identifier, lex.nextToken().type); // a
+    try std.testing.expectEqual(TokenType.identifier, lex.nextToken().type);
     try std.testing.expectEqual(TokenType.call_scope_thunk_symbol, lex.nextToken().type);
-    try std.testing.expectEqual(TokenType.identifier, lex.nextToken().type); // b
+    try std.testing.expectEqual(TokenType.identifier, lex.nextToken().type);
 }
 
 test "lex body mode: a|b is a single bare term" {
@@ -493,12 +484,10 @@ test "lex numbers" {
     try std.testing.expectEqual(TokenType.float, t4.type);
     try std.testing.expectEqualStrings("-2.5", t4.lexeme);
 
-    // trailing decimal makes it not a number
     const t5 = lex.nextToken();
     try std.testing.expectEqual(TokenType.identifier, t5.type);
     try std.testing.expectEqualStrings("5.", t5.lexeme);
 
-    // lone negative sign is not a number
     const t6 = lex.nextToken();
     try std.testing.expectEqual(TokenType.identifier, t6.type);
     try std.testing.expectEqualStrings("-", t6.lexeme);
@@ -514,7 +503,6 @@ test "lex string with escapes" {
     var lex = Lexer{ .source = "\"hello\\nworld\"" };
     const t = lex.nextToken();
     try std.testing.expectEqual(TokenType.string_literal, t.type);
-    // Lexeme includes the raw escape sequence, not the resolved char
     try std.testing.expectEqualStrings("hello\\nworld", t.lexeme);
     try std.testing.expectEqual(@as(usize, 0), t.invalid_escape_count);
 }
@@ -605,7 +593,6 @@ test "lex comment: single # in term is valid identifier" {
     try std.testing.expectEqualStrings("#hello", token.lexeme);
 }
 
-/// Drain a lexer with a comment sink attached and return the collected spans.
 fn collectComments(source: []const u8, allocator: Allocator) ![]CommentSpan {
     var list: std.ArrayListUnmanaged(CommentSpan) = .empty;
     var lex = Lexer{ .source = source, .comment_sink = .{ .list = &list, .allocator = allocator } };

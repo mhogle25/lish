@@ -84,7 +84,6 @@ pub const Session = struct {
             .session_allocator = allocator,
         };
 
-        // Load macros from configured paths, each may be a file or directory.
         for (config.macro_paths) |macro_path| {
             var maybe_dir = std.Io.Dir.cwd().openDir(config.io, macro_path, .{}) catch null;
             if (maybe_dir) |*dir| {
@@ -106,13 +105,11 @@ pub const Session = struct {
         self.registry.deinit(self.session_allocator);
     }
 
-    /// Execute one input. The returned value is valid until the next execute().
     pub fn execute(self: *Session, input: []const u8) Allocator.Error!ProcessResult {
         self.prepareEnv();
         return process_mod.processRawCached(&self.env, self.parse_arena.allocator(), &self.expression_cache, input, null);
     }
 
-    /// Execute with a provided scope. Result valid until the next execute().
     pub fn executeWithScope(self: *Session, input: []const u8, scope: *const Scope) Allocator.Error!ProcessResult {
         self.prepareEnv();
         return process_mod.processRawCached(&self.env, self.parse_arena.allocator(), &self.expression_cache, input, scope);
@@ -120,7 +117,7 @@ pub const Session = struct {
 
     fn prepareEnv(self: *Session) void {
         if (self.eval_reset == .per_execute) {
-            self.reclaimEvalArena(); // reclaim the previous execution's transients
+            self.reclaimEvalArena();
         }
         self.eval_quota = .{ .backing = self.eval_arena.allocator(), .env = &self.env };
         self.env.registry = &self.registry;
@@ -132,23 +129,18 @@ pub const Session = struct {
         self.env.memory_budget_tripped = false;
     }
 
-    /// Load macro files from a directory.
     pub fn loadMacroDir(self: *Session, dir_path: []const u8) !MacroDirResult {
         return process_mod.loadMacroDir(self.io, self.session_allocator, &self.registry, dir_path);
     }
 
-    /// Load a single macro file.
     pub fn loadMacroFile(self: *Session, file_path: []const u8) !MacroLoadResult {
         return process_mod.loadMacroFile(self.io, self.session_allocator, &self.registry, file_path);
     }
 
-    /// Clear the expression cache.
     pub fn clearCache(self: *Session) void {
         self.expression_cache.clear();
     }
 
-    /// Reclaim transient runtime values (the eval arena). Automatic in the default
-    /// per_execute mode; call this explicitly under .manual when done with a batch.
     pub fn resetEval(self: *Session) void {
         self.reclaimEvalArena();
     }
@@ -161,14 +153,11 @@ pub const Session = struct {
         _ = self.eval_arena.reset(mode);
     }
 
-    /// Clear the cache and reset the parse arena (cached parses). Transient runtime
-    /// values live in the eval arena; reclaim those with resetEval().
     pub fn resetArena(self: *Session) void {
         self.expression_cache.clear();
         _ = self.parse_arena.reset(.retain_capacity);
     }
 };
-
 
 const builtins = @import("builtins.zig");
 
@@ -196,7 +185,6 @@ test "session: multiple executions reuse cache" {
     });
     defer session.deinit();
 
-    // First execution, cache miss
     const result1 = try session.execute("+ 10 20");
     switch (result1) {
         .ok => |maybe_value| try std.testing.expectEqual(@as(i64, 30), maybe_value.?.int),
@@ -204,7 +192,6 @@ test "session: multiple executions reuse cache" {
         .runtime_err => return error.TestUnexpectedResult,
     }
 
-    // Second execution, cache hit
     const result2 = try session.execute("+ 10 20");
     switch (result2) {
         .ok => |maybe_value| try std.testing.expectEqual(@as(i64, 30), maybe_value.?.int),
@@ -222,14 +209,12 @@ test "session: runtime error does not break subsequent executions" {
     });
     defer session.deinit();
 
-    // Trigger a runtime error
     const bad_result = try session.execute("nonexistent 1 2");
     switch (bad_result) {
         .runtime_err => {},
         else => return error.TestUnexpectedResult,
     }
 
-    // Should still work fine after error
     const good_result = try session.execute("+ 1 2");
     switch (good_result) {
         .ok => |maybe_value| try std.testing.expectEqual(@as(i64, 3), maybe_value.?.int),
@@ -258,12 +243,10 @@ test "session: eval arena is reclaimed across executions" {
     });
     defer session.deinit();
 
-    // A list-producing expression allocates transient values on every run.
     _ = try session.execute("range 0 500");
     const baseline = session.eval_arena.queryCapacity();
 
     for (0..100) |_| _ = try session.execute("range 0 500");
-    // Each execute resets the eval arena, so 100 more runs don't grow it.
     try std.testing.expectEqual(baseline, session.eval_arena.queryCapacity());
 }
 
@@ -278,11 +261,9 @@ test "session: manual eval reset keeps results alive across executions" {
     const first = (try session.execute("range 0 3")).ok.?;
     const second = (try session.execute("range 10 13")).ok.?;
 
-    // No reset happened between the two executes, so the first list is still valid.
     try std.testing.expectEqual(@as(i64, 0), (try first.getL())[0].?.int);
     try std.testing.expectEqual(@as(i64, 10), (try second.getL())[0].?.int);
 
-    // resetEval retains capacity but reclaims contents; the next execute reuses it.
     session.resetEval();
     const after = (try session.execute("range 0 3")).ok.?;
     try std.testing.expectEqual(@as(i64, 0), (try after.getL())[0].?.int);
@@ -297,11 +278,9 @@ test "session: eval arena shrinks back to the retain limit after a big run" {
     });
     defer session.deinit();
 
-    // A big run inflates the arena well past the limit.
     _ = try session.execute("range 0 100000");
     try std.testing.expect(session.eval_arena.queryCapacity() > limit);
 
-    // The next execute's reset releases everything beyond the limit.
     _ = try session.execute("+ 1 2");
     try std.testing.expect(session.eval_arena.queryCapacity() <= limit);
 }

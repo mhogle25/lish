@@ -11,7 +11,6 @@ const Operation = exec.Operation;
 const Param = exec.Param;
 const Allocator = std.mem.Allocator;
 
-// Ordered comparisons fold over numbers; equality (`is`/`isnt`) works on any value.
 const number_variadic = [_]Param{ .{ .name = "a", .type = .number }, .{ .name = "b", .type = .number, .arity = .variadic } };
 const ab_variadic = [_]Param{ .{ .name = "a" }, .{ .name = "b", .arity = .variadic } };
 const ab = [_]Param{ .{ .name = "a" }, .{ .name = "b" } };
@@ -141,7 +140,6 @@ fn compareOp(args: Args) ExecError!?Value {
     return null;
 }
 
-
 const testing = @import("testing.zig");
 
 test "comparison: less than" {
@@ -208,11 +206,9 @@ test "comparison: is compares deeply nested values without native recursion" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    // Chains this deep overflow the native stack if the compare recurses.
     const equal = try testing.evalWithBuiltins(arena.allocator(), "is (fold acc 0 x 50000 (list :acc)) (fold acc 0 x 50000 (list :acc))");
     try std.testing.expect(equal != null);
 
     const differs = try testing.evalWithBuiltins(arena.allocator(), "is (fold acc 0 x 50000 (list :acc)) (fold acc 1 x 50000 (list :acc))");
     try std.testing.expect(differs == null);
 }
-

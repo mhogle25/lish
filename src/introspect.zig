@@ -46,10 +46,6 @@ fn macroLessByName(_: void, a: MacroEntry, b: MacroEntry) bool {
     return std.mem.order(u8, a.name, b.name) == .lt;
 }
 
-/// Write the structured parameter list as JSON: each param's name plus its
-/// `role` (value/binding/body) and `arity` (single/optional/variadic). This is
-/// what lets a consumer reconstruct the full `Signature` and do binding/scope
-/// analysis, rather than only displaying the rendered `signature` string.
 fn writeParams(writer: *std.Io.Writer, params: []const Param) !void {
     try writer.writeAll(", \"params\": [");
     for (params, 0..) |param, i| {
@@ -79,8 +75,6 @@ fn writeJsonString(writer: *std.Io.Writer, text: []const u8) !void {
     try writer.writeByte('"');
 }
 
-/// Write a `LishType` as structured JSON: a bare kind string, `{ "literal": s }`,
-/// or `{ "one_of": [...] }`. The lossless counterpart to the display `render`.
 fn writeType(writer: *std.Io.Writer, lish_type: LishType) !void {
     switch (lish_type) {
         .literal => |text| {
@@ -100,8 +94,6 @@ fn writeType(writer: *std.Io.Writer, lish_type: LishType) !void {
     }
 }
 
-/// Write every operation in `registry` as a JSON array, sorted by name. The
-/// `category` field is omitted for ops registered outside a named group.
 pub fn serializeOperations(
     writer: *std.Io.Writer,
     registry: *const Registry,
@@ -140,9 +132,6 @@ pub fn serializeOperations(
     try writer.writeAll("]\n");
 }
 
-/// Write every macro in `registry` as a JSON array, sorted by name. The
-/// signature is derived from each macro's parameters (see `Macro.writeSignature`);
-/// macros carry no description, so none is emitted.
 pub fn serializeMacros(
     writer: *std.Io.Writer,
     registry: *const Registry,

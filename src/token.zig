@@ -63,7 +63,6 @@ pub const TokenType = enum {
         };
     }
 
-    /// Returns the opener for a closer (and vice versa); null for non-bracket tokens.
     pub fn paired(self: TokenType) ?TokenType {
         return switch (self) {
             .expression_opening_bracket => .expression_closing_bracket,
@@ -128,7 +127,6 @@ pub const CommentSpan = struct {
     end: u32,
 };
 
-
 // Source of truth for cross-language constants.
 //
 // `tools/gen.zig` reflects over the integer constants below and emits the
@@ -173,13 +171,6 @@ pub const STRING_LITERAL_MAX_LENGTH = 32 * 1024;
 pub const MAX_EXPRESSION_NESTING = 256;
 pub const MAX_PARAMETER_COUNT = 2048;
 
-/// The base walls: characters that end a term in EVERY lexer mode, because they
-/// are structural inside an expression (`:x`/`$some` attach to the next token,
-/// brackets/quotes bound things, `;` terminates a macro body). `|` and `~` are
-/// deliberately NOT here: they are structural only in a macro HEADER (see
-/// `isHeaderWall`); in a body they are ordinary operator/term chars, so a host
-/// may register ops named `|`/`~` (bitwise OR/NOT). This set is also what the
-/// serializer's `needsQuoting` reads, so a bare `|`/`~` round-trips as an op.
 pub fn isReservedChar(char: u8) bool {
     return switch (char) {
         EXPRESSION_SINGLE,
@@ -198,14 +189,10 @@ pub fn isReservedChar(char: u8) bool {
     };
 }
 
-/// The walls in a macro HEADER: the base walls plus `|` (header/body separator)
-/// and `~` (deferred-param marker). The lexer applies this in HEADER mode so
-/// `~cond` splits into `~` + `cond` and the `|` ends the header.
 pub fn isHeaderWall(char: u8) bool {
     return isReservedChar(char) or char == MACRO_SEPARATOR or char == DEFERRED;
 }
 
-/// Standard escape sequences for string literals.
 pub fn escSymToChar(symbol: u8) ?u8 {
     return switch (symbol) {
         'r' => CARRIAGE_RETURN,
@@ -224,15 +211,11 @@ pub fn escSymToChar(symbol: u8) ?u8 {
     };
 }
 
-/// Escape sequences for identifiers: standard escapes plus every wall char (the
-/// base walls AND the header-only `|`/`~`), so a header term can name a literal
-/// `|`/`~`/`;` via `\|`/`\~`/`\;`.
 pub fn idenEscSymToChar(symbol: u8) ?u8 {
     return if (isHeaderWall(symbol)) 
         symbol else
         escSymToChar(symbol);
 }
-
 
 test "token type pairing" {
     try std.testing.expect(TokenType.expression_opening_bracket.pairsWith(.expression_closing_bracket));
@@ -250,10 +233,8 @@ test "reserved chars" {
 }
 
 test "base walls exclude pipe/tilde, include semicolon" {
-    // `|` and `~` are body operators, not base walls.
     try std.testing.expect(!isReservedChar(MACRO_SEPARATOR));
     try std.testing.expect(!isReservedChar(DEFERRED));
-    // `;` terminates a macro body in every mode.
     try std.testing.expect(isReservedChar(MACRO_BREAK));
 }
 
@@ -261,7 +242,6 @@ test "header walls add pipe and tilde" {
     try std.testing.expect(isHeaderWall(MACRO_SEPARATOR));
     try std.testing.expect(isHeaderWall(DEFERRED));
     try std.testing.expect(isHeaderWall(MACRO_BREAK));
-    // Every base wall is also a header wall.
     try std.testing.expect(isHeaderWall('$'));
     try std.testing.expect(isHeaderWall(':'));
     try std.testing.expect(!isHeaderWall('a'));
@@ -287,7 +267,6 @@ test "escape sequences" {
     try std.testing.expectEqual(@as(u8, '"'), escSymToChar('"').?);
     try std.testing.expectEqual(@as(u8, '\''), escSymToChar('\'').?);
     try std.testing.expect(escSymToChar('x') == null);
-    // Identifier escapes include reserved chars
     try std.testing.expectEqual(@as(u8, '$'), idenEscSymToChar('$').?);
     try std.testing.expectEqual(@as(u8, '('), idenEscSymToChar('(').?);
 }

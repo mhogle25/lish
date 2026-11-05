@@ -42,7 +42,6 @@ fn eval(alloc: std.mem.Allocator, io: ?std.Io, opts: Options, src: []const u8) e
     };
 }
 
-// Each source must RETURN (a value or a graceful error), not trap. OOM is surfaced.
 fn sweepNoTrap(alloc: std.mem.Allocator, io: ?std.Io, opts: Options, cases: []const []const u8) !void {
     for (cases) |src| {
         _ = eval(alloc, io, opts, src) catch |err| switch (err) {
@@ -161,8 +160,6 @@ test "boundary sweep: collection ops never trap on extreme indices or empties" {
 test "boundary sweep: range/until reach the i64 bounds without trapping" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // Spans are kept tiny (endpoints at the boundary, not the whole range) so these
-    // exercise the overflow-on-increment path without attempting a huge allocation.
     try sweepNoTrap(arena.allocator(), null, .{}, &.{
         "range " ++ NEAR_MAX ++ " " ++ MAX,
         "range 0 5",
@@ -203,8 +200,6 @@ test "range reaches the i64 boundary and yields the endpoint" {
 test "an enormous range errors under a list-length bound instead of hanging" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // Unbounded this would try to build ~9.2e18 elements; the bound turns it into a
-    // prompt RuntimeError after 1000 iterations rather than a host hang.
     try std.testing.expectError(error.RuntimeError, eval(arena.allocator(), null, .{ .max_list_length = 1000 }, "range 0 " ++ MAX));
 }
 
@@ -214,8 +209,6 @@ test "random over the full i64 range returns an in-range value" {
     var threaded = std.Io.Threaded.init(arena.allocator(), .{});
     defer threaded.deinit();
     const io = threaded.io();
-    // The previous code trapped here (at_most - at_least overflowed); now it must
-    // return a valid i64 across many rolls.
     for (0..200) |_| {
         const result = try eval(arena.allocator(), io, .{ .with_random = true }, "? " ++ MIN ++ " " ++ MAX);
         try std.testing.expect(result.? == .int);

@@ -16,17 +16,8 @@
 const std = @import("std");
 const tok = @import("token.zig");
 
-/// Offset of the expression-terminating `terminator` in `source`, or null if
-/// the source ends first (unterminated).
-///
-/// `source` begins just after the opening delimiter. When `open` is non-null,
-/// nesting is tracked: each `open` raises the depth and each `terminator` lowers
-/// it, so the boundary is the `terminator` seen at depth 0 (folio's `{`/`}`).
-/// When `open` is null the terminator does not nest, so the first
-/// unquoted/uncommented `terminator` is the boundary (the macro body `;`).
-///
-/// Strings (`"`/`'`, with `\` escapes) and `##` comments are skipped, so a
-/// terminator inside them counts as content.
+/// Offset of `terminator` in `source` (which starts just past the opener), or null if unterminated. Skips strings and `##` comments.
+/// A non-null `open` tracks nesting (folio's `{`/`}`); a null `open` means the first `terminator` wins (macro `;`).
 pub fn findExpressionBoundary(source: []const u8, open: ?u8, terminator: u8) ?usize {
     var idx: usize = 0;
     var depth: usize = 0;
@@ -52,36 +43,30 @@ pub fn findExpressionBoundary(source: []const u8, open: ?u8, terminator: u8) ?us
     return null;
 }
 
-/// Skip a string literal whose opening quote is at `quote_idx`. Returns the
-/// offset just past the closing quote, or `source.len` if unterminated.
-/// Mirrors the BACKSLASH handling in `lexer.zig`'s string scanner.
 fn skipString(source: []const u8, quote_idx: usize) usize {
     const quote = source[quote_idx];
-    var idx = quote_idx + 1; // past the opening quote
+    var idx = quote_idx + 1;
     while (idx < source.len) {
         const c = source[idx];
         if (c == tok.BACKSLASH) {
-            idx += if (idx + 1 < source.len) 2 else 1; // skip the escaped char too
+            idx += if (idx + 1 < source.len) 2 else 1;
             continue;
         }
-        if (c == quote) return idx + 1; // past the closing quote
+        if (c == quote) return idx + 1;
         idx += 1;
     }
-    return idx; // unterminated: consumed to EOF
+    return idx;
 }
 
-/// Skip a `##` comment whose opener is at `open_idx`. Comments end at the next
-/// `##` (inline form, consumed) or at a newline/EOF (to-EOL form, left in
-/// place). Mirrors `lexer.zig`'s comment skipping.
 fn skipComment(source: []const u8, open_idx: usize) usize {
-    var idx = open_idx + 2; // past the opening ##
+    var idx = open_idx + 2;
     while (idx < source.len) {
         const c = source[idx];
         if (c == tok.NEWLINE or c == tok.CARRIAGE_RETURN) return idx;
         if (c == tok.COMMENT and idx + 1 < source.len and source[idx + 1] == tok.COMMENT) {
-            return idx + 2; // past the closing ##
+            return idx + 2;
         }
         idx += 1;
     }
-    return idx; // EOF
+    return idx;
 }

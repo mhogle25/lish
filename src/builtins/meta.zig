@@ -35,7 +35,6 @@ fn applyOp(args: Args) ExecError!?Value {
     const id_value = try args.at(0).resolve();
     const list = try args.at(1).resolveList();
 
-    // Variable-length arg list: must heap-allocate the thunk slice.
     const alloc = args.env.allocator;
     const id_thunk = try exec.makeValueLiteral(alloc, exec.Position.synthetic, id_value);
     const thunks = try alloc.alloc(*const Thunk, list.len);
@@ -43,7 +42,6 @@ fn applyOp(args: Args) ExecError!?Value {
         thunks[i] = try exec.makeValueLiteral(alloc, exec.Position.synthetic, item);
     }
 
-    // Runtime-built: no stamped site, so it dispatches dynamically (NO_SITE).
     const expression = Expression{ .name = id_thunk, .args = thunks };
     return args.env.processExpression(expression, args.scope);
 }
@@ -80,7 +78,6 @@ fn opsOp(args: Args) ExecError!?Value {
 
     return .{ .list = names.items };
 }
-
 
 const testing = @import("testing.zig");
 
@@ -140,7 +137,6 @@ test "ops: returns a list" {
 test "ops: contains known built-ins" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // Use `in` to check membership of "+" in the list of op names.
     const has_plus = try testing.evalWithBuiltins(arena.allocator(), "in \"+\" (ops)");
     try std.testing.expect(has_plus != null);
     const has_map = try testing.evalWithBuiltins(arena.allocator(), "in \"map\" (ops)");
@@ -205,7 +201,6 @@ test "known: registered macro" {
     var registry = Registry.init(alloc);
     builtins.registerAll(&registry, alloc) catch return error.OutOfMemory;
 
-    // Define a macro and load it into the registry
     const macro_load = try process.loadMacroModule(&registry, "double x | * :x 2 ;");
     try std.testing.expect(macro_load == .ok);
 
@@ -223,4 +218,3 @@ test "known: registered macro" {
     try std.testing.expect(result != null);
     try std.testing.expectEqualStrings("double", result.?.string);
 }
-

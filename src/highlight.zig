@@ -48,8 +48,6 @@ pub const Highlighter = struct {
         return .{ .source = source };
     }
 
-    /// Start highlighting in a specific zone. A `.lishmacro` document starts in
-    /// `.header`; a plain expression / REPL line uses `init` (`.body`).
     pub fn initMode(source: []const u8, mode: Mode) Highlighter {
         return .{ .source = source, .mode = mode };
     }
@@ -65,35 +63,30 @@ pub const Highlighter = struct {
 
             const start: u32 = @intCast(self.pos);
 
-            // ## ... (to newline or matching ##).
             if (c == tok.COMMENT and self.pos + 1 < self.source.len and self.source[self.pos + 1] == tok.COMMENT) {
                 self.scanComment();
                 self.after_scope_thunk = false;
                 return .{ .category = .comment, .start = start, .end = @intCast(self.pos) };
             }
 
-            // String literal.
             if (c == tok.QUOTE_DOUBLE or c == tok.QUOTE_SINGLE) {
                 self.scanString(c);
                 self.after_scope_thunk = false;
                 return .{ .category = .string, .start = start, .end = @intCast(self.pos) };
             }
 
-            // Number: positive digit run, or `-` followed by a digit.
             if (isDigit(c) or (c == tok.NEGATIVE_SIGN and self.pos + 1 < self.source.len and isDigit(self.source[self.pos + 1]))) {
                 self.scanNumber();
                 self.after_scope_thunk = false;
                 return .{ .category = .number, .start = start, .end = @intCast(self.pos) };
             }
 
-            // Bracket.
             if (isBracket(c)) {
                 self.pos += 1;
                 self.after_scope_thunk = false;
                 return .{ .category = .bracket, .start = start, .end = @intCast(self.pos) };
             }
 
-            // `;` terminates a macro body in every zone; the next header begins.
             if (c == tok.MACRO_BREAK) {
                 self.pos += 1;
                 self.mode = .header;
@@ -101,8 +94,6 @@ pub const Highlighter = struct {
                 return .{ .category = .macro_bar, .start = start, .end = @intCast(self.pos) };
             }
 
-            // `|` separates header from body ONLY in a header; in a body it is a
-            // bitwise operator (falls through to the identifier scan below).
             if (c == tok.MACRO_SEPARATOR and self.mode == .header) {
                 self.pos += 1;
                 self.mode = .body;
@@ -110,23 +101,18 @@ pub const Highlighter = struct {
                 return .{ .category = .macro_bar, .start = start, .end = @intCast(self.pos) };
             }
 
-            // `~` is the deferred-param marker ONLY in a header; in a body it is a
-            // bitwise operator (falls through to the identifier scan below).
             if (c == tok.DEFERRED and self.mode == .header) {
                 self.pos += 1;
                 self.after_scope_thunk = false;
                 return .{ .category = .sigil, .start = start, .end = @intCast(self.pos) };
             }
 
-            // Sigils: $ : (reserved in every zone). The `:` flips a flag so the
-            // next identifier becomes a scope_ref.
             if (c == tok.EXPRESSION_SINGLE or c == tok.SCOPE_THUNK) {
                 self.pos += 1;
                 self.after_scope_thunk = (c == tok.SCOPE_THUNK);
                 return .{ .category = .sigil, .start = start, .end = @intCast(self.pos) };
             }
 
-            // Identifier (default).
             const was_scope_ref = self.after_scope_thunk;
             self.scanIdentifier();
             self.after_scope_thunk = false;
@@ -141,9 +127,7 @@ pub const Highlighter = struct {
     }
 
     fn scanComment(self: *Highlighter) void {
-        // Skip the opening `##`.
         self.pos += 2;
-        // Comments end at newline, EOF, or matching `##`.
         while (self.pos < self.source.len) {
             const c = self.source[self.pos];
 
@@ -159,7 +143,7 @@ pub const Highlighter = struct {
     }
 
     fn scanString(self: *Highlighter, quote: u8) void {
-        self.pos += 1; // opening quote
+        self.pos += 1;
         while (self.pos < self.source.len) {
             const c = self.source[self.pos];
 
@@ -173,8 +157,7 @@ pub const Highlighter = struct {
                 return;
             }
 
-            if (c == tok.NEWLINE) return; // unterminated string ends at newline
-                                          //
+            if (c == tok.NEWLINE) return;
             self.pos += 1;
         }
     }
@@ -194,8 +177,6 @@ pub const Highlighter = struct {
         while (self.pos < self.source.len) {
             const c = self.source[self.pos];
 
-            // Base walls always end a term; `|`/`~` end one only in a header
-            // (in a body they are part of an operator term, e.g. `~5`, `a|b`).
             if (isWhitespace(c)
                 or isBracket(c)
                 or c == tok.EXPRESSION_SINGLE
@@ -226,7 +207,6 @@ fn isBracket(c: u8) bool {
         or c == tok.BLOCK_OPEN 
         or c == tok.BLOCK_CLOSE;
 }
-
 
 const testing = std.testing;
 
@@ -323,8 +303,6 @@ fn expectSpansMode(source: []const u8, mode: Mode, expected: []const Span) !void
 }
 
 test "highlight: macro header then body then terminator" {
-    // `double x | * :x 2 ;` in header mode: name + param, `|` macro_bar flips to
-    // body where `*` is an operator identifier, and `;` is the terminator.
     try expectSpansMode("double x | :x ;", .header, &.{
         .{ .category = .identifier, .start = 0, .end = 6 }, // double
         .{ .category = .identifier, .start = 7, .end = 8 }, // x
@@ -345,7 +323,6 @@ test "highlight: deferred marker is a sigil in a header" {
 }
 
 test "highlight: body-mode | and ~ are operator identifiers" {
-    // Default (body) mode: `|`/`~` are part of operator terms, not structure.
     try expectSpans("| :a", &.{
         .{ .category = .identifier, .start = 0, .end = 1 }, // | operator
         .{ .category = .sigil, .start = 2, .end = 3 }, // :

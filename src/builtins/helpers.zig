@@ -17,8 +17,6 @@ pub fn getString(env: *Env, op_name: []const u8, value: Value, buf: []u8) ExecEr
     return value.getS(buf) catch env.failFmt(.out_of_space, "'{s}': a {s} does not fit in the {d}-byte string buffer", .{ op_name, value.typeName(), buf.len });
 }
 
-/// Fail if `n` exceeds env.bounds.max_list_length.
-/// No-op when the bound is null (unlimited).
 pub fn checkListLength(env: *Env, n: usize) ExecError!void {
     if (env.bounds.max_list_length) |limit| {
         if (n > limit) {
@@ -27,8 +25,6 @@ pub fn checkListLength(env: *Env, n: usize) ExecError!void {
     }
 }
 
-/// Fail if `n` (in bytes) exceeds env.bounds.max_string_length.
-/// No-op when the bound is null (unlimited).
 pub fn checkStringLength(env: *Env, n: usize) ExecError!void {
     if (env.bounds.max_string_length) |limit| {
         if (n > limit) {
@@ -36,7 +32,6 @@ pub fn checkStringLength(env: *Env, n: usize) ExecError!void {
         }
     }
 }
-
 
 pub fn numericFold(
     args: Args,
@@ -64,8 +59,6 @@ pub fn numericFold(
     return accumulator;
 }
 
-/// Left-fold integer-only arguments with `int_op`. All operands must be ints
-/// (no float promotion: bitwise ops are integer-only). Mirrors `numericFold`.
 pub fn intFold(
     args: Args,
     int_op: *const fn (i64, i64) i64,
@@ -82,8 +75,6 @@ pub fn intFold(
     return accumulator;
 }
 
-/// Like `intFold` but the `int_op` returns null on overflow, in which case the
-/// whole fold yields `$none` (so the caller recovers via `or`/`given`/`panic`).
 pub fn checkedIntFold(
     args: Args,
     int_op: *const fn (i64, i64) ?i64,
@@ -124,7 +115,6 @@ pub fn numericComparison(
     return val.some();
 }
 
-
 pub fn naturalLessThan(_: void, left: ?Value, right: ?Value) bool {
     if (left == null and right == null) return false;
     if (left == null) return true;
@@ -143,7 +133,6 @@ pub fn naturalLessThan(_: void, left: ?Value, right: ?Value) bool {
         return std.mem.order(u8, lv.string, rv.string) == .lt;
     }
 
-    // Mixed types: numbers < strings < lists
     const typeRank = struct {
         fn rank(v: Value) u8 {
             return switch (v) {

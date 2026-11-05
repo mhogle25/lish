@@ -27,12 +27,6 @@ pub const ReadLineResult = union(enum) {
     eof,
 };
 
-/// Indent level a new line should take given the content before the cursor.
-/// The level is the count of unclosed `(`/`[`/`{`, ignoring brackets inside
-/// strings and comments (the highlighter classifies those). A bare top-level
-/// call (head is an identifier, not a bracket) counts as one implicit level,
-/// since lish's bare top-level expression is itself a call whose args on later
-/// lines should indent: `proc` then a newline lands one level in.
 fn structuralIndentLevel(content: []const u8) usize {
     var depth: usize = 0;
     var head: ?highlight.Category = null;
@@ -53,7 +47,6 @@ fn structuralIndentLevel(content: []const u8) usize {
 /// Module-level storage so the SIGINT handler can restore the terminal.
 var global_original_termios: ?posix.termios = null;
 var signal_handler_installed: bool = false;
-
 
 fn sigintHandler(_: posix.SIG) callconv(.c) void {
     if (global_original_termios) |original| {
@@ -131,35 +124,27 @@ pub const LineEditor = struct {
 
         var raw = original;
 
-        // Input flags: disable CR->NL, XON/XOFF flow control
         raw.iflag.ICRNL = false;
         raw.iflag.IXON = false;
 
-        // Output flags: disable post-processing
         raw.oflag.OPOST = false;
 
-        // Local flags: disable echo, canonical mode, signals, extended input
         raw.lflag.ECHO = false;
         raw.lflag.ICANON = false;
         raw.lflag.ISIG = false;
         raw.lflag.IEXTEN = false;
 
-        // Read returns after 1 byte, no timeout
         raw.cc[@intFromEnum(posix.V.MIN)] = 1;
         raw.cc[@intFromEnum(posix.V.TIME)] = 0;
 
         posix.tcsetattr(posix.STDIN_FILENO, .FLUSH, raw) catch return;
         self.raw_mode_active = true;
 
-        // Enable bracketed paste so the terminal wraps pasted text in
-        // ESC[200~ ... ESC[201~ markers. Lets us treat pasted content as
-        // literal bytes (no autopair, no submit-on-newline).
         self.renderer.writeRaw("\x1b[?2004h");
     }
 
     fn disableRawMode(self: *LineEditor) void {
         if (!self.raw_mode_active) return;
-        // Disable bracketed paste before restoring the terminal.
         self.renderer.writeRaw("\x1b[?2004l");
         if (self.original_termios) |original| {
             posix.tcsetattr(posix.STDIN_FILENO, .FLUSH, original) catch {};
@@ -180,7 +165,6 @@ pub const LineEditor = struct {
             return self.readLineFallback();
         }
 
-        // Initial render writes the prompt and positions cursor.
         self.renderer.render(self.buffer.slice(), self.buffer.cursor);
 
         while (true) {
@@ -198,9 +182,6 @@ pub const LineEditor = struct {
             switch (self.processInput(byte)) {
                 .continue_reading => continue,
                 .submit_line => {
-                    // Position cursor past the last rendered row so the
-                    // following "\r\n" lands below the (possibly multi-row)
-                    // input rather than overwriting it.
                     self.renderer.render(self.buffer.slice(), self.buffer.length);
                     self.renderer.writeRaw("\r\n");
                     self.renderer.reset();
@@ -212,9 +193,6 @@ pub const LineEditor = struct {
                     return .{ .line = line };
                 },
                 .cancel_line => {
-                    // Same approach as submit: park cursor past the rendered
-                    // area before writing "^C" so multi-row input isn't
-                    // overwritten by the cancel marker.
                     self.renderer.render(self.buffer.slice(), self.buffer.length);
                     self.renderer.writeRaw("^C\r\n");
                     self.renderer.reset();
@@ -229,7 +207,6 @@ pub const LineEditor = struct {
                         self.renderer.reset();
                         return .eof;
                     }
-                    // Non-empty line: delete forward
                     self.buffer.deleteCharAt();
                     self.renderer.render(self.buffer.slice(), self.buffer.cursor);
                 },
@@ -237,7 +214,6 @@ pub const LineEditor = struct {
         }
     }
 
-    /// Fallback for piped/non-terminal input, reads line byte-by-byte in cooked mode.
     fn readLineFallback(self: *LineEditor) ReadLineResult {
         var pos: usize = 0;
         while (pos < self.buffer.data.len) {
@@ -261,9 +237,6 @@ pub const LineEditor = struct {
     };
 
     fn processInput(self: *LineEditor, byte: u8) InputResult {
-        // Capture buffer state so we can render once at the end if anything
-        // changed. Mutations done by dispatchByte don't render themselves;
-        // this single check covers them.
         const initial_length = self.buffer.length;
         const initial_cursor = self.buffer.cursor;
 
@@ -287,8 +260,6 @@ pub const LineEditor = struct {
             },
         }
 
-        // During bracketed paste, every non-escape byte is literal content.
-        // No autopair, no submit-on-Enter, no command bindings.
         if (self.paste_mode) {
             _ = self.buffer.insertChar(byte);
             return .continue_reading;
@@ -322,12 +293,10 @@ pub const LineEditor = struct {
                 if (byte >= 0x20 and byte < 0x7f) {
                     _ = self.buffer.insertChar(byte);
                 }
-                // Other control bytes are ignored.
             },
         }
         return .continue_reading;
     }
-
 
     fn handleEscapeAction(self: *LineEditor, action: EscapeAction) void {
         switch (action) {
@@ -347,10 +316,7 @@ pub const LineEditor = struct {
         }
     }
 
-    // Policy helpers: encode autopair behavior and explicit render needs.
-    // None of these call renderer.render; processInput's render-on-change
-    // covers buffer mutations; handleClearScreen is the one exception that
-    // explicitly renders (clearing the screen doesn't change buffer state).
+    // Policy helpers
 
     fn handleOpenBracket(self: *LineEditor, open: u8, close: u8) void {
         if (self.autopair_insert) {
@@ -397,11 +363,6 @@ pub const LineEditor = struct {
         self.buffer.deleteCharBefore();
     }
 
-    /// Inverse of `expandPairAcrossLines`: if the cursor sits on a
-    /// whitespace-only line between an open bracket (last char of the previous
-    /// line) and its matching close bracket (first char of the next line),
-    /// collapse the three lines back into `<open><close>` with the cursor
-    /// between them. Returns true on collapse.
     fn collapseExpandedPairIfApplicable(self: *LineEditor) bool {
         var line_start = self.buffer.cursor;
         while (line_start > 0 and self.buffer.data[line_start - 1] != '\n') : (line_start -= 1) {}
@@ -409,18 +370,12 @@ pub const LineEditor = struct {
         var line_end = self.buffer.cursor;
         while (line_end < self.buffer.length and self.buffer.data[line_end] != '\n') : (line_end += 1) {}
 
-        // Current line must consist only of whitespace.
         var i = line_start;
         while (i < line_end) : (i += 1) {
             const c = self.buffer.data[i];
             if (c != ' ' and c != '\t') return false;
         }
 
-        // Must have a previous line ending in an open bracket and a next line
-        // whose first non-whitespace character is the matching close bracket.
-        // The close may be preceded by indentation when the pair is nested
-        // (the open is always the previous line's last char, so it needs no
-        // such skip).
         if (line_start < 2) return false;
         if (line_end >= self.buffer.length) return false;
 
@@ -441,9 +396,6 @@ pub const LineEditor = struct {
         };
         if (!matches) return false;
 
-        // Splice out [line_start - 1, close_pos): the prev `\n`, the whitespace
-        // line, the trailing `\n`, and the close line's leading indent, leaving
-        // `<open><close>` with the cursor between them.
         const delete_from = line_start - 1;
         const delete_to = close_pos;
         const delete_len = delete_to - delete_from;
@@ -463,8 +415,6 @@ pub const LineEditor = struct {
         self.renderer.render(self.buffer.slice(), self.buffer.cursor);
     }
 
-    /// Up arrow: move cursor up one row within the buffer; if already on row 0,
-    /// fall through to history navigation.
     fn handleUpKey(self: *LineEditor) void {
         const content = self.buffer.slice();
         const cur_row = rowOf(content, self.buffer.cursor);
@@ -476,8 +426,6 @@ pub const LineEditor = struct {
         self.buffer.cursor = offsetAt(content, cur_row - 1, cur_col);
     }
 
-    /// Down arrow: move cursor down one row within the buffer; if already on
-    /// the last row, fall through to history navigation.
     fn handleDownKey(self: *LineEditor) void {
         const content = self.buffer.slice();
         const cur_row = rowOf(content, self.buffer.cursor);
@@ -490,7 +438,6 @@ pub const LineEditor = struct {
         self.buffer.cursor = offsetAt(content, cur_row + 1, cur_col);
     }
 
-    /// Tab: insert `indent_width` spaces at the cursor.
     fn insertTab(self: *LineEditor) void {
         var i: usize = 0;
         while (i < self.indent_width) : (i += 1) {
@@ -498,8 +445,6 @@ pub const LineEditor = struct {
         }
     }
 
-    /// Shift+Tab: remove up to `indent_width` leading spaces from the current
-    /// logical line.
     fn dedentCurrentLine(self: *LineEditor) void {
         var line_start = self.buffer.cursor;
         while (line_start > 0 and self.buffer.data[line_start - 1] != '\n') : (line_start -= 1) {}
@@ -511,12 +456,6 @@ pub const LineEditor = struct {
         self.buffer.removeRange(line_start, line_start + leading_spaces);
     }
 
-    /// Alt+Enter: insert a `\n`, then indent the new line to its structural
-    /// depth (see `structuralIndentLevel`).
-    ///
-    /// Special case when `bracket_expand` is set: if the cursor sits between
-    /// a matched pair of paired brackets (`()`, `[]`, or `{}`), expand the
-    /// pair across two lines and position the cursor on the indented middle.
     fn insertNewlineWithIndent(self: *LineEditor) void {
         const level = structuralIndentLevel(self.buffer.data[0..self.buffer.cursor]);
 
@@ -529,8 +468,6 @@ pub const LineEditor = struct {
         self.insertIndent(level);
     }
 
-    /// Insert `level` indent units worth of spaces at the cursor. Stops early
-    /// if the buffer fills.
     fn insertIndent(self: *LineEditor, level: usize) void {
         var i: usize = 0;
         while (i < level * self.indent_width) : (i += 1) {
@@ -538,10 +475,6 @@ pub const LineEditor = struct {
         }
     }
 
-    /// True when the byte at the cursor is a closing bracket whose matching
-    /// opener sits immediately before the cursor, i.e., the cursor is at
-    /// `(|)`, `[|]`, or `{|}`. Quotes are deliberately excluded; lish strings
-    /// can't span lines so expanding `"|"` would create invalid syntax.
     fn cursorInsideMatchedPair(self: *LineEditor) bool {
         if (self.buffer.cursor == 0) return false;
         if (self.buffer.cursor >= self.buffer.length) return false;
@@ -555,20 +488,10 @@ pub const LineEditor = struct {
         };
     }
 
-    /// Expand `(|)` (or equivalent) into:
-    ///     (
-    ///         |
-    ///     )
-    /// where `indent` is the leading whitespace of the current logical line
-    /// and the cursor lands on the middle (indented) line.
     fn expandPairAcrossLines(self: *LineEditor, level: usize) void {
-        // `level` already counts the open bracket before the cursor, so the
-        // middle line sits at `level` and the close aligns with the open's line.
         if (!self.buffer.insertChar('\n')) return;
         self.insertIndent(level);
 
-        // Remember the cursor position (the middle indented line), then
-        // insert the closing newline + indent and restore.
         const cursor_after_middle = self.buffer.cursor;
 
         if (!self.buffer.insertChar('\n')) return;
@@ -576,8 +499,6 @@ pub const LineEditor = struct {
 
         self.buffer.cursor = cursor_after_middle;
     }
-
-
 
     // Helpers for testing: expose internal state without needing a terminal
 
@@ -604,7 +525,6 @@ pub const LineEditor = struct {
     }
 };
 
-
 fn expectAction(expected: EscapeAction, step: EscapeStep) !void {
     try std.testing.expect(step == .action);
     try std.testing.expectEqual(expected, step.action);
@@ -614,7 +534,6 @@ test "escape parser: arrow keys" {
     var editor = LineEditor.testInit();
     defer editor.deinit();
 
-    // Up arrow: ESC [ A
     try std.testing.expectEqual(escape_mod.Step.consumed, editor.escape.process(0x1b));
     try std.testing.expectEqual(EscapeMode.escape, editor.escape.mode);
     try std.testing.expectEqual(escape_mod.Step.consumed, editor.escape.process('['));
@@ -622,17 +541,14 @@ test "escape parser: arrow keys" {
     try expectAction(.move_up, editor.escape.process('A'));
     try std.testing.expectEqual(EscapeMode.ground, editor.escape.mode);
 
-    // Down arrow: ESC [ B
     try std.testing.expectEqual(escape_mod.Step.consumed, editor.escape.process(0x1b));
     try std.testing.expectEqual(escape_mod.Step.consumed, editor.escape.process('['));
     try expectAction(.move_down, editor.escape.process('B'));
 
-    // Right arrow: ESC [ C
     try std.testing.expectEqual(escape_mod.Step.consumed, editor.escape.process(0x1b));
     try std.testing.expectEqual(escape_mod.Step.consumed, editor.escape.process('['));
     try expectAction(.move_right, editor.escape.process('C'));
 
-    // Left arrow: ESC [ D
     try std.testing.expectEqual(escape_mod.Step.consumed, editor.escape.process(0x1b));
     try std.testing.expectEqual(escape_mod.Step.consumed, editor.escape.process('['));
     try expectAction(.move_left, editor.escape.process('D'));
@@ -642,12 +558,10 @@ test "escape parser: home and end" {
     var editor = LineEditor.testInit();
     defer editor.deinit();
 
-    // Home: ESC [ H
     try std.testing.expectEqual(escape_mod.Step.consumed, editor.escape.process(0x1b));
     try std.testing.expectEqual(escape_mod.Step.consumed, editor.escape.process('['));
     try expectAction(.home, editor.escape.process('H'));
 
-    // End: ESC [ F
     try std.testing.expectEqual(escape_mod.Step.consumed, editor.escape.process(0x1b));
     try std.testing.expectEqual(escape_mod.Step.consumed, editor.escape.process('['));
     try expectAction(.end, editor.escape.process('F'));
@@ -657,7 +571,6 @@ test "escape parser: delete key" {
     var editor = LineEditor.testInit();
     defer editor.deinit();
 
-    // Delete: ESC [ 3 ~
     try std.testing.expectEqual(escape_mod.Step.consumed, editor.escape.process(0x1b));
     try std.testing.expectEqual(escape_mod.Step.consumed, editor.escape.process('['));
     try std.testing.expectEqual(escape_mod.Step.consumed, editor.escape.process('3'));
@@ -670,7 +583,6 @@ test "escape parser: unknown CSI param sequence" {
     var editor = LineEditor.testInit();
     defer editor.deinit();
 
-    // ESC [ 5 ~, not mapped, should be consumed without action
     try std.testing.expectEqual(escape_mod.Step.consumed, editor.escape.process(0x1b));
     try std.testing.expectEqual(escape_mod.Step.consumed, editor.escape.process('['));
     try std.testing.expectEqual(escape_mod.Step.consumed, editor.escape.process('5'));
@@ -682,12 +594,10 @@ test "escape parser: Alt+Left and Alt+Right (ESC b / ESC f)" {
     var editor = LineEditor.testInit();
     defer editor.deinit();
 
-    // ESC b, Alt+Left
     try std.testing.expectEqual(escape_mod.Step.consumed, editor.escape.process(0x1b));
     try expectAction(.move_word_left, editor.escape.process('b'));
     try std.testing.expectEqual(EscapeMode.ground, editor.escape.mode);
 
-    // ESC f, Alt+Right
     try std.testing.expectEqual(escape_mod.Step.consumed, editor.escape.process(0x1b));
     try expectAction(.move_word_right, editor.escape.process('f'));
     try std.testing.expectEqual(EscapeMode.ground, editor.escape.mode);
@@ -697,12 +607,10 @@ test "escape parser: Alt+Enter (ESC \\r / ESC \\n)" {
     var editor = LineEditor.testInit();
     defer editor.deinit();
 
-    // ESC \r, Alt+Enter
     try std.testing.expectEqual(escape_mod.Step.consumed, editor.escape.process(0x1b));
     try expectAction(.insert_newline, editor.escape.process('\r'));
     try std.testing.expectEqual(EscapeMode.ground, editor.escape.mode);
 
-    // ESC \n, also Alt+Enter (some terminals)
     try std.testing.expectEqual(escape_mod.Step.consumed, editor.escape.process(0x1b));
     try expectAction(.insert_newline, editor.escape.process('\n'));
     try std.testing.expectEqual(EscapeMode.ground, editor.escape.mode);
@@ -712,7 +620,6 @@ test "Alt+Enter indents a bare top-level call one level" {
     var editor = LineEditor.testInit();
     defer editor.deinit();
 
-    // `foo` is a bare top-level call head, so the next line indents one level.
     editor.testInsertString("foo");
     editor.insertNewlineWithIndent();
     try std.testing.expectEqualStrings("foo\n    ", editor.buffer.slice());
@@ -732,7 +639,6 @@ test "Alt+Enter adds a level for each unclosed bracket" {
     var editor = LineEditor.testInit();
     defer editor.deinit();
 
-    // Bare call (+1) plus one unclosed `(` => level 2 => 8 spaces.
     editor.testInsertString("proc (let");
     editor.insertNewlineWithIndent();
     try std.testing.expectEqualStrings("proc (let\n        ", editor.buffer.slice());
@@ -754,7 +660,7 @@ test "Alt+Enter with only whitespace before the cursor adds no indent" {
     defer editor.deinit();
 
     editor.testInsertString("    foo");
-    editor.buffer.cursor = 2; // Amid the leading whitespace: no call head yet.
+    editor.buffer.cursor = 2;
     editor.insertNewlineWithIndent();
     try std.testing.expectEqualStrings("  \n  foo", editor.buffer.slice());
 }
@@ -791,7 +697,6 @@ test "Shift+Tab removes leading spaces from current line" {
     var editor = LineEditor.testInit();
     defer editor.deinit();
 
-    // Start with INDENT_WIDTH * 2 leading spaces; one dedent should leave INDENT_WIDTH.
     var leading_buf: [32]u8 = undefined;
     var total: usize = 0;
     while (total < INDENT_WIDTH * 2) : (total += 1) {
@@ -853,10 +758,9 @@ test "Alt+Enter inside `(|)` expands the pair across two lines" {
     defer editor.deinit();
 
     editor.testInsertString("()");
-    editor.buffer.cursor = 1; // between ( and )
+    editor.buffer.cursor = 1;
     editor.insertNewlineWithIndent();
 
-    // Expected: `(\n    \n)` with cursor on the indented middle line.
     var expected: [16]u8 = undefined;
     var len: usize = 0;
     expected[len] = '(';     len += 1;
@@ -889,8 +793,6 @@ test "Alt+Enter outside paired brackets indents structurally, not by copying" {
     var editor = LineEditor.testInit();
     defer editor.deinit();
 
-    // Not inside a pair: no expand. The new line indents to its structural
-    // level (bare call => 1), regardless of the current line's own indent.
     editor.testInsertString("  foo");
     editor.insertNewlineWithIndent();
     try std.testing.expectEqualStrings("  foo\n    ", editor.buffer.slice());
@@ -903,7 +805,6 @@ test "Alt+Enter inside `\"|\"` does NOT expand (strings are single-line)" {
     editor.testInsertString("\"\"");
     editor.buffer.cursor = 1;
     editor.insertNewlineWithIndent();
-    // Should be plain newline behavior: `"\n"` ; quotes themselves don't expand.
     try std.testing.expectEqualStrings("\"\n\"", editor.buffer.slice());
 }
 
@@ -914,7 +815,6 @@ test "Backspace on indented middle line of expanded pair collapses it" {
     editor.testInsertString("()");
     editor.buffer.cursor = 1;
     editor.insertNewlineWithIndent();
-    // We're now at `(\n    |\n)`. Hit backspace.
     editor.handleDeleteBackward();
     try std.testing.expectEqualStrings("()", editor.buffer.slice());
     try std.testing.expectEqual(@as(usize, 1), editor.buffer.cursor);
@@ -926,7 +826,7 @@ test "Backspace collapses expanded pair in the middle of larger content" {
 
     editor.testInsertString("say (");
     editor.testInsertString(")");
-    editor.buffer.cursor = 5; // between ( and )
+    editor.buffer.cursor = 5;
     editor.insertNewlineWithIndent();
     editor.handleDeleteBackward();
     try std.testing.expectEqualStrings("say ()", editor.buffer.slice());
@@ -937,28 +837,22 @@ test "Backspace collapses a nested (indented) expanded pair" {
     var editor = LineEditor.testInit();
     defer editor.deinit();
 
-    // Build an outer expanded pair, then expand an inner pair on the indented
-    // middle line so the inner close bracket is itself indented.
     editor.testInsertString("()");
     editor.buffer.cursor = 1;
-    editor.insertNewlineWithIndent(); // `(\n    |\n)`
+    editor.insertNewlineWithIndent();
     editor.testInsertString("()");
-    editor.buffer.cursor -= 1; // between the inner ( and )
-    editor.insertNewlineWithIndent(); // inner pair expands at indent INDENT_WIDTH
+    editor.buffer.cursor -= 1;
+    editor.insertNewlineWithIndent();
 
-    // The inner close bracket now sits behind INDENT_WIDTH spaces. Backspace on
-    // the inner whitespace line must still collapse it to `()`.
     editor.handleDeleteBackward();
 
-    // Expected: outer pair preserved, inner collapsed to `()`:
-    //     (\n<indent>()\n)
     var expected: [32]u8 = undefined;
     var len: usize = 0;
     expected[len] = '(';  len += 1;
     expected[len] = '\n'; len += 1;
     var i: usize = 0;
     while (i < INDENT_WIDTH) : (i += 1) { expected[len] = ' '; len += 1; }
-    const inner_cursor = len + 1; // between the inner ( and )
+    const inner_cursor = len + 1;
     expected[len] = '(';  len += 1;
     expected[len] = ')';  len += 1;
     expected[len] = '\n'; len += 1;
@@ -975,8 +869,8 @@ test "Backspace does NOT collapse if the indented line has content" {
     editor.testInsertString("()");
     editor.buffer.cursor = 1;
     editor.insertNewlineWithIndent();
-    editor.testInsertString("x"); // now `(\n    x|\n)`
-    editor.handleDeleteBackward(); // should just delete the 'x'
+    editor.testInsertString("x");
+    editor.handleDeleteBackward();
     var expected: [16]u8 = undefined;
     var len: usize = 0;
     expected[len] = '('; len += 1;
@@ -996,12 +890,8 @@ test "Backspace collapse disabled when bracket_expand is off" {
     editor.testInsertString("()");
     editor.buffer.cursor = 1;
     editor.insertNewlineWithIndent();
-    // Now turn off bracket_expand; backspace should fall through to autopair-delete or plain.
     editor.bracket_expand = false;
     editor.handleDeleteBackward();
-    // bracket_expand off + autopair_delete on: the autopair_delete won't fire here
-    // because we're on a whitespace line, not directly between matched brackets.
-    // We should get plain backspace: one space deleted.
     var expected: [16]u8 = undefined;
     var len: usize = 0;
     expected[len] = '('; len += 1;
@@ -1018,8 +908,6 @@ test "Alt+Enter inside `(|)` with bracket_expand disabled still indents" {
     defer editor.deinit();
     editor.bracket_expand = false;
 
-    // No pair-expansion (no close line), but the new line still indents one
-    // level for the unclosed `(`.
     editor.testInsertString("()");
     editor.buffer.cursor = 1;
     editor.insertNewlineWithIndent();
@@ -1041,9 +929,7 @@ test "Up arrow on row > 0 moves cursor up within buffer" {
     defer editor.deinit();
 
     editor.testInsertString("abc\ndefgh");
-    // Cursor at end (position 9), on row 1 at col 5.
     editor.handleUpKey();
-    // Target row 0, col 5. Row 0 = "abc" so col clamps to 3 -> offset 3.
     try std.testing.expectEqual(@as(usize, 3), editor.buffer.cursor);
 }
 
@@ -1054,9 +940,8 @@ test "Down arrow on last row falls through to history" {
     editor.history.add("first");
     editor.history.add("second");
     editor.testInsertString("current");
-    // Cursor on row 0 (only row). Need to start history browse first via Up.
-    editor.handleUpKey();   // history-up to "second"
-    editor.handleDownKey(); // history-down back to "current" (saved)
+    editor.handleUpKey();
+    editor.handleDownKey();
     try std.testing.expectEqualStrings("current", editor.buffer.slice());
 }
 
@@ -1065,9 +950,8 @@ test "Down arrow on row < last_row moves cursor down within buffer" {
     defer editor.deinit();
 
     editor.testInsertString("abcde\nfg");
-    editor.buffer.cursor = 3; // Row 0, col 3.
+    editor.buffer.cursor = 3;
     editor.handleDownKey();
-    // Target row 1, col 3. Row 1 = "fg" so col clamps to 2 -> offset 6 + 2 = 8.
     try std.testing.expectEqual(@as(usize, 8), editor.buffer.cursor);
 }
 
@@ -1075,7 +959,6 @@ test "escape parser: bracketed paste start (ESC [ 200 ~) and end (ESC [ 201 ~)" 
     var editor = LineEditor.testInit();
     defer editor.deinit();
 
-    // ESC [ 200 ~ -> paste_start
     try std.testing.expectEqual(escape_mod.Step.consumed, editor.escape.process(0x1b));
     try std.testing.expectEqual(escape_mod.Step.consumed, editor.escape.process('['));
     try std.testing.expectEqual(escape_mod.Step.consumed, editor.escape.process('2'));
@@ -1083,7 +966,6 @@ test "escape parser: bracketed paste start (ESC [ 200 ~) and end (ESC [ 201 ~)" 
     try std.testing.expectEqual(escape_mod.Step.consumed, editor.escape.process('0'));
     try expectAction(.paste_start, editor.escape.process('~'));
 
-    // ESC [ 201 ~ -> paste_end
     try std.testing.expectEqual(escape_mod.Step.consumed, editor.escape.process(0x1b));
     try std.testing.expectEqual(escape_mod.Step.consumed, editor.escape.process('['));
     try std.testing.expectEqual(escape_mod.Step.consumed, editor.escape.process('2'));
@@ -1096,7 +978,6 @@ test "bracketed paste: literal newlines, no autopair, no submit" {
     var editor = LineEditor.testInit();
     defer editor.deinit();
 
-    // Simulate ESC[200~ to enter paste mode.
     _ = editor.processInput(0x1b);
     _ = editor.processInput('[');
     _ = editor.processInput('2');
@@ -1105,15 +986,12 @@ test "bracketed paste: literal newlines, no autopair, no submit" {
     _ = editor.processInput('~');
     try std.testing.expect(editor.paste_mode);
 
-    // Paste "(foo\nbar)". The `\n` should be literal (no submit), `(` should
-    // not autopair, `)` should not autopair-skip.
     for ("(foo\nbar)") |byte| {
         const result = editor.processInput(byte);
         try std.testing.expectEqual(LineEditor.InputResult.continue_reading, result);
     }
     try std.testing.expectEqualStrings("(foo\nbar)", editor.buffer.slice());
 
-    // Exit paste mode.
     _ = editor.processInput(0x1b);
     _ = editor.processInput('[');
     _ = editor.processInput('2');
@@ -1129,8 +1007,6 @@ test "Ctrl+P always navigates history regardless of cursor position" {
 
     editor.history.add("prev");
     editor.testInsertString("abc\ndef");
-    // Cursor on row 1; Up arrow would move within buffer.
-    // Ctrl+P should still hit history.
     _ = editor.processInput(0x10);
     try std.testing.expectEqualStrings("prev", editor.buffer.slice());
 }
@@ -1139,7 +1015,6 @@ test "escape parser: Alt+Left and Alt+Right (xterm ESC [ 1 ; 3 D/C)" {
     var editor = LineEditor.testInit();
     defer editor.deinit();
 
-    // ESC [ 1 ; 3 D, Alt+Left
     try std.testing.expectEqual(escape_mod.Step.consumed, editor.escape.process(0x1b));
     try std.testing.expectEqual(escape_mod.Step.consumed, editor.escape.process('['));
     try std.testing.expectEqual(escape_mod.Step.consumed, editor.escape.process('1'));
@@ -1149,7 +1024,6 @@ test "escape parser: Alt+Left and Alt+Right (xterm ESC [ 1 ; 3 D/C)" {
     try expectAction(.move_word_left, editor.escape.process('D'));
     try std.testing.expectEqual(EscapeMode.ground, editor.escape.mode);
 
-    // ESC [ 1 ; 3 C, Alt+Right
     try std.testing.expectEqual(escape_mod.Step.consumed, editor.escape.process(0x1b));
     try std.testing.expectEqual(escape_mod.Step.consumed, editor.escape.process('['));
     try std.testing.expectEqual(escape_mod.Step.consumed, editor.escape.process('1'));
@@ -1163,7 +1037,6 @@ test "escape parser: incomplete escape resets on non-bracket" {
     var editor = LineEditor.testInit();
     defer editor.deinit();
 
-    // ESC followed by non-'[' should reset to ground
     try std.testing.expectEqual(escape_mod.Step.consumed, editor.escape.process(0x1b));
     try std.testing.expectEqual(EscapeMode.escape, editor.escape.mode);
     try std.testing.expectEqual(escape_mod.Step.consumed, editor.escape.process('x'));
@@ -1174,15 +1047,11 @@ test "escape parser: ground state passes ordinary bytes through" {
     var editor = LineEditor.testInit();
     defer editor.deinit();
 
-    // 'a' in ground state is not part of a sequence, caller must handle it.
     try std.testing.expectEqual(EscapeStep.not_escape, editor.escape.process('a'));
     try std.testing.expectEqual(EscapeMode.ground, editor.escape.mode);
 }
 
 test "processInput: unknown CSI terminator does not leak into the line" {
-    // Regression: ESC[Z used to land on 'Z' in ground state and get inserted as
-    // text. processEscape now returns .consumed for the unknown terminator so
-    // processInput skips the regular-byte branch.
     var editor = LineEditor.testInit();
     defer editor.deinit();
 
@@ -1193,8 +1062,6 @@ test "processInput: unknown CSI terminator does not leak into the line" {
     try std.testing.expectEqualStrings("", editor.getLineSlice());
     try std.testing.expectEqual(EscapeMode.ground, editor.escape.mode);
 }
-
-
 
 test "processInput: printable characters" {
     var editor = LineEditor.testInit();

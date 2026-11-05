@@ -13,7 +13,6 @@ const Allocator = std.mem.Allocator;
 
 const string_param = [_]Param{.{ .name = "string", .type = .string }};
 const pattern_target = [_]Param{ .{ .name = "pattern", .type = .string }, .{ .name = "target", .type = .string } };
-// `needle` is a substring (string haystack) or element (list haystack), so it stays generic.
 const needle_haystack = [_]Param{ .{ .name = "needle" }, .{ .name = "haystack", .type = .collection } };
 
 pub fn register(registry: *Registry, allocator: Allocator) Allocator.Error!void {
@@ -192,15 +191,12 @@ fn linesOp(args: Args) ExecError!?Value {
     var remaining = string;
     while (std.mem.indexOfScalar(u8, remaining, '\n')) |idx| {
         try helpers.checkListLength(args.env, parts.items.len + 1);
-        // Strip trailing \r so CRLF input produces clean lines.
         const raw = remaining[0..idx];
         const trimmed = if (raw.len > 0 and raw[raw.len - 1] == '\r') raw[0 .. raw.len - 1] else raw;
         const part = try alloc.dupe(u8, trimmed);
         try parts.append(alloc, .{ .string = part });
         remaining = remaining[idx + 1 ..];
     }
-    // Emit the final segment only if non-empty so a trailing newline doesn't
-    // produce a phantom empty line.
     if (remaining.len > 0) {
         try helpers.checkListLength(args.env, parts.items.len + 1);
         const trimmed = if (remaining[remaining.len - 1] == '\r') remaining[0 .. remaining.len - 1] else remaining;
@@ -301,7 +297,6 @@ fn formatOp(args: Args) ExecError!?Value {
     return .{ .string = result.items };
 }
 
-
 fn prefixOp(args: Args) ExecError!?Value {
     try args.expectCount(2);
     var pattern_buf: [256]u8 = undefined;
@@ -368,7 +363,6 @@ fn findOp(args: Args) ExecError!?Value {
         else => args.env.failFmt(.type_mismatch, "'find' expects a string or list as second argument, got {s}", .{haystack.typeName()}),
     };
 }
-
 
 const testing = @import("testing.zig");
 
@@ -711,4 +705,3 @@ test "find: first index when duplicates" {
     const result = try testing.evalWithBuiltins(arena.allocator(), "find 5 [1 5 5 5]");
     try std.testing.expectEqual(@as(i64, 1), result.?.int);
 }
-

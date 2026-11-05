@@ -135,7 +135,6 @@ fn absOp(args: Args) ExecError!?Value {
     try args.expectCount(1);
     const value = try args.at(0).resolve();
     return switch (value) {
-        // |minInt| overflows i64; saturate it to maxInt rather than wrap to minInt.
         .int => |int_val| .{ .int = if (int_val == std.math.minInt(i64)) std.math.maxInt(i64) else if (int_val < 0) -int_val else int_val },
         .float => |float_val| .{ .float = @abs(float_val) },
         else => args.env.failFmt(.type_mismatch, "'abs' expects a number, got {s}", .{value.typeName()}),
@@ -223,7 +222,6 @@ fn expOp(args: Args) ExecError!?Value {
     return .{ .float = @exp(x) };
 }
 
-
 const testing = @import("testing.zig");
 
 test "math: min" {
@@ -306,7 +304,6 @@ test "math: round down" {
 test "math: abs of i64 min saturates to i64 max instead of wrapping" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // -minInt overflows i64; old wrapping negation returned minInt (still negative).
     const result = try testing.evalWithBuiltins(arena.allocator(), "abs -9223372036854775808");
     try std.testing.expectEqual(std.math.maxInt(i64), result.?.int);
 }
@@ -314,10 +311,8 @@ test "math: abs of i64 min saturates to i64 max instead of wrapping" {
 test "math: floor/ceil/round saturate on a non-finite float instead of crashing" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // `/ 1.0 0.0` is +inf; flooring it used to trap in @intFromFloat.
     const floored = try testing.evalWithBuiltins(arena.allocator(), "floor (/ 1.0 0.0)");
     try std.testing.expectEqual(std.math.maxInt(i64), floored.?.int);
-    // `/ 0.0 0.0` is NaN; rounds to 0.
     const nan_rounded = try testing.evalWithBuiltins(arena.allocator(), "round (/ 0.0 0.0)");
     try std.testing.expectEqual(@as(i64, 0), nan_rounded.?.int);
 }
@@ -412,4 +407,3 @@ test "math: exp/log inverse" {
     const result = try testing.evalWithBuiltins(arena.allocator(), "log (exp 2.5)");
     try std.testing.expectApproxEqAbs(@as(f64, 2.5), result.?.float, 1e-12);
 }
-

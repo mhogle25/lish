@@ -249,7 +249,6 @@ fn rangeOp(args: Args) ExecError!?Value {
         try helpers.checkListLength(args.env, items.items.len + 1);
         try items.append(alloc, .{ .int = current });
 
-        // Stop rather than trap when the next step would overflow past the endpoint.
         current = std.math.add(i64, current, step) catch break;
     }
 
@@ -282,7 +281,6 @@ fn untilOp(args: Args) ExecError!?Value {
         try helpers.checkListLength(args.env, items.items.len + 1);
         try items.append(alloc, .{ .int = current });
 
-        // Stop rather than trap when the next step would overflow past the i64 bound.
         current = std.math.add(i64, current, step) catch break;
     }
 
@@ -371,8 +369,6 @@ fn flattenInto(maybe_value: ?Value, result: *std.ArrayListUnmanaged(?Value), all
         return;
     }
 
-    // Walk with an index-frame stack, so nesting depth is unbounded (no
-    // native recursion to overflow).
     var stack = std.ArrayListUnmanaged(FlattenFrame).empty;
     defer stack.deinit(alloc);
     try stack.append(alloc, .{ .items = value.list });
@@ -387,8 +383,6 @@ fn flattenInto(maybe_value: ?Value, result: *std.ArrayListUnmanaged(?Value), all
         const item = frame.items[frame.index];
         frame.index += 1;
 
-        // Appending may grow the stack and move `frame`; it is not read again
-        // this iteration.
         if (item != null and item.? == .list) {
             try stack.append(alloc, .{ .items = item.?.list });
         } else {
@@ -438,7 +432,6 @@ fn sortbyOp(args: Args) ExecError!?Value {
     const body = args.items[2];
     const alloc = args.env.allocator;
 
-    // Extract keys: evaluate body once per element with name bound.
     const keys = try alloc.alloc(?Value, list.len);
     for (list, 0..) |item, i| {
         sort_scope.inline_count = 0;
@@ -446,7 +439,6 @@ fn sortbyOp(args: Args) ExecError!?Value {
         keys[i] = try body.proc(args.env, &sort_scope);
     }
 
-    // Sort indices by their associated keys.
     const indices = try alloc.alloc(usize, list.len);
     for (indices, 0..) |*idx, i| idx.* = i;
     const KeyCtx = struct { keys: []const ?Value };
@@ -456,7 +448,6 @@ fn sortbyOp(args: Args) ExecError!?Value {
         }
     }.lessThan);
 
-    // Reorder original list using sorted index permutation.
     const sorted = try alloc.alloc(?Value, list.len);
     for (sorted, 0..) |*slot, i| slot.* = list[indices[i]];
 
@@ -546,7 +537,6 @@ fn fillbyOp(args: Args) ExecError!?Value {
         return .{ .list = items };
     }
 
-    // 3-arg form: name, count, body, name is bound to the slot index per iteration.
     var iter_scope = exec.Scope{ .parent = args.scope };
     defer iter_scope.deinit(alloc);
 
@@ -568,7 +558,6 @@ fn fillbyOp(args: Args) ExecError!?Value {
     }
     return .{ .list = items };
 }
-
 
 const testing = @import("testing.zig");
 
@@ -790,7 +779,6 @@ test "collection: flatten variadic" {
 test "collection: flatten handles deep nesting without native recursion" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // A chain this deep overflows the native stack if the flatten walk recurses.
     const result = try testing.evalWithBuiltins(arena.allocator(), "length (flatten (fold acc 0 x 100000 (list :acc)))");
     try std.testing.expectEqual(@as(i64, 1), result.?.int);
 }
@@ -798,10 +786,8 @@ test "collection: flatten handles deep nesting without native recursion" {
 test "collection: flatten vs flat" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // flat is shallow, inner list [4 5] stays as a list element
     const flat_result = try testing.evalWithBuiltins(arena.allocator(), "length (flat [1 2] [3 [4 5]])");
     try std.testing.expectEqual(@as(i64, 4), flat_result.?.int);
-    // flatten is deep, recurses into [4 5]
     const flatten_result = try testing.evalWithBuiltins(arena.allocator(), "length (flatten [1 2] [3 [4 5]])");
     try std.testing.expectEqual(@as(i64, 5), flatten_result.?.int);
 }
@@ -823,7 +809,6 @@ test "collection: sort strings" {
 test "sortby: key-based ascending" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // Sort by the value itself (identity key), natural ascending order.
     const result = try testing.evalWithBuiltins(arena.allocator(), "sortby x [3 1 2] :x");
     const items = result.?.list;
     try std.testing.expectEqual(@as(i64, 1), items[0].?.int);
@@ -834,7 +819,6 @@ test "sortby: key-based ascending" {
 test "sortby: by computed key" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // Sort by negation: yields descending order of originals.
     const result = try testing.evalWithBuiltins(arena.allocator(), "sortby x [1 3 2] (- 0 :x)");
     const items = result.?.list;
     try std.testing.expectEqual(@as(i64, 3), items[0].?.int);
@@ -882,10 +866,6 @@ test "sortwith: descending via reversed compare" {
 test "sortwith: multi-criteria via or-chain with isnt" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // List of [rank, name] pairs encoded as nested lists; sort by rank, then by name.
-    // Using primitive ints for both criteria. Pairs as ints: tens digit = rank, units = name.
-    // 21 (rank=2,name=1), 13 (rank=1,name=3), 11 (rank=1,name=1), 22 (rank=2,name=2)
-    // Sort by tens then units: 11, 13, 21, 22
     const result = try testing.evalWithBuiltins(arena.allocator(),
         \\sortwith a b [21 13 11 22]
         \\    (or (isnt (compare (/ :a 10) (/ :b 10)) 0)
@@ -965,4 +945,3 @@ test "slice: end before start errors" {
     defer arena.deinit();
     try std.testing.expectError(error.RuntimeError, testing.evalWithBuiltins(arena.allocator(), "slice 5 2 [1 2 3 4 5]"));
 }
-

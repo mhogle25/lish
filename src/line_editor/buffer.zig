@@ -3,15 +3,10 @@ const tok = @import("../token.zig");
 
 pub const BUFFER_SIZE = 4096;
 
-/// True for ASCII alphanumerics and underscore. Punctuation (`/`, `-`, `.`,
-/// etc.) and whitespace are word boundaries. Lets Ctrl+W on `~/.config/foo`
-/// delete only `foo` instead of the whole path.
 fn isWordChar(byte: u8) bool {
     return std.ascii.isAlphanumeric(byte) or byte == '_';
 }
 
-/// True iff (open, close) is a matched bracket or quote pair recognised by
-/// autopair-delete.
 fn isMatchedPair(open: u8, close: u8) bool {
     return (open == tok.EXPRESSION_OPEN and close == tok.EXPRESSION_CLOSE) or
         (open == tok.LIST_OPEN and close == tok.LIST_CLOSE) or
@@ -44,7 +39,6 @@ pub const LineBuffer = struct {
         self.cursor = 0;
     }
 
-    /// Insert a byte at cursor. Returns false if buffer is full.
     pub fn insertChar(self: *LineBuffer, byte: u8) bool {
         if (self.length >= BUFFER_SIZE) return false;
 
@@ -63,9 +57,6 @@ pub const LineBuffer = struct {
         return true;
     }
 
-    /// Insert two bytes (open, close) and position cursor between them.
-    /// Returns false if the buffer can't fit both bytes; in that case the
-    /// caller may choose to insert just the open instead.
     pub fn insertPair(self: *LineBuffer, open: u8, close: u8) bool {
         if (self.length + 2 > BUFFER_SIZE) return false;
 
@@ -76,7 +67,6 @@ pub const LineBuffer = struct {
         return true;
     }
 
-    /// Delete one byte before cursor.
     pub fn deleteCharBefore(self: *LineBuffer) void {
         if (self.cursor == 0) return;
 
@@ -92,9 +82,6 @@ pub const LineBuffer = struct {
         self.length -= 1;
     }
 
-    /// If cursor is between a matched pair, delete both bytes and leave
-    /// cursor at the position where the open was. Returns true if a pair
-    /// was deleted, false otherwise (so caller can fall back to single delete).
     pub fn deleteMatchedPair(self: *LineBuffer) bool {
         if (self.cursor == 0 or self.cursor >= self.length) return false;
         const prev = self.data[self.cursor - 1];
@@ -116,7 +103,6 @@ pub const LineBuffer = struct {
         return true;
     }
 
-    /// Delete one byte at cursor (forward delete).
     pub fn deleteCharAt(self: *LineBuffer) void {
         if (self.cursor >= self.length) return;
 
@@ -195,8 +181,6 @@ pub const LineBuffer = struct {
         self.cursor = target;
     }
 
-    /// Set buffer contents to the given slice with cursor at the end.
-    /// Truncates if content exceeds BUFFER_SIZE.
     pub fn setContent(self: *LineBuffer, content: []const u8) void {
         const copy_len = @min(content.len, BUFFER_SIZE);
         @memcpy(self.data[0..copy_len], content[0..copy_len]);
@@ -204,8 +188,6 @@ pub const LineBuffer = struct {
         self.cursor = copy_len;
     }
 
-    /// Remove bytes in [start, end). Adjusts cursor: if cursor was past the
-    /// removed range it shifts left; if it was inside, it snaps to start.
     pub fn removeRange(self: *LineBuffer, start: usize, end: usize) void {
         if (end <= start or end > self.length) return;
         const removed = end - start;
@@ -228,10 +210,8 @@ pub const LineBuffer = struct {
     }
 };
 
-// Row/col helpers over a flat buffer with embedded '\n'. Used by the
-// renderer and by Up/Down navigation. All counts are 0-indexed and in bytes.
+// Row/col helpers
 
-/// Row (0-indexed) where the given byte offset falls. Counts `\n` bytes before `offset`.
 pub fn rowOf(content: []const u8, offset: usize) usize {
     var row: usize = 0;
     const limit = @min(offset, content.len);
@@ -244,8 +224,6 @@ pub fn rowOf(content: []const u8, offset: usize) usize {
     return row;
 }
 
-/// Column (0-indexed, in bytes since last `\n` or start of buffer) where
-/// the given byte offset falls.
 pub fn colOf(content: []const u8, offset: usize) usize {
     var last_newline: ?usize = null;
     const limit = @min(offset, content.len);
@@ -258,8 +236,6 @@ pub fn colOf(content: []const u8, offset: usize) usize {
     return if (last_newline) |ln| offset - ln - 1 else offset;
 }
 
-/// Byte offset for a given (row, col) location. Clamps col to row length.
-/// Returns content.len if row is beyond the buffer.
 pub fn offsetAt(content: []const u8, row: usize, col: usize) usize {
     var current_row: usize = 0;
     var row_start: usize = 0;
@@ -279,7 +255,6 @@ pub fn offsetAt(content: []const u8, row: usize, col: usize) usize {
 
     return row_start + @min(col, row_end - row_start);
 }
-
 
 fn testInsertString(buffer: *LineBuffer, string: []const u8) void {
     for (string) |byte| {
@@ -468,7 +443,6 @@ test "line buffer: delete word backward at beginning does nothing" {
     try std.testing.expectEqualStrings("hello", buffer.slice());
     try std.testing.expectEqual(@as(usize, 0), buffer.cursor);
 }
-
 
 test "rowOf: counts newlines before offset" {
     try std.testing.expectEqual(@as(usize, 0), rowOf("abc", 2));

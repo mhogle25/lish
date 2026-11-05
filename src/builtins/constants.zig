@@ -30,8 +30,6 @@ fn noneOp(_: Args) ExecError!?Value {
     return null;
 }
 
-
-
 const testing = @import("testing.zig");
 
 test "constants: some and none" {
@@ -49,4 +47,3 @@ test "comment: inline comment in expression" {
     const result = try testing.evalWithBuiltins(arena.allocator(), "+ 1 ## comment ## 2");
     try std.testing.expectEqual(@as(i64, 3), result.?.int);
 }
-

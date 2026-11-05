@@ -45,8 +45,6 @@ const Constant = struct {
     value: i128,
 };
 
-/// All integer `pub const` decls of `token.zig` whose value falls in `[lo, hi]`,
-/// in source-declaration order.
 fn collect(comptime lo: i128, comptime hi: i128) []const Constant {
     comptime {
         var out: []const Constant = &.{};
@@ -142,9 +140,6 @@ fn buildC() []const u8 {
     }
 }
 
-/// The single-char escape symbols `\X` that `escSymToChar` recognizes, found by
-/// probing the function over the whole byte domain. The function is the source
-/// of truth, so probing it can never disagree with it.
 fn collectEscapeSymbols() []const u8 {
     comptime {
         var out: []const u8 = &.{};
@@ -193,7 +188,7 @@ pub fn main(init: std.process.Init) !void {
     const stderr = &stderr_writer.interface;
 
     var arg_iter = init.minimal.args.iterate();
-    _ = arg_iter.next(); // skip argv[0]
+    _ = arg_iter.next();
     const out_dir = arg_iter.next() orelse {
         try stderr.writeAll("usage: gen <output-directory>\n");
         return error.MissingOutputDirectory;

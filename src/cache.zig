@@ -6,8 +6,6 @@ const Expression = exec_mod.Expression;
 const Unit = exec_mod.Unit;
 const ResolvedSlot = exec_mod.ResolvedSlot;
 
-/// Generic LRU cache mapping string keys to values of type V.
-/// O(1) get, put, and eviction via HashMap + doubly-linked list.
 pub fn LruCache(comptime V: type) type {
     return struct {
         const Self = @This();
@@ -50,25 +48,19 @@ pub fn LruCache(comptime V: type) type {
             self.allocator.free(self.nodes);
         }
 
-        /// Look up a cached value by key.
-        /// On hit, moves the entry to the front (most recently used).
         pub fn get(self: *Self, key: []const u8) ?V {
             const index = self.map.get(key) orelse return null;
             self.moveToFront(index);
             return self.nodes[index].value;
         }
 
-        /// Store a value in the cache. If the cache is full, evicts
-        /// the least recently used entry.
         pub fn put(self: *Self, key: []const u8, value: V) Allocator.Error!void {
-            // Update existing entry
             if (self.map.get(key)) |index| {
                 self.nodes[index].value = value;
                 self.moveToFront(index);
                 return;
             }
 
-            // Get a slot: either a fresh one or evict the LRU tail
             const index = if (self.len < self.capacity) blk: {
                 const idx = self.len;
                 self.len += 1;
@@ -92,7 +84,6 @@ pub fn LruCache(comptime V: type) type {
             self.addToFront(index);
         }
 
-        /// Remove all entries from the cache.
         pub fn clear(self: *Self) void {
             for (self.nodes[0..self.len]) |*node| {
                 if (node.active) {
@@ -109,7 +100,6 @@ pub fn LruCache(comptime V: type) type {
         pub fn count(self: *const Self) usize {
             return self.map.count();
         }
-
 
         fn moveToFront(self: *Self, index: usize) void {
             if (self.head == index) return;
@@ -185,9 +175,6 @@ pub const ResolutionCache = struct {
         self.map.deinit(self.allocator);
     }
 
-    /// Enter a unit: pin it and return its slot array (a fresh `.unresolved` array
-    /// on a miss), or null when every entry is pinned (caller runs un-cached). The
-    /// slice stays valid until the matching `unpin`.
     pub fn enter(self: *ResolutionCache, unit_id: u32, site_count: u32) Allocator.Error!?[]ResolvedSlot {
         try self.ensureNodes();
 
@@ -212,13 +199,10 @@ pub const ResolutionCache = struct {
         return slots;
     }
 
-    /// Release one pin on a unit (balances a successful `enter`).
     pub fn unpin(self: *ResolutionCache, unit_id: u32) void {
         if (self.map.get(unit_id)) |index| self.nodes[index].pins -= 1;
     }
 
-    /// Drop every memoized resolution (slot arrays freed). Valid only between
-    /// evaluations, when nothing is pinned (the existing register-time invariant).
     pub fn clear(self: *ResolutionCache) void {
         for (self.nodes[0..self.len]) |*node| {
             if (node.active) {
@@ -243,8 +227,6 @@ pub const ResolutionCache = struct {
         }
     }
 
-    // Reclaim the least-recently-used unpinned entry (freeing its slots), or null
-    // if every entry is pinned. Only called when the table is at capacity.
     fn evictVictim(self: *ResolutionCache) ?usize {
         var maybe = self.tail;
         while (maybe) |index| : (maybe = self.nodes[index].prev) {
@@ -279,7 +261,6 @@ pub const ResolutionCache = struct {
         if (node.next) |next| self.nodes[next].prev = node.prev else self.tail = node.prev;
     }
 };
-
 
 const expr_parser = @import("parser.zig");
 const validation_mod = @import("validation.zig");
@@ -348,7 +329,6 @@ test "cache: evicts least recently used" {
     try cache.put("b", try parseAndValidate(alloc, "+ 3 4"));
     try cache.put("c", try parseAndValidate(alloc, "+ 5 6"));
 
-    // Cache is full (capacity 3). Inserting "d" should evict "a" (LRU).
     try cache.put("d", try parseAndValidate(alloc, "+ 7 8"));
 
     try std.testing.expect(cache.get("a") == null);
@@ -369,7 +349,6 @@ test "cache: access refreshes LRU order" {
     try cache.put("b", try parseAndValidate(alloc, "+ 3 4"));
     try cache.put("c", try parseAndValidate(alloc, "+ 5 6"));
 
-    // Access "a" to refresh it, now "b" is the LRU
     _ = cache.get("a");
 
     try cache.put("d", try parseAndValidate(alloc, "+ 7 8"));
@@ -430,12 +409,11 @@ test "cache: repeated evictions cycle correctly" {
 
     const expression = try parseAndValidate(alloc, "+ 1 2");
 
-    // Fill and evict several rounds
     try cache.put("a", expression);
     try cache.put("b", expression);
-    try cache.put("c", expression); // evicts "a"
-    try cache.put("d", expression); // evicts "b"
-    try cache.put("e", expression); // evicts "c"
+    try cache.put("c", expression);
+    try cache.put("d", expression);
+    try cache.put("e", expression);
 
     try std.testing.expectEqual(@as(usize, 2), cache.count());
     try std.testing.expect(cache.get("a") == null);
@@ -457,11 +435,7 @@ test "cache: generic with simple values" {
     try std.testing.expectEqual(@as(i32, 2), cache.get("two").?);
     try std.testing.expectEqual(@as(i32, 3), cache.get("three").?);
 
-    // Evict LRU ("one" was accessed most recently due to get above, "two" next, so
-    // after the gets above the order is: three(head), two, one(tail)
-    // Wait, gets move to front, so after get("one"), get("two"), get("three"):
-    // order is three(head), two, one(tail)
-    try cache.put("four", 4); // evicts "one" (tail)
+    try cache.put("four", 4);
 
     try std.testing.expect(cache.get("one") == null);
     try std.testing.expectEqual(@as(i32, 2), cache.get("two").?);
@@ -476,7 +450,6 @@ test "resolution cache: enter allocates unresolved slots, re-enter reuses them" 
     try std.testing.expect(slots[0] == .unresolved);
     cache.unpin(1);
 
-    // Same unit id returns the same (still-memoized) array.
     const again = (try cache.enter(1, 3)).?;
     try std.testing.expectEqual(slots.ptr, again.ptr);
     cache.unpin(1);
@@ -486,16 +459,14 @@ test "resolution cache: a pinned entry is never evicted" {
     var cache = ResolutionCache.init(std.testing.allocator, 2);
     defer cache.deinit();
 
-    const s1 = (try cache.enter(1, 1)).?; // unit 1 stays pinned (no unpin)
+    const s1 = (try cache.enter(1, 1)).?;
     _ = (try cache.enter(2, 1)).?;
     cache.unpin(2);
 
-    // Table full as {1 pinned, 2 unpinned}; entering 3 must evict 2, not 1.
     _ = (try cache.enter(3, 1)).?;
     cache.unpin(3);
     cache.unpin(1);
 
-    // Unit 1 survived: re-entering returns its original slot array.
     const s1b = (try cache.enter(1, 1)).?;
     try std.testing.expectEqual(s1.ptr, s1b.ptr);
     cache.unpin(1);

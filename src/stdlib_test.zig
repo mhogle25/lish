@@ -3,7 +3,6 @@
 const std = @import("std");
 const testing = @import("builtins/testing.zig");
 
-
 test "stdlib: kvget returns value for present key" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -113,7 +112,6 @@ test "stdlib: kvkeys on empty list returns empty" {
     try std.testing.expectEqual(@as(usize, 0), result.?.list.len);
 }
 
-
 test "stdlib: pi returns ~3.14159" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -178,7 +176,6 @@ test "stdlib: fill zero count gives empty list" {
     const result = try testing.evalWithStdlib(arena.allocator(), "fill 0 99");
     try std.testing.expectEqual(@as(usize, 0), result.?.list.len);
 }
-
 
 test "stdlib: square" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -257,7 +254,6 @@ test "stdlib: smoothstep above edge1 = 1" {
     try std.testing.expectApproxEqAbs(@as(f64, 1.0), result.?.float, 1e-9);
 }
 
-
 test "stdlib: pop drops last element" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -267,7 +263,6 @@ test "stdlib: pop drops last element" {
     try std.testing.expectEqual(@as(i64, 10), items[0].?.int);
     try std.testing.expectEqual(@as(i64, 20), items[1].?.int);
 }
-
 
 test "stdlib: repeatstr concatenates n copies" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -296,7 +291,6 @@ test "stdlib: padright pads short string" {
     const result = try testing.evalWithStdlib(arena.allocator(), "padright \"hi\" 5 \".\"");
     try std.testing.expectEqualStrings("hi...", result.?.string);
 }
-
 
 test "stdlib: positive on positive number" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -388,7 +382,6 @@ test "stdlib: blank on non-empty is false" {
     const result = try testing.evalWithStdlib(arena.allocator(), "blank \"hi\"");
     try std.testing.expect(result == null);
 }
-
 
 test "stdlib: panic raises runtime error" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);

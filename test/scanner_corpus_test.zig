@@ -13,8 +13,6 @@ const std = @import("std");
 const lish = @import("lish");
 const Lexer = lish.Lexer;
 
-/// The opener that nests a given terminator: `{` for folio's `}` regions; the
-/// macro `;` does not nest.
 fn openFor(terminator: u8) ?u8 {
     return switch (terminator) {
         '}' => '{',
@@ -22,8 +20,6 @@ fn openFor(terminator: u8) ?u8 {
     };
 }
 
-/// Tokenize the source (a macro body, so BODY lexer mode) and return the byte
-/// offset of the first `macro_break` (`;`) token, or null if there is none.
 fn findMacroBreakBoundary(source: []const u8) ?u32 {
     var lex = Lexer{ .source = source, .mode = .body };
     while (true) {
