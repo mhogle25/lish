@@ -25,7 +25,7 @@ pub fn parse(text: []const u8) !Parsed {
     var expected: ?u32 = null;
 
     var rest = text;
-    while (std.mem.indexOfScalar(u8, rest, '\n')) |nl| { 
+    while (std.mem.findScalar(u8, rest, '\n')) |nl| { 
         const line = rest[0..nl];
         rest = rest[nl + 1 ..];
 
@@ -34,7 +34,7 @@ pub fn parse(text: []const u8) !Parsed {
         if (trimmed.len == 0) continue;
         if (std.mem.eql(u8, trimmed, "---")) break;
 
-        if (std.mem.indexOfScalar(u8, trimmed, ':')) |colon| {
+        if (std.mem.findScalar(u8, trimmed, ':')) |colon| {
             const key = std.mem.trim(u8, trimmed[0..colon], " \t");
             const value = std.mem.trim(u8, trimmed[colon + 1 ..], " \t");
 

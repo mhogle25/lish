@@ -45,7 +45,7 @@ pub const ReplConfig = struct {
     history_size: usize = 256,
     /// Input prompt, or null to use the editor's default. Owned.
     prompt: ?[]const u8 = null,
-    macro_dirs: std.ArrayListUnmanaged([]const u8) = .empty,
+    macro_dirs: std.ArrayList([]const u8) = .empty,
     bounds: exec_mod.Bounds = .{},
     allocator: Allocator,
 
@@ -175,7 +175,7 @@ fn maxEvalBytesOp(config: *ReplConfig, args: exec_mod.Args) exec_mod.ExecError!?
 }
 
 fn macrosOp(config: *ReplConfig, args: exec_mod.Args) exec_mod.ExecError!?value_mod.Value {
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const path = try (try args.single()).resolveString(&path_buf);
     const owned = config.allocator.dupe(u8, path) catch return error.OutOfMemory;
 
@@ -214,8 +214,8 @@ const CONFIG_FILE_NAME = "config" ++ process_mod.LISH_EXTENSION;
 
 fn configFilePath(environ: std.process.Environ, allocator: Allocator) ?[]const u8 {
     return 
-        if (environ.getPosix("XDG_CONFIG_HOME")) |xdg| std.fs.path.join(allocator, &.{ xdg, "lish", CONFIG_FILE_NAME }) catch null else
-        if (environ.getPosix("HOME"))            |home| std.fs.path.join(allocator, &.{ home, ".config", "lish", CONFIG_FILE_NAME }) catch null else 
+        if (environ.getPosix("XDG_CONFIG_HOME")) |xdg| std.Io.Dir.path.join(allocator, &.{ xdg, "lish", CONFIG_FILE_NAME }) catch null else
+        if (environ.getPosix("HOME"))            |home| std.Io.Dir.path.join(allocator, &.{ home, ".config", "lish", CONFIG_FILE_NAME }) catch null else 
         null;
 }
 
@@ -248,7 +248,7 @@ pub fn initConfig(io: std.Io, environ: std.process.Environ, allocator: Allocator
     const cwd = std.Io.Dir.cwd();
     cwd.access(io, path, .{}) catch |err| switch (err) {
         error.FileNotFound => {
-            if (std.fs.path.dirname(path)) |dir| try cwd.createDirPath(io, dir);
+            if (std.Io.Dir.path.dirname(path)) |dir| try cwd.createDirPath(io, dir);
             try cwd.writeFile(io, .{ .sub_path = path, .data = STARTER_CONFIG });
             return .{ .path = path, .created = true };
         },

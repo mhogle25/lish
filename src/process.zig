@@ -199,14 +199,14 @@ pub fn loadMacroDir(
     defer dir.close(io);
 
     var loaded_count: usize = 0;
-    var file_errors: std.ArrayListUnmanaged(MacroDirResult.FileError) = .empty;
+    var file_errors: std.ArrayList(MacroDirResult.FileError) = .empty;
 
     var iter = dir.iterate();
     while (try iter.next(io)) |entry| {
         if (entry.kind != .file) continue;
         if (!std.mem.endsWith(u8, entry.name, MACRO_EXTENSION)) continue;
 
-        const full_path = try std.fs.path.join(allocator, &.{ dir_path, entry.name });
+        const full_path = try std.Io.Dir.path.join(allocator, &.{ dir_path, entry.name });
 
         const result = try loadMacroFile(io, allocator, registry, full_path);
         switch (result) {
@@ -434,7 +434,7 @@ test "processRaw: runtime error for unknown operation" {
         .ok             => return error.TestUnexpectedResult,
         .validation_err => return error.TestUnexpectedResult,
         .runtime_err => |re| {
-            try std.testing.expect(std.mem.indexOf(u8, re.message, "nonexistent") != null);
+            try std.testing.expect(std.mem.find(u8, re.message, "nonexistent") != null);
         },
     }
 }
@@ -782,7 +782,7 @@ test "bounds: recursion depth halts runaway macro" {
     const result = try processRaw(&env, "forever", null);
     switch (result) {
         .runtime_err => |re| {
-            try std.testing.expect(std.mem.indexOf(u8, re.message, "Recursion depth") != null);
+            try std.testing.expect(std.mem.find(u8, re.message, "Recursion depth") != null);
         },
         else => return error.TestUnexpectedResult,
     }
@@ -803,7 +803,7 @@ test "bounds: fuel exhaustion halts long loop" {
     const result = try processRaw(&env, "loop 1000 (+ 1 1)", null);
     switch (result) {
         .runtime_err => |re| {
-            try std.testing.expect(std.mem.indexOf(u8, re.message, "Fuel exhausted") != null);
+            try std.testing.expect(std.mem.find(u8, re.message, "Fuel exhausted") != null);
         },
         else => return error.TestUnexpectedResult,
     }
@@ -840,7 +840,7 @@ test "bounds: list length cap halts huge range" {
     const result = try processRaw(&env, "range 0 100000", null);
     switch (result) {
         .runtime_err => |re| {
-            try std.testing.expect(std.mem.indexOf(u8, re.message, "List length") != null);
+            try std.testing.expect(std.mem.find(u8, re.message, "List length") != null);
         },
         else => return error.TestUnexpectedResult,
     }
@@ -860,7 +860,7 @@ test "bounds: list length cap halts huge fill" {
     const result = try processRaw(&env, "fill 1000000 0", null);
     switch (result) {
         .runtime_err => |re| {
-            try std.testing.expect(std.mem.indexOf(u8, re.message, "List length") != null);
+            try std.testing.expect(std.mem.find(u8, re.message, "List length") != null);
         },
         else => return error.TestUnexpectedResult,
     }
@@ -884,7 +884,7 @@ test "bounds: string length cap halts huge concat" {
         "double (double (double (double (double (double (double (double (double (double \"x\")))))))))", null);
     switch (result) {
         .runtime_err => |re| {
-            try std.testing.expect(std.mem.indexOf(u8, re.message, "String length") != null);
+            try std.testing.expect(std.mem.find(u8, re.message, "String length") != null);
         },
         else => return error.TestUnexpectedResult,
     }

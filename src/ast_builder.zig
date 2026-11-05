@@ -87,7 +87,7 @@ pub const AstBuilder = struct {
 pub const ExprBuilder = struct {
     builder: AstBuilder,
     id: []const u8,
-    args: std.ArrayListUnmanaged(*const AstNode),
+    args: std.ArrayList(*const AstNode),
     meta_type: AstExpression.MetaType,
     sticky_err: ?Allocator.Error,
 
@@ -116,7 +116,7 @@ pub const ExprBuilder = struct {
 pub const MacroBuilder = struct {
     builder: AstBuilder,
     name: []const u8,
-    params: std.ArrayListUnmanaged(AstMacroParam),
+    params: std.ArrayList(AstMacroParam),
     sticky_err: ?Allocator.Error,
 
     pub fn param(self: *MacroBuilder, name: []const u8) *MacroBuilder {

@@ -99,7 +99,7 @@ pub fn serializeOperations(
     registry: *const Registry,
     allocator: Allocator,
 ) !void {
-    var entries: std.ArrayListUnmanaged(Entry) = .empty;
+    var entries: std.ArrayList(Entry) = .empty;
     defer entries.deinit(allocator);
 
     var it = registry.operations.iterator();
@@ -137,7 +137,7 @@ pub fn serializeMacros(
     registry: *const Registry,
     allocator: Allocator,
 ) !void {
-    var entries: std.ArrayListUnmanaged(MacroEntry) = .empty;
+    var entries: std.ArrayList(MacroEntry) = .empty;
     defer entries.deinit(allocator);
 
     var it = registry.macros.iterator();

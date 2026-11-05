@@ -43,8 +43,7 @@ pub const LineBuffer = struct {
         if (self.length >= BUFFER_SIZE) return false;
 
         if (self.cursor < self.length) {
-            std.mem.copyBackwards(
-                u8,
+            @memmove(
                 self.data[self.cursor + 1 .. self.length + 1],
                 self.data[self.cursor .. self.length],
             );
@@ -71,8 +70,7 @@ pub const LineBuffer = struct {
         if (self.cursor == 0) return;
 
         if (self.cursor < self.length) {
-            std.mem.copyForwards(
-                u8,
+            @memmove(
                 self.data[self.cursor - 1 .. self.length - 1],
                 self.data[self.cursor .. self.length],
             );
@@ -90,8 +88,7 @@ pub const LineBuffer = struct {
         if (!isMatchedPair(prev, next)) return false;
 
         if (self.cursor + 1 < self.length) {
-            std.mem.copyForwards(
-                u8,
+            @memmove(
                 self.data[self.cursor - 1 .. self.length - 2],
                 self.data[self.cursor + 1 .. self.length],
             );
@@ -107,8 +104,7 @@ pub const LineBuffer = struct {
         if (self.cursor >= self.length) return;
 
         if (self.cursor + 1 < self.length) {
-            std.mem.copyForwards(
-                u8,
+            @memmove(
                 self.data[self.cursor .. self.length - 1],
                 self.data[self.cursor + 1 .. self.length],
             );
@@ -170,8 +166,7 @@ pub const LineBuffer = struct {
         if (chars_deleted == 0) return;
         
         if (self.cursor < self.length) {
-            std.mem.copyForwards(
-                u8,
+            @memmove(
                 self.data[target .. self.length - chars_deleted],
                 self.data[self.cursor .. self.length],
             );
@@ -192,8 +187,7 @@ pub const LineBuffer = struct {
         if (end <= start or end > self.length) return;
         const removed = end - start;
         if (end < self.length) {
-            std.mem.copyForwards(
-                u8,
+            @memmove(
                 self.data[start .. self.length - removed],
                 self.data[end..self.length],
             );
@@ -294,6 +288,17 @@ test "line buffer: delete backward in middle" {
     buffer.deleteCharBefore();
     try std.testing.expectEqualStrings("helo", buffer.slice());
     try std.testing.expectEqual(@as(usize, 2), buffer.cursor);
+}
+
+test "line buffer: delete matched pair in middle keeps the text after it" {
+    var buffer = LineBuffer{};
+    testInsertString(&buffer, "ab");
+    buffer.cursor = 1;
+    _ = buffer.insertPair(tok.EXPRESSION_OPEN, tok.EXPRESSION_CLOSE);
+
+    try std.testing.expect(buffer.deleteMatchedPair());
+    try std.testing.expectEqualStrings("ab", buffer.slice());
+    try std.testing.expectEqual(@as(usize, 1), buffer.cursor);
 }
 
 test "line buffer: delete backward at beginning does nothing" {
@@ -403,6 +408,15 @@ test "line buffer: delete word backward" {
     buffer.deleteWordBefore();
     try std.testing.expectEqualStrings("hello ", buffer.slice());
     try std.testing.expectEqual(@as(usize, 6), buffer.cursor);
+}
+
+test "line buffer: delete word backward in middle keeps the text after it" {
+    var buffer = LineBuffer{};
+    testInsertString(&buffer, "hello world");
+    buffer.cursor = 5;
+    buffer.deleteWordBefore();
+    try std.testing.expectEqualStrings(" world", buffer.slice());
+    try std.testing.expectEqual(@as(usize, 0), buffer.cursor);
 }
 
 test "line buffer: delete word backward with trailing spaces" {

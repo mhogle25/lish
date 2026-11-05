@@ -118,7 +118,7 @@ fn filterOp(args: Args) ExecError!?Value {
     const list      = try args.at(1).resolveList();
     const predicate = args.items[2];
 
-    var results = std.ArrayListUnmanaged(?Value).empty;
+    var results = std.ArrayList(?Value).empty;
     for (list) |item| {
         iter_scope.inline_count = 0;
         try iter_scope.setValue(args.env.allocator, name, item);

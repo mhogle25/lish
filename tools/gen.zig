@@ -208,7 +208,7 @@ pub fn main(init: std.process.Init) !void {
 }
 
 fn writeInto(io: std.Io, dir: std.Io.Dir, out_dir: []const u8, name: []const u8, data: []const u8) !void {
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ out_dir, name });
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path = try std.mem.print(&path_buf, "{s}/{s}", .{ out_dir, name });
     try dir.writeFile(io, .{ .sub_path = path, .data = data });
 }

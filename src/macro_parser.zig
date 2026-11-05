@@ -87,7 +87,7 @@ pub const MacroModuleWithComments = struct {
 };
 
 pub fn parseMacroModuleWithComments(allocator: Allocator, source: []const u8) Allocator.Error!MacroModuleWithComments {
-    var comments: std.ArrayListUnmanaged(CommentSpan) = .empty;
+    var comments: std.ArrayList(CommentSpan) = .empty;
     var parser = MacroParser.init(allocator, source, .{ .list = &comments, .allocator = allocator });
     const module = try parser.parse();
     return .{ .module = module, .comments = comments.items };
@@ -100,10 +100,10 @@ const MacroParser = struct {
     state: State,
 
     current_id: ?AstMacroId = null,
-    parameters: std.ArrayListUnmanaged(AstMacroParam) = .empty,
-    macros: std.ArrayListUnmanaged(AstMacroNode) = .empty,
+    parameters: std.ArrayList(AstMacroParam) = .empty,
+    macros: std.ArrayList(AstMacroNode) = .empty,
     id_set: std.StringHashMapUnmanaged(void) = .{},
-    string_buf: std.ArrayListUnmanaged(u8) = .empty,
+    string_buf: std.ArrayList(u8) = .empty,
 
     /// Comment sink shared with the lexer (and sub-parsers). When set, each
     /// macro's leading comment run becomes its `description`.
@@ -378,7 +378,7 @@ pub const MacroValidationResult = union(enum) {
 
 pub fn validateMacroModule(allocator: Allocator, module: AstMacroModule) Allocator.Error!MacroValidationResult {
     var errors = validation_mod.ValidationErrors{};
-    var valid_macros = std.ArrayListUnmanaged(exec.Macro).empty;
+    var valid_macros = std.ArrayList(exec.Macro).empty;
 
     for (module.macros) |macro_node| {
         switch (macro_node) {
@@ -414,7 +414,7 @@ fn validateMacro(
         },
     };
 
-    var valid_params = std.ArrayListUnmanaged(exec.MacroParameter).empty;
+    var valid_params = std.ArrayList(exec.MacroParameter).empty;
     for (macro.parameters) |param_node| {
         switch (param_node) {
             .valid => |param| {
@@ -454,7 +454,7 @@ fn validateMacro(
 
 fn cleanDocstring(allocator: Allocator, raw: []const u8) Allocator.Error![]const u8 {
     if (raw.len == 0) return "";
-    var out: std.ArrayListUnmanaged(u8) = .empty;
+    var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
     var lines = std.mem.splitScalar(u8, raw, '\n');
     var first = true;

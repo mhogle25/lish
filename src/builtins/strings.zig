@@ -93,7 +93,7 @@ pub fn register(registry: *Registry, allocator: Allocator) Allocator.Error!void 
 
 fn concatOp(args: Args) ExecError!?Value {
     try args.expectMinCount(2);
-    var result = std.ArrayListUnmanaged(u8).empty;
+    var result = std.ArrayList(u8).empty;
     for (0..args.count()) |i| {
         const maybe_value = try args.at(i).get();
         if (maybe_value) |value| {
@@ -112,7 +112,7 @@ fn joinOp(args: Args) ExecError!?Value {
     const separator = try args.at(0).resolveString(&sep_buf);
     const separator_owned = try args.env.allocator.dupe(u8, separator);
 
-    var result = std.ArrayListUnmanaged(u8).empty;
+    var result = std.ArrayList(u8).empty;
     for (1..args.count()) |i| {
         if (i > 1) {
             try helpers.checkStringLength(args.env, result.items.len + separator_owned.len);
@@ -139,7 +139,7 @@ fn splitOp(args: Args) ExecError!?Value {
     const string = target.string;
 
     const alloc = args.env.allocator;
-    var parts = std.ArrayListUnmanaged(?Value).empty;
+    var parts = std.ArrayList(?Value).empty;
 
     if (separator.len == 0) {
         for (0..string.len) |i| {
@@ -149,7 +149,7 @@ fn splitOp(args: Args) ExecError!?Value {
         }
     } else {
         var remaining = string;
-        while (std.mem.indexOf(u8, remaining, separator)) |idx| {
+        while (std.mem.find(u8, remaining, separator)) |idx| {
             try helpers.checkListLength(args.env, parts.items.len + 1);
             const part = try alloc.dupe(u8, remaining[0..idx]);
             try parts.append(alloc, .{ .string = part });
@@ -170,7 +170,7 @@ fn charsOp(args: Args) ExecError!?Value {
     const string = value.string;
 
     const alloc = args.env.allocator;
-    var parts = std.ArrayListUnmanaged(?Value).empty;
+    var parts = std.ArrayList(?Value).empty;
     for (0..string.len) |i| {
         try helpers.checkListLength(args.env, parts.items.len + 1);
         const char = try alloc.dupe(u8, string[i .. i + 1]);
@@ -186,10 +186,10 @@ fn linesOp(args: Args) ExecError!?Value {
     const string = value.string;
 
     const alloc = args.env.allocator;
-    var parts = std.ArrayListUnmanaged(?Value).empty;
+    var parts = std.ArrayList(?Value).empty;
 
     var remaining = string;
-    while (std.mem.indexOfScalar(u8, remaining, '\n')) |idx| {
+    while (std.mem.findScalar(u8, remaining, '\n')) |idx| {
         try helpers.checkListLength(args.env, parts.items.len + 1);
         const raw = remaining[0..idx];
         const trimmed = if (raw.len > 0 and raw[raw.len - 1] == '\r') raw[0 .. raw.len - 1] else raw;
@@ -252,9 +252,9 @@ fn replaceOp(args: Args) ExecError!?Value {
 
     if (pattern.len == 0) return .{ .string = target };
 
-    var result = std.ArrayListUnmanaged(u8).empty;
+    var result = std.ArrayList(u8).empty;
     var remaining = target;
-    while (std.mem.indexOf(u8, remaining, pattern)) |idx| {
+    while (std.mem.find(u8, remaining, pattern)) |idx| {
         try helpers.checkStringLength(args.env, result.items.len + idx + replacement.len);
         try result.appendSlice(alloc, remaining[0..idx]);
         try result.appendSlice(alloc, replacement);
@@ -272,11 +272,11 @@ fn formatOp(args: Args) ExecError!?Value {
 
     const template = template_val.string;
     const alloc = args.env.allocator;
-    var result = std.ArrayListUnmanaged(u8).empty;
+    var result = std.ArrayList(u8).empty;
 
     var remaining = template;
     var arg_index: usize = 1;
-    while (std.mem.indexOf(u8, remaining, "<>")) |idx| {
+    while (std.mem.find(u8, remaining, "<>")) |idx| {
         try helpers.checkStringLength(args.env, result.items.len + idx);
         try result.appendSlice(alloc, remaining[0..idx]);
         if (arg_index < args.count()) {
@@ -330,7 +330,7 @@ fn inOp(args: Args) ExecError!?Value {
             var needle_buf: [256]u8 = undefined;
             const needle_str = try helpers.getString(args.env, "in", needle, &needle_buf);
 
-            if (std.mem.indexOf(u8, haystack_str, needle_str) != null) return needle;
+            if (std.mem.find(u8, haystack_str, needle_str) != null) return needle;
             return null;
         },
         .list => |items| {
@@ -351,7 +351,7 @@ fn findOp(args: Args) ExecError!?Value {
         .string => |haystack_str| {
             var needle_buf: [256]u8 = undefined;
             const needle_str = try helpers.getString(args.env, "find", needle, &needle_buf);
-            const index = std.mem.indexOf(u8, haystack_str, needle_str) orelse return null;
+            const index = std.mem.find(u8, haystack_str, needle_str) orelse return null;
             return .{ .int = @intCast(index) };
         },
         .list => |items| {

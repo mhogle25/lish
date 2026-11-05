@@ -783,8 +783,8 @@ test "Alt+Enter inside `[|]` also expands" {
     editor.buffer.cursor = 1;
     editor.insertNewlineWithIndent();
 
-    try std.testing.expect(std.mem.indexOfScalar(u8, editor.buffer.slice(), tok.LIST_OPEN) == 0);
-    try std.testing.expect(std.mem.indexOfScalar(u8, editor.buffer.slice(), tok.LIST_CLOSE) != null);
+    try std.testing.expect(std.mem.findScalar(u8, editor.buffer.slice(), tok.LIST_OPEN) == 0);
+    try std.testing.expect(std.mem.findScalar(u8, editor.buffer.slice(), tok.LIST_CLOSE) != null);
     try std.testing.expect(editor.buffer.cursor > 1);
     try std.testing.expect(editor.buffer.cursor < editor.buffer.length);
 }

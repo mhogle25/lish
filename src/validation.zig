@@ -19,7 +19,7 @@ pub const ValidationError = struct {
 };
 
 pub const ValidationErrors = struct {
-    items: std.ArrayListUnmanaged(ValidationError) = .empty,
+    items: std.ArrayList(ValidationError) = .empty,
 
     pub fn add(self: *ValidationErrors, allocator: Allocator, validation_error: ValidationError) Allocator.Error!void {
         try self.items.append(allocator, validation_error);
@@ -126,7 +126,7 @@ fn validateExpression(
         try errors.add(allocator, .{ .message = "An expression must have an ID" });
     }
 
-    var valid_args = std.ArrayListUnmanaged(*const Thunk).empty;
+    var valid_args = std.ArrayList(*const Thunk).empty;
     for (expr.args) |arg_node| {
         if (try validateStep(allocator, arg_node, errors, site_counter)) |arg_thunk| {
             try valid_args.append(allocator, arg_thunk);

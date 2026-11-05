@@ -43,8 +43,8 @@ pub const Value = union(enum) {
     pub fn getS(self: Value, buf: []u8) ![]const u8 {
         return switch (self) {
             .string => |str| str,
-            .int    => |int_val| try std.fmt.bufPrint(buf, "{d}", .{int_val}),
-            .float  => |float_val| try std.fmt.bufPrint(buf, "{d}", .{float_val}),
+            .int    => |int_val| try std.mem.print(buf, "{d}", .{int_val}),
+            .float  => |float_val| try std.mem.print(buf, "{d}", .{float_val}),
             .list   => {
                 var writer = std.Io.Writer.fixed(buf);
                 try self.format(&writer);
@@ -98,7 +98,7 @@ pub const Value = union(enum) {
             },
         }
 
-        var stack = std.ArrayListUnmanaged(SourceFrame).empty;
+        var stack = std.ArrayList(SourceFrame).empty;
         defer stack.deinit(allocator);
         writer.writeByte(tok.LIST_OPEN) catch return error.OutOfMemory;
         try stack.append(allocator, .{ .items = self.list });
@@ -137,7 +137,7 @@ pub const Value = union(enum) {
             .descend   => {},
         }
 
-        var pending = std.ArrayListUnmanaged(ListPair).empty;
+        var pending = std.ArrayList(ListPair).empty;
         defer pending.deinit(allocator);
 
         var current: ListPair = .{ .lhs = lhs.list, .rhs = rhs.list };
@@ -164,7 +164,7 @@ pub const Value = union(enum) {
             .list => {},
         }
 
-        var pending = std.ArrayListUnmanaged(CopyTask).empty;
+        var pending = std.ArrayList(CopyTask).empty;
         defer pending.deinit(allocator);
 
         const root = try allocator.alloc(?Value, self.list.len);
@@ -290,7 +290,7 @@ pub fn floatToInt(float_val: f64) i64 {
     if (float_val >= max_f) return std.math.maxInt(i64);
     if (float_val <= min_f) return std.math.minInt(i64);
 
-    return @intFromFloat(float_val);
+    return @trunc(float_val);
 }
 
 /// The type vocabulary an operation declares in its `Signature` (parameter
@@ -498,14 +498,14 @@ test "value: format truncates lists past MAX_DISPLAY_DEPTH" {
     var shallow_buf: [8 * 1024]u8 = undefined;
     var shallow_writer = std.Io.Writer.fixed(&shallow_buf);
     try shallow.format(&shallow_writer);
-    try std.testing.expect(std.mem.indexOf(u8, shallow_writer.buffered(), "7") != null);
-    try std.testing.expect(std.mem.indexOf(u8, shallow_writer.buffered(), "[ ... ]") == null);
+    try std.testing.expect(std.mem.find(u8, shallow_writer.buffered(), "7") != null);
+    try std.testing.expect(std.mem.find(u8, shallow_writer.buffered(), "[ ... ]") == null);
 
     var deep_buf: [8 * 1024]u8 = undefined;
     var deep_writer = std.Io.Writer.fixed(&deep_buf);
     try deep.format(&deep_writer);
-    try std.testing.expect(std.mem.indexOf(u8, deep_writer.buffered(), "[ ... ]") != null);
-    try std.testing.expect(std.mem.indexOf(u8, deep_writer.buffered(), "7") == null);
+    try std.testing.expect(std.mem.find(u8, deep_writer.buffered(), "[ ... ]") != null);
+    try std.testing.expect(std.mem.find(u8, deep_writer.buffered(), "7") == null);
 }
 
 fn wrapInList(allocator: std.mem.Allocator, value: Value) !Value {

@@ -61,7 +61,7 @@ fn opsOp(args: Args) ExecError!?Value {
     const alloc = args.env.allocator;
     const registry = args.env.registry;
 
-    var names = std.ArrayListUnmanaged(?Value).empty;
+    var names = std.ArrayList(?Value).empty;
     try names.ensureTotalCapacity(alloc, registry.operations.count() + registry.macros.count());
 
     var op_iter = registry.operations.keyIterator();

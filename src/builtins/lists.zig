@@ -129,7 +129,7 @@ fn listOp(args: Args) ExecError!?Value {
 }
 
 fn flatOp(args: Args) ExecError!?Value {
-    var result = std.ArrayListUnmanaged(?Value).empty;
+    var result = std.ArrayList(?Value).empty;
     for (0..args.count()) |i| {
         const maybe_value = try args.at(i).get();
         if (maybe_value) |value| {
@@ -240,7 +240,7 @@ fn rangeOp(args: Args) ExecError!?Value {
     }
 
     const alloc = args.env.allocator;
-    var items = std.ArrayListUnmanaged(?Value).empty;
+    var items = std.ArrayList(?Value).empty;
 
     var current = start;
     while (true) {
@@ -272,7 +272,7 @@ fn untilOp(args: Args) ExecError!?Value {
     }
 
     const alloc = args.env.allocator;
-    var items = std.ArrayListUnmanaged(?Value).empty;
+    var items = std.ArrayList(?Value).empty;
 
     var current = start;
     while (true) {
@@ -359,7 +359,7 @@ fn zipOp(args: Args) ExecError!?Value {
     return .{ .list = pairs };
 }
 
-fn flattenInto(maybe_value: ?Value, result: *std.ArrayListUnmanaged(?Value), alloc: Allocator) Allocator.Error!void {
+fn flattenInto(maybe_value: ?Value, result: *std.ArrayList(?Value), alloc: Allocator) Allocator.Error!void {
     const value = maybe_value orelse {
         try result.append(alloc, null);
         return;
@@ -369,7 +369,7 @@ fn flattenInto(maybe_value: ?Value, result: *std.ArrayListUnmanaged(?Value), all
         return;
     }
 
-    var stack = std.ArrayListUnmanaged(FlattenFrame).empty;
+    var stack = std.ArrayList(FlattenFrame).empty;
     defer stack.deinit(alloc);
     try stack.append(alloc, .{ .items = value.list });
 
@@ -398,7 +398,7 @@ const FlattenFrame = struct {
 
 fn flattenOp(args: Args) ExecError!?Value {
     try args.expectMinCount(1);
-    var result = std.ArrayListUnmanaged(?Value).empty;
+    var result = std.ArrayList(?Value).empty;
     for (0..args.count()) |i| {
         const maybe_value = try args.at(i).get();
         try flattenInto(maybe_value, &result, args.env.allocator);

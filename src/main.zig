@@ -105,7 +105,7 @@ pub fn main(init: std.process.Init) !void {
     defer repl_config.deinit();
     repl_mod.loadConfig(io, init.minimal.environ, &repl_config, allocator);
 
-    var all_macro_dirs = std.ArrayListUnmanaged([]const u8).empty;
+    var all_macro_dirs = std.ArrayList([]const u8).empty;
     defer all_macro_dirs.deinit(allocator);
     try all_macro_dirs.appendSlice(allocator, repl_config.macro_dirs.items);
     try all_macro_dirs.appendSlice(allocator, macro_dir_storage[0..macro_dir_count]);

@@ -216,7 +216,7 @@ test "history: ring buffer wrapping" {
 
     for (0..DEFAULT_HISTORY_SIZE + 10) |idx| {
         var num_buf: [16]u8 = undefined;
-        const num_str = std.fmt.bufPrint(&num_buf, "cmd {d}", .{idx}) catch continue;
+        const num_str = std.mem.print(&num_buf, "cmd {d}", .{idx}) catch continue;
         history.add(num_str);
     }
 

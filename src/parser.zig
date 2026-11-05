@@ -55,7 +55,7 @@ pub const ParseWithComments = struct {
 };
 
 pub fn parseWithComments(allocator: Allocator, source: []const u8) Allocator.Error!ParseWithComments {
-    var comments: std.ArrayListUnmanaged(tok.CommentSpan) = .empty;
+    var comments: std.ArrayList(tok.CommentSpan) = .empty;
     var expression_parser = Parser.init(allocator, &.{});
     const root = try expression_parser.getWithComments(source, .{ .list = &comments, .allocator = allocator });
     return .{ .root = root, .comments = comments.items };
@@ -79,11 +79,11 @@ pub const Parser = struct {
         .column = 1,
     },
 
-    node_stack: std.ArrayListUnmanaged(*AstNode) = .empty,
+    node_stack: std.ArrayList(*AstNode) = .empty,
     closure_stack: [tok.MAX_EXPRESSION_NESTING]ClosureEntry = undefined,
     closure_stack_count: usize = 0,
     pending_closure_depth: i32 = NO_PENDING_CLOSURE,
-    string_buf: std.ArrayListUnmanaged(u8) = .empty,
+    string_buf: std.ArrayList(u8) = .empty,
 
     pub fn init(allocator: Allocator, eof_at: []const TokenType) Parser {
         return .{
@@ -838,8 +838,8 @@ test "parse: integer literal past i64 max is an out-of-range error naming the va
     try std.testing.expect(id.body == .err);
 
     const message = id.body.err.message;
-    try std.testing.expect(std.mem.indexOf(u8, message, "9223372036854775808") != null);
-    try std.testing.expect(std.mem.indexOf(u8, message, "out of range") != null);
+    try std.testing.expect(std.mem.find(u8, message, "9223372036854775808") != null);
+    try std.testing.expect(std.mem.find(u8, message, "out of range") != null);
 }
 
 test "parse: i64 max itself still parses cleanly" {

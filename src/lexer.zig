@@ -12,7 +12,7 @@ const CommentSpan = tok.CommentSpan;
 /// lexer's `nextToken` cannot return an error, so a comment dropped under memory
 /// pressure simply goes un-highlighted rather than failing the parse.
 pub const CommentSink = struct {
-    list: *std.ArrayListUnmanaged(CommentSpan),
+    list: *std.ArrayList(CommentSpan),
     allocator: Allocator,
 
     fn record(self: CommentSink, start: u32, end: u32) void {
@@ -594,7 +594,7 @@ test "lex comment: single # in term is valid identifier" {
 }
 
 fn collectComments(source: []const u8, allocator: Allocator) ![]CommentSpan {
-    var list: std.ArrayListUnmanaged(CommentSpan) = .empty;
+    var list: std.ArrayList(CommentSpan) = .empty;
     var lex = Lexer{ .source = source, .comment_sink = .{ .list = &list, .allocator = allocator } };
     while (lex.nextToken().type != .eof) {}
     return list.items;
