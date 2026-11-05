@@ -65,7 +65,7 @@ Full docs live in **[`docs/`](docs/)**:
 
 The authoritative operation reference is always the live registry: `zig build run -- --dump-ops` (and `--dump-macros`).
 
-Requires **Zig 0.16.0** or later.
+Requires **Zig 0.17.0** or later.
 
 ## License
 

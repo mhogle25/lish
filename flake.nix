@@ -17,11 +17,11 @@
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs { inherit system; };
-        zig = zig-overlay.packages.${system}."0.16.0";
+        zig = zig-overlay.packages.${system}."0.17.0";
       in {
         devShells.default = pkgs.mkShell {
           packages = [
-            zig # exact 0.16.0
+            zig # exact 0.17.0
             pkgs.nodejs # tree-sitter grammar tooling
             pkgs.pnpm
             pkgs.tree-sitter # the grammar CLI (no more npx)

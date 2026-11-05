@@ -833,7 +833,7 @@ pub const Env = struct {
     }
 
     pub fn failFmt(self: *Env, category: ErrorCategory, comptime fmt: []const u8, args: anytype) error{RuntimeError} {
-        const message = std.fmt.allocPrint(self.allocator, fmt, args) catch "error (allocation failed)";
+        const message = self.allocator.print(fmt, args) catch "error (allocation failed)";
         self.runtime_error = .{
             .category = category,
             .message  = message,

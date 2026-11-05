@@ -134,8 +134,8 @@ pub const LineEditor = struct {
         raw.lflag.ISIG = false;
         raw.lflag.IEXTEN = false;
 
-        raw.cc[@intFromEnum(posix.V.MIN)] = 1;
-        raw.cc[@intFromEnum(posix.V.TIME)] = 0;
+        raw.cc[@backingInt(posix.V.MIN)] = 1;
+        raw.cc[@backingInt(posix.V.TIME)] = 0;
 
         posix.tcsetattr(posix.STDIN_FILENO, .FLUSH, raw) catch return;
         self.raw_mode_active = true;

@@ -42,7 +42,7 @@ fn randomF64(io: std.Io) f64 {
 }
 
 fn randomIntRangeAtMost(io: std.Io, comptime T: type, at_least: T, at_most: T) T {
-    const U = std.meta.Int(.unsigned, @bitSizeOf(T));
+    const U = @Int(.unsigned, @bitSizeOf(T));
     const lo: U = @bitCast(at_least);
     const span: U = @as(U, @bitCast(at_most)) -% lo;
 

@@ -35,14 +35,14 @@ cd lish
 nix develop
 ```
 
-This drops you into a shell with the **exact pinned toolchain** (`zig 0.16.0`,
+This drops you into a shell with the **exact pinned toolchain** (`zig 0.17.0`,
 `node`, `pnpm`, `tree-sitter`) without installing anything system-wide. The
 pinned Zig version is the point: every repo builds against one toolchain, so
 there's no version drift. Exit the shell to return to your normal environment.
 
 ### Manual
 
-Prefer to manage it yourself? You need `zig 0.16.0` (the exact version matters),
+Prefer to manage it yourself? You need `zig 0.17.0` (the exact version matters),
 plus `node`, `pnpm`, and the `tree-sitter` CLI for grammar work.
 
 ## 3. Build & test

@@ -15,7 +15,7 @@ pub const DEFAULT_HISTORY_SIZE = 256;
 /// current input take a `*LineBuffer` so History stays decoupled from the
 /// editor's orchestration role.
 pub const History = struct {
-    entries: [HISTORY_CAPACITY]?[]const u8 = [_]?[]const u8{null} ** HISTORY_CAPACITY,
+    entries: [HISTORY_CAPACITY]?[]const u8 = @splat(null),
     count: usize = 0,
     write_index: usize = 0,
     /// Active retained-history size (the logical ring length). Set before use.

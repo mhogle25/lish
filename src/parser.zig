@@ -666,7 +666,7 @@ pub const Parser = struct {
     }
 
     fn syntaxErrFmt(self: *Parser, comptime fmt: []const u8, arg: []const u8) Allocator.Error!*AstNode {
-        const message = try std.fmt.allocPrint(self.allocator, fmt, .{arg});
+        const message = try self.allocator.print(fmt, .{arg});
         return ast.makeSyntaxErr(self.allocator, .{ .start = self.token.start, .end = self.token.end }, message);
     }
 
@@ -675,7 +675,7 @@ pub const Parser = struct {
     }
 
     fn logicalErrFmt(self: *Parser, comptime fmt: []const u8, arg: []const u8) Allocator.Error!*AstNode {
-        const message = try std.fmt.allocPrint(self.allocator, fmt, .{arg});
+        const message = try self.allocator.print(fmt, .{arg});
         return ast.makeLogicalErr(self.allocator, .{ .start = self.token.start, .end = self.token.end }, message);
     }
 
@@ -684,7 +684,7 @@ pub const Parser = struct {
     }
 
     fn bracketMsg(self: *Parser, comptime fmt: []const u8, token_type: TokenType) Allocator.Error![]const u8 {
-        return std.fmt.allocPrint(self.allocator, fmt, .{token_type.label()});
+        return self.allocator.print(fmt, .{token_type.label()});
     }
 
     fn missingCloseErr(self: *Parser, opening_token: Token) Allocator.Error!AstBracketError {

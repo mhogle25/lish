@@ -48,13 +48,13 @@ const Constant = struct {
 fn collect(comptime lo: i128, comptime hi: i128) []const Constant {
     comptime {
         var out: []const Constant = &.{};
-        for (@typeInfo(token).@"struct".decls) |decl| {
-            const value = @field(token, decl.name);
+        for (@typeInfo(token).@"struct".decl_names) |decl_name| {
+            const value = @field(token, decl_name);
             switch (@typeInfo(@TypeOf(value))) {
                 .int, .comptime_int => {
                     const wide: i128 = value;
                     if (wide >= lo and wide <= hi) {
-                        out = out ++ &[_]Constant{.{ .name = decl.name, .value = wide }};
+                        out = out ++ &[_]Constant{.{ .name = decl_name, .value = wide }};
                     }
                 },
                 else => {},
@@ -78,7 +78,8 @@ fn longestName(comptime sets: []const []const Constant) comptime_int {
 }
 
 fn padding(comptime name: []const u8, comptime width: comptime_int) []const u8 {
-    return " " ** (width - name.len + 1);
+    const spaces: [width - name.len + 1]u8 = @splat(' ');
+    return &spaces;
 }
 
 fn jsValue(comptime value: i128) []const u8 {
