@@ -266,3 +266,41 @@ register or shadow ops with those names: `|` and `~` are only special inside a
 macro *header* (the header/body separator and the deferred-parameter marker), so
 in expression position they are ordinary operator terms. The structural
 characters that can never be op names are the base walls (`( ) [ ] { } : $ " ' ;`).
+
+## Running lish from inside an operation
+
+An operation can run more lish while it executes, for example to load a file.
+Pass `processRaw` (source text) or `loadLishFile` (a path) the environment the
+code should run in:
+
+- **A separate `Env`**: the code runs isolated, with only the operations and
+  macros you register for it, and its own memory and limits. The REPL loads
+  `config.lish` this way. Leave out the op doing the loading, or a file that
+  calls it will load itself forever.
+- **The op's own `args.env`**: the code runs nested inside the current command,
+  sharing its operations, macros, memory and limits. It behaves like any other
+  sub-expression: it finishes before the op returns.
+
+```zig
+fn loadSettingsOp(args: lish.Args) lish.exec.ExecError!?lish.Value {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+
+    var registry = lish.Registry.init(arena.allocator());
+    try lish.builtins.registerAll(&registry, arena.allocator());
+    var env = lish.Env{ .registry = &registry, .allocator = arena.allocator() };
+
+    const result = lish.loadLishFile(args.env.io.?, &env, "settings.lish", null) catch
+        return args.env.fail(.invalid_argument, "cannot read settings.lish");
+    return switch (result) {
+        .ok => null,
+        // The message lives in the arena freed on return, so copy it into the caller's env.
+        .runtime_err => |err| args.env.failFmt(err.category, "settings.lish: {s}", .{err.message}),
+        .validation_err => args.env.fail(.invalid_argument, "settings.lish is not valid lish"),
+    };
+}
+```
+
+Never call `session.execute()` from inside an operation. It starts a new
+top-level run, which resets the memory and limits the current run is still
+using, so a session that is already running refuses it with a runtime error.

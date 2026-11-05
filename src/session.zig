@@ -17,6 +17,9 @@ const ValidationError = validation_mod.ValidationError;
 /// Default eval-arena capacity retained across resets (SessionConfig.eval_retain_limit).
 pub const DEFAULT_EVAL_RETAIN_LIMIT: usize = 4 * 1024 * 1024;
 
+/// Returned by execute() when the same session is already running, e.g. when an op calls it.
+pub const NESTED_EXECUTE_MESSAGE = "execute() called while this session is already running; from inside an op, run lish with processRaw or loadLishFile on the op's env or on a separate Env";
+
 /// When transient runtime values (the eval arena) are reclaimed.
 pub const EvalReset = enum {
     /// Reset before every execute(): a result is valid only until the next
@@ -56,6 +59,8 @@ pub const Session = struct {
     eval_retain_limit: ?usize,
     eval_quota: exec_mod.EvalQuota,
     session_allocator: Allocator,
+    /// True while execute() is evaluating; a nested execute() is refused rather than resetting the run in progress.
+    running: bool,
 
     pub fn init(allocator: Allocator, config: SessionConfig) !Session {
         var registry = Registry.initCapacity(allocator, config.resolution_cache_capacity);
@@ -82,6 +87,7 @@ pub const Session = struct {
             .eval_retain_limit = config.eval_retain_limit,
             .eval_quota = undefined, // set in prepareEnv via self pointer
             .session_allocator = allocator,
+            .running = false,
         };
 
         for (config.macro_paths) |macro_path| {
@@ -106,11 +112,19 @@ pub const Session = struct {
     }
 
     pub fn execute(self: *Session, input: []const u8) Allocator.Error!ProcessResult {
-        self.prepareEnv();
-        return process_mod.processRawCached(&self.env, self.parse_arena.allocator(), &self.expression_cache, input, null);
+        return self.run(input, null);
     }
 
     pub fn executeWithScope(self: *Session, input: []const u8, scope: *const Scope) Allocator.Error!ProcessResult {
+        return self.run(input, scope);
+    }
+
+    fn run(self: *Session, input: []const u8, scope: ?*const Scope) Allocator.Error!ProcessResult {
+        if (self.running) return .{ .runtime_err = .{ .category = .internal, .message = NESTED_EXECUTE_MESSAGE } };
+
+        self.running = true;
+        defer self.running = false;
+
         self.prepareEnv();
         return process_mod.processRawCached(&self.env, self.parse_arena.allocator(), &self.expression_cache, input, scope);
     }
@@ -160,6 +174,46 @@ pub const Session = struct {
 };
 
 const builtins = @import("builtins.zig");
+const Value = @import("value.zig").Value;
+
+var reentrant_session: *Session = undefined;
+
+const reentry_meta: exec_mod.Operation.Meta = .{
+    .signature = .{ .params = &.{.{ .name = "value", .arity = .optional }}, .returns = .any },
+    .description = "test",
+};
+
+fn reenterHoldingOp(args: exec_mod.Args) exec_mod.ExecError!?Value {
+    const held = (try args.at(0).get()).?.string;
+    const nested = try reentrant_session.execute("concat \"XXXXXXXXXX\" \"Y\"");
+    if (nested != .runtime_err) return args.env.fail(.internal, "nested execute() was not refused");
+    return .{ .string = held };
+}
+
+fn reenterReportingOp(args: exec_mod.Args) exec_mod.ExecError!?Value {
+    const nested = try reentrant_session.execute("+ 1 2");
+    return switch (nested) {
+        .runtime_err => |err| .{ .string = if (err.category == .internal) err.message else "wrong category" },
+        else => args.env.fail(.internal, "nested execute() was not refused"),
+    };
+}
+
+fn reenterWithScopeOp(args: exec_mod.Args) exec_mod.ExecError!?Value {
+    const nested = try reentrant_session.executeWithScope("+ 1 2", &Scope.EMPTY);
+    if (nested != .runtime_err) return args.env.fail(.internal, "nested executeWithScope() was not refused");
+    return .{ .int = 1 };
+}
+
+fn initReentrantSession() !Session {
+    var session = try Session.init(std.testing.allocator, .{
+        .io = std.Io.failing,
+        .fragments = &.{&builtins.registerAll},
+    });
+    try session.registry.registerOperation(std.testing.allocator, "reenter-holding", exec_mod.Operation.fromFn(reenterHoldingOp, reentry_meta));
+    try session.registry.registerOperation(std.testing.allocator, "reenter-reporting", exec_mod.Operation.fromFn(reenterReportingOp, reentry_meta));
+    try session.registry.registerOperation(std.testing.allocator, "reenter-with-scope", exec_mod.Operation.fromFn(reenterWithScopeOp, reentry_meta));
+    return session;
+}
 
 test "session: basic execute" {
     var session = try Session.init(std.testing.allocator, .{
@@ -342,4 +396,50 @@ test "session: null max_eval_bytes leaves big evaluations alone" {
 
     const result = try session.execute("length (range 0 100000)");
     try std.testing.expectEqual(@as(i64, 100001), result.ok.?.int);
+}
+
+test "session: execute() from inside an op is refused and leaves the outer run intact" {
+    var session = try initReentrantSession();
+    defer session.deinit();
+    reentrant_session = &session;
+
+    const result = try session.execute("reenter-holding (concat \"hello \" \"world\")");
+    try std.testing.expectEqualStrings("hello world", result.ok.?.string);
+    try std.testing.expectEqual(@as(usize, 0), session.env.call_depth);
+    try std.testing.expect(!session.running);
+
+    const after = try session.execute("+ 1 2");
+    try std.testing.expectEqual(@as(i64, 3), after.ok.?.int);
+}
+
+test "session: a refused nested execute() says what to use instead" {
+    var session = try initReentrantSession();
+    defer session.deinit();
+    reentrant_session = &session;
+
+    const result = try session.execute("reenter-reporting");
+    try std.testing.expectEqualStrings(NESTED_EXECUTE_MESSAGE, result.ok.?.string);
+}
+
+test "session: executeWithScope() from inside an op is refused too" {
+    var session = try initReentrantSession();
+    defer session.deinit();
+    reentrant_session = &session;
+
+    const result = try session.executeWithScope("reenter-with-scope", &Scope.EMPTY);
+    try std.testing.expectEqual(@as(i64, 1), result.ok.?.int);
+}
+
+test "session: a runtime error does not leave the session marked as running" {
+    var session = try Session.init(std.testing.allocator, .{
+        .io = std.Io.failing,
+        .fragments = &.{&builtins.registerAll},
+    });
+    defer session.deinit();
+
+    _ = try session.execute("nonexistent 1 2");
+    try std.testing.expect(!session.running);
+
+    const after = try session.execute("+ 1 2");
+    try std.testing.expectEqual(@as(i64, 3), after.ok.?.int);
 }
