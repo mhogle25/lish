@@ -325,8 +325,8 @@ pub fn registerConfigOps(registry: *exec_mod.Registry, config: *ReplConfig, allo
     }));
 
     _ = try process_mod.loadMacroModule(registry,
-        \\on | $some ;
-        \\off | $none ;
+        \\on | some ;
+        \\off | none ;
     );
 }
 
@@ -451,6 +451,53 @@ test "applyConfig leaves defaults when a setting is invalid" {
 
     applyConfig(&config, "indent-width 0", arena.allocator());
     try testing.expectEqual(@as(usize, 4), config.indent_width);
+}
+
+test "applyConfig turns settings off with $off and keeps applying the rest" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var config = ReplConfig.init(arena.allocator());
+
+    applyConfig(&config, "proc (highlight $off) (autopair-insert $off) (fuel 500) (fuel $off) (indent-width 2)", arena.allocator());
+
+    try testing.expect(!config.highlight);
+    try testing.expect(!config.autopair_insert);
+    try testing.expect(config.bounds.fuel == null);
+    try testing.expectEqual(@as(usize, 2), config.indent_width);
+}
+
+test "applyConfig turns a setting back on with $on" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var config = ReplConfig.init(arena.allocator());
+
+    applyConfig(&config, "proc (bracket-expand $off) (bracket-expand $on)", arena.allocator());
+    try testing.expect(config.bracket_expand);
+}
+
+test "applyConfig applies the docs/repl.md example" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var config = ReplConfig.init(arena.allocator());
+
+    applyConfig(&config,
+        \\proc
+        \\    (autopair-insert $off)
+        \\    (autopair-delete $off)
+        \\    (macros '~/.config/lish/macros')
+        \\    (max-call-depth 512)
+        \\    (fuel 100000)
+        \\    (max-list-length 100000)
+        \\    (max-string-length 65536)
+    , arena.allocator());
+
+    try testing.expect(!config.autopair_insert);
+    try testing.expect(!config.autopair_delete);
+    try testing.expectEqual(@as(usize, 1), config.macro_dirs.items.len);
+    try testing.expectEqual(@as(usize, 512), config.bounds.max_call_depth);
+    try testing.expectEqual(@as(?usize, 100000), config.bounds.fuel);
+    try testing.expectEqual(@as(?usize, 100000), config.bounds.max_list_length);
+    try testing.expectEqual(@as(?usize, 65536), config.bounds.max_string_length);
 }
 
 test "applyConfig with an empty source keeps every default" {
