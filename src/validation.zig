@@ -335,6 +335,25 @@ test "parsed bracket errors name the missing and the unexpected bracket" {
     }
 }
 
+test "a quote at the very end is one error, not one per argument slot" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const cases = [_]struct { source: []const u8, messages: []const []const u8 }{
+        .{ .source = "\"",                   .messages = &.{"Missing closing quotation mark"} },
+        .{ .source = "abc\"",                .messages = &.{"Missing closing quotation mark"} },
+        .{ .source = "abc \"",               .messages = &.{"Missing closing quotation mark"} },
+        .{ .source = "say (concat \"a\" \"", .messages = &.{ "Missing closing parenthesis", "Missing closing quotation mark" } },
+    };
+
+    for (cases) |case| {
+        const messages = try parsedErrorMessages(alloc, case.source);
+        try std.testing.expectEqual(case.messages.len, messages.len);
+        for (case.messages, messages) |expected, actual| try std.testing.expectEqualStrings(expected, actual);
+    }
+}
+
 test "validate end-to-end with execution" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

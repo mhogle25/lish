@@ -269,7 +269,7 @@ pub const Lexer = struct {
     fn makeStringLiteralToken(self: *Lexer, quote: u8) Token {
         if (self.idx + 1 >= self.source.len) {
             const start = self.idx;
-            return .{
+            const token: Token = .{
                 .type = .unterminated_string,
                 .lexeme = self.source[start..],
                 .start = @intCast(start),
@@ -277,6 +277,10 @@ pub const Lexer = struct {
                 .line = @intCast(self.line),
                 .column = @intCast(self.column),
             };
+            // Move past the quote, or the next call would return this same token forever.
+            self.idx = self.source.len;
+            self.column += 1;
+            return token;
         }
 
         self.idx += 1;
@@ -497,6 +501,19 @@ test "lex unterminated string" {
     var lex = Lexer{ .source = "\"hello" };
     const t = lex.nextToken();
     try std.testing.expectEqual(TokenType.unterminated_string, t.type);
+}
+
+test "lex a quote at the very end, then end of input" {
+    var lex = Lexer{ .source = "abc \"" };
+    try std.testing.expectEqual(TokenType.identifier, lex.nextToken().type);
+
+    const quote = lex.nextToken();
+    try std.testing.expectEqual(TokenType.unterminated_string, quote.type);
+    try std.testing.expectEqualStrings("\"", quote.lexeme);
+    try std.testing.expectEqual(@as(u32, 4), quote.start);
+
+    try std.testing.expectEqual(TokenType.eof, lex.nextToken().type);
+    try std.testing.expectEqual(TokenType.eof, lex.nextToken().type);
 }
 
 test "lex string with escapes" {
