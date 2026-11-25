@@ -9,7 +9,7 @@ const Env = exec_mod.Env;
 const Scope = exec_mod.Scope;
 const ExpressionCache = process_mod.ExpressionCache;
 const ProcessResult = process_mod.ProcessResult;
-const MacroLoadResult = process_mod.MacroLoadResult;
+const MacroFileResult = process_mod.MacroFileResult;
 const MacroDirResult = process_mod.MacroDirResult;
 const RegistryFragment = process_mod.RegistryFragment;
 const ValidationError = validation_mod.ValidationError;
@@ -148,7 +148,7 @@ pub const Session = struct {
         return process_mod.loadMacroDir(self.io, self.session_allocator, &self.registry, dir_path);
     }
 
-    pub fn loadMacroFile(self: *Session, file_path: []const u8) !MacroLoadResult {
+    pub fn loadMacroFile(self: *Session, file_path: []const u8) !MacroFileResult {
         return process_mod.loadMacroFile(self.io, self.session_allocator, &self.registry, file_path);
     }
 

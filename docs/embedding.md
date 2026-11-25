@@ -89,7 +89,6 @@ const macro_source =
 const load_result = try lish.loadMacroModule(&registry, macro_source);
 switch (load_result) {
     .ok => |count| std.debug.print("Loaded {d} macros\n", .{count}),
-    .io_error  => |err| { /* handle io error */ },
     .validation_err => |errors| { /* handle parse/validation errors */ },
 }
 ```
@@ -118,8 +117,10 @@ lish ships a small standard-library macro file (`src/stdlib.lishmacro`) compiled
 For consumers wiring up a custom registry that doesn't go through `registerCore`, load it explicitly:
 
 ```zig
-_ = try lish.loadStdlib(&session.registry);
+try lish.loadStdlib(&session.registry);
 ```
+
+The stdlib can only fail to load if lish itself is broken, so `loadStdlib` panics with the problems instead of returning them. Macro text compiled into your own program can be loaded the same way with `lish.loadMacroBundle(&registry, source)`. Its `source` must be known at compile time (a string literal, a constant, `@embedFile`), so a file read at runtime can't be passed; load those with `loadMacroModule` or `loadMacroFile`, which return their problems.
 
 The raw source is also exposed as `lish.STDLIB_SOURCE` for consumers that want to inspect or pre-process it.
 

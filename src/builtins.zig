@@ -53,7 +53,7 @@ pub fn registerCore(registry: *Registry, allocator: Allocator) Allocator.Error!v
     for (core_groups) |register| try register(registry, allocator);
 
     const process = @import("process.zig");
-    _ = try process.loadStdlib(registry);
+    try process.loadStdlib(registry);
 }
 
 pub fn registerOutput(registry: *Registry, allocator: Allocator) Allocator.Error!void {

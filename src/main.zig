@@ -120,7 +120,7 @@ pub fn main(init: std.process.Init) !void {
     });
     defer session.deinit();
 
-    _ = try lish.loadStdlib(&session.registry);
+    try lish.loadStdlib(&session.registry);
 
     if (script_path) |path| {
         runScript(io, allocator, &session, stdout, stderr, path);

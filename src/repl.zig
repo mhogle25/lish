@@ -320,7 +320,7 @@ pub fn registerConfigOps(registry: *exec_mod.Registry, config: *ReplConfig, allo
         .description = "REPL config: the input prompt string.",
     }));
 
-    _ = try process_mod.loadMacroModule(registry,
+    try process_mod.loadMacroBundle(registry,
         \\on | some ;
         \\off | none ;
     );

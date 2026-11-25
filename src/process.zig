@@ -36,12 +36,17 @@ pub const ProcessResult = union(enum) {
     runtime_err: RuntimeErr,
 };
 
-/// Result of loading a macro module from source.
+/// Result of loading macros from text.
 pub const MacroLoadResult = union(enum) {
+    ok: usize,
+    validation_err: []const ValidationError,
+};
+
+/// Result of loading macros from a file, which can also fail to be read.
+pub const MacroFileResult = union(enum) {
     ok: usize,
     io_error: anyerror,
     validation_err: []const ValidationError,
-
 };
 
 /// Result of loading a directory of macro files.
@@ -150,9 +155,32 @@ pub fn loadMacroModule(
 /// Lish standard library source, bundled into the compiled binary.
 pub const STDLIB_SOURCE = @embedFile("stdlib" ++ MACRO_EXTENSION);
 
-pub fn loadStdlib(registry: *Registry) Allocator.Error!MacroLoadResult {
-    return loadMacroModule(registry, STDLIB_SOURCE);
+pub fn loadStdlib(registry: *Registry) Allocator.Error!void {
+    return loadMacroBundle(registry, STDLIB_SOURCE);
 }
+
+/// Loads macro text compiled into the program, such as the stdlib. Text fixed at
+/// build time can only be broken if the program is, so a problem panics; text
+/// read at runtime can't be passed here and goes through `loadMacroModule`.
+pub fn loadMacroBundle(registry: *Registry, comptime source: []const u8) Allocator.Error!void {
+    switch (try loadMacroModule(registry, source)) {
+        .ok => {},
+        .validation_err => |errors| std.debug.panic("bundled macros failed to load:{f}", .{BundleProblems{ .problems = errors }}),
+    }
+}
+
+const BundleProblems = struct {
+    problems: []const ValidationError,
+
+    pub fn format(self: BundleProblems, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+        for (self.problems) |problem| {
+            try writer.print("\n  {s}", .{problem.message});
+            const line = problem.line orelse continue;
+            const column = problem.column orelse continue;
+            try writer.print(" (line {d}, column {d})", .{ line, column });
+        }
+    }
+};
 
 pub fn loadFragments(
     registry: *Registry,
@@ -169,13 +197,16 @@ pub fn loadMacroFile(
     allocator: Allocator,
     registry: *Registry,
     file_path: []const u8,
-) Allocator.Error!MacroLoadResult {
+) Allocator.Error!MacroFileResult {
     const source = std.Io.Dir.cwd().readFileAlloc(io, file_path, allocator, .limited(MACRO_FILE_MAX_SIZE)) catch |err| {
         return .{ .io_error = err };
     };
     defer allocator.free(source);
 
-    return loadMacroModule(registry, source);
+    return switch (try loadMacroModule(registry, source)) {
+        .ok             => |count| .{ .ok = count },
+        .validation_err => |errors| .{ .validation_err = errors },
+    };
 }
 
 pub fn loadLishFile(
@@ -479,7 +510,7 @@ test "loadMacroModule: load and execute macros" {
     const load_result = try loadMacroModule(&registry,"double x | * :x 2 ;");
     switch (load_result) {
         .ok => |count| try std.testing.expectEqual(@as(usize, 1), count),
-        .io_error, .validation_err => return error.TestUnexpectedResult,
+        .validation_err => return error.TestUnexpectedResult,
     }
 
     var env = Env{ .registry = &registry, .allocator = alloc };
@@ -507,7 +538,7 @@ test "loadMacroModule: multiple macros" {
     );
     switch (load_result) {
         .ok => |count| try std.testing.expectEqual(@as(usize, 2), count),
-        .io_error, .validation_err => return error.TestUnexpectedResult,
+        .validation_err => return error.TestUnexpectedResult,
     }
 
     var env = Env{ .registry = &registry, .allocator = alloc };
@@ -530,7 +561,7 @@ test "loadMacroModule: validation errors" {
 
     const load_result = try loadMacroModule(&registry,"foo x | + :x 1 ; foo y | + :y 2 ;");
     switch (load_result) {
-        .ok, .io_error => return error.TestUnexpectedResult,
+        .ok => return error.TestUnexpectedResult,
         .validation_err => |errors| {
             try std.testing.expect(errors.len > 0);
         },
@@ -673,7 +704,7 @@ test "let: let-binding does not leak into a called macro's body" {
     const load_result = try loadMacroModule(&registry, "grab | proc :y ;");
     switch (load_result) {
         .ok => {},
-        .io_error, .validation_err => return error.TestUnexpectedResult,
+        .validation_err => return error.TestUnexpectedResult,
     }
 
     var env = Env{ .registry = &registry, .allocator = alloc };
@@ -699,7 +730,7 @@ test "let: inside macro body, both macro param and let-binding visible" {
     );
     switch (load_result) {
         .ok => {},
-        .io_error, .validation_err => return error.TestUnexpectedResult,
+        .validation_err => return error.TestUnexpectedResult,
     }
 
     var env = Env{ .registry = &registry, .allocator = alloc };
@@ -721,7 +752,7 @@ test "let: macro arguments evaluate in caller's let scope" {
     const load_result = try loadMacroModule(&registry, "double x | * :x 2 ;");
     switch (load_result) {
         .ok => {},
-        .io_error, .validation_err => return error.TestUnexpectedResult,
+        .validation_err => return error.TestUnexpectedResult,
     }
 
     var env = Env{ .registry = &registry, .allocator = alloc };
@@ -743,7 +774,7 @@ test "let: deferred param captures let scope as a closure" {
     const load_result = try loadMacroModule(&registry, "run-it ~body | proc :body ;");
     switch (load_result) {
         .ok => {},
-        .io_error, .validation_err => return error.TestUnexpectedResult,
+        .validation_err => return error.TestUnexpectedResult,
     }
 
     var env = Env{ .registry = &registry, .allocator = alloc };
@@ -754,18 +785,57 @@ test "let: deferred param captures let scope as a closure" {
     }
 }
 
-test "loadStdlib: loads bundled stdlib without error" {
+test "loadStdlib: loads the bundled stdlib into an empty registry" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
 
     var registry = Registry.init(alloc);
-    try builtins.registerAll(&registry, alloc);
+    try loadStdlib(&registry);
+    try std.testing.expect(registry.getMacro("square") != null);
+}
 
-    const result = try loadStdlib(&registry);
-    switch (result) {
-        .ok => {},
-        .io_error, .validation_err => return error.TestUnexpectedResult,
+test "loadMacroBundle: loads macro text compiled into the program" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var registry = Registry.init(alloc);
+    try loadMacroBundle(&registry, "double x | * :x 2 ; triple x | * :x 3 ;");
+    try std.testing.expect(registry.getMacro("double") != null);
+    try std.testing.expect(registry.getMacro("triple") != null);
+}
+
+test "loadMacroFile: loads a file, returns its problems, or says it can't be read" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var io_instance: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer io_instance.deinit();
+    const io = io_instance.io();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "good.lishmacro", .data = "double x | * :x 2 ;" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "broken.lishmacro", .data = "bad x | (+ :x 1 ;" });
+    const folder = try std.Io.Dir.path.join(alloc, &.{ ".zig-cache", "tmp", tmp.sub_path[0..] });
+
+    var registry = Registry.init(alloc);
+
+    const good_path = try std.Io.Dir.path.join(alloc, &.{ folder, "good.lishmacro" });
+    try std.testing.expectEqual(MacroFileResult{ .ok = 1 }, try loadMacroFile(io, alloc, &registry, good_path));
+
+    const broken_path = try std.Io.Dir.path.join(alloc, &.{ folder, "broken.lishmacro" });
+    switch (try loadMacroFile(io, alloc, &registry, broken_path)) {
+        .validation_err => |errors| try std.testing.expectEqualStrings("Missing closing parenthesis", errors[0].message),
+        .ok, .io_error  => return error.TestUnexpectedResult,
+    }
+
+    const missing_path = try std.Io.Dir.path.join(alloc, &.{ folder, "missing.lishmacro" });
+    switch (try loadMacroFile(io, alloc, &registry, missing_path)) {
+        .io_error            => |err| try std.testing.expectEqual(error.FileNotFound, err),
+        .ok, .validation_err => return error.TestUnexpectedResult,
     }
 }
 
