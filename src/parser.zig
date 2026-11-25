@@ -79,7 +79,6 @@ pub const Parser = struct {
         .column = 1,
     },
 
-    node_stack: std.ArrayList(*AstNode) = .empty,
     closure_stack: [tok.MAX_EXPRESSION_NESTING]ClosureEntry = undefined,
     closure_stack_count: usize = 0,
     pending_closure_depth: i32 = NO_PENDING_CLOSURE,
@@ -93,7 +92,6 @@ pub const Parser = struct {
     }
 
     pub fn deinit(self: *Parser) void {
-        self.node_stack.deinit(self.allocator);
         self.string_buf.deinit(self.allocator);
     }
 
@@ -126,9 +124,9 @@ pub const Parser = struct {
         if (nested_count > tok.MAX_EXPRESSION_NESTING)
             return self.expressionNestingErr();
 
-        const thunk_count = try self.handleTopLevel(nested_count);
+        const pieces = try self.handleTopLevel(nested_count);
 
-        if (thunk_count < 1) {
+        if (pieces.len == 0) {
             return ast.makeExpression(
                 self.allocator,
                 .{ .start = 0, .end = self.token.end },
@@ -140,56 +138,31 @@ pub const Parser = struct {
             );
         }
 
-        const args = try self.popNodes(thunk_count - 1);
-        const id = self.stackPop();
-
-        return ast.makeExpression(self.allocator, .{ .start = 0, .end = self.token.end }, id, args, null, null, .{ .meta_type = .top_level });
+        return ast.makeExpression(self.allocator, .{ .start = 0, .end = self.token.end }, pieces[0], pieces[1..], null, null, .{ .meta_type = .top_level });
     }
 
     fn expression(self: *Parser, nested_count: usize) Allocator.Error!*AstNode {
         if (nested_count > tok.MAX_EXPRESSION_NESTING)
             return self.expressionNestingErr();
 
-        const closure = try self.handleClosure(nested_count);
-
-        if (closure.expr_count < 1) {
-            return ast.makeExpression(
-                self.allocator,
-                closure.position,
-                try self.syntaxErr("An expression must have an ID"),
-                &.{},
-                closure.open_err,
-                closure.close_err,
-                .{ .meta_type = .standard },
-            );
-        }
-
-        const args = try self.popNodes(closure.expr_count - 1);
-        const id = self.stackPop();
-
-        return ast.makeExpression(self.allocator, closure.position, id, args, closure.open_err, closure.close_err, .{ .meta_type = .standard });
+        var closure = try self.handleClosure(nested_count);
+        return closure.toExpression(self);
     }
 
     fn listLiteral(self: *Parser, nested_count: usize) Allocator.Error!*AstNode {
         if (nested_count > tok.MAX_EXPRESSION_NESTING)
             return self.expressionNestingErr();
 
-        const closure = try self.handleClosure(nested_count);
-        const args = try self.popNodes(closure.expr_count);
-        const id = try ast.makeValueLiteral(self.allocator, closure.position, .{ .string = ast.LIST_ID });
-
-        return ast.makeExpression(self.allocator, closure.position, id, args, closure.open_err, closure.close_err, .{ .meta_type = .list_literal });
+        var closure = try self.handleClosure(nested_count);
+        return closure.toList(self);
     }
 
     fn block(self: *Parser, nested_count: usize) Allocator.Error!*AstNode {
         if (nested_count > tok.MAX_EXPRESSION_NESTING)
             return self.expressionNestingErr();
 
-        const closure = try self.handleClosure(nested_count);
-        const args = try self.popNodes(closure.expr_count);
-        const id = try ast.makeValueLiteral(self.allocator, closure.position, .{ .string = ast.BLOCK_ID });
-
-        return ast.makeExpression(self.allocator, closure.position, id, args, closure.open_err, closure.close_err, .{ .meta_type = .block_literal });
+        var closure = try self.handleClosure(nested_count);
+        return closure.toBlock(self);
     }
 
     fn singleTermExpression(self: *Parser, nested_count: usize) Allocator.Error!SingleTermResult {
@@ -291,14 +264,13 @@ pub const Parser = struct {
         return ast.makeValueLiteral(self.allocator, .{ .start = self.token.start, .end = self.token.end }, .{ .float = parsed_float });
     }
 
-    fn handleTopLevel(self: *Parser, nested_count_start: usize) Allocator.Error!usize {
-        var expr_count: usize = 0;
+    fn handleTopLevel(self: *Parser, nested_count_start: usize) Allocator.Error![]const *const AstNode {
+        var pieces = std.ArrayList(*const AstNode).empty;
         var nested_count = nested_count_start;
 
         while (!self.isEof()) {
-            if (expr_count > tok.MAX_PARAMETER_COUNT) {
-                try self.stackPush(try self.syntaxErr("Parameter count threshold reached"));
-                expr_count += 1;
+            if (pieces.items.len > tok.MAX_PARAMETER_COUNT) {
+                try pieces.append(self.allocator, try self.syntaxErr("Parameter count threshold reached"));
                 break;
             }
 
@@ -342,22 +314,62 @@ pub const Parser = struct {
                 else => try self.logicalErr("An unknown token was encountered within the expression"),
             };
 
-            try self.stackPush(node);
-            expr_count += 1;
+            try pieces.append(self.allocator, node);
             self.token = self.lexer.nextToken();
         }
 
-        return expr_count;
+        return pieces.toOwnedSlice(self.allocator);
     }
 
-    const ClosureInfo = struct {
-        expr_count: usize,
-        open_err: ?AstBracketError,
-        close_err: ?AstBracketError,
-        position: ast.Position,
+    const ClosureBuilder = struct {
+        opening:   Token,
+        end:       u32,
+        pieces:    std.ArrayList(*const AstNode) = .empty,
+        open_err:  ?AstBracketError = null,
+        close_err: ?AstBracketError = null,
+
+        fn init(opening: Token) ClosureBuilder {
+            return .{ .opening = opening, .end = opening.end };
+        }
+
+        fn add(self: *ClosureBuilder, allocator: Allocator, piece: *const AstNode) Allocator.Error!void {
+            try self.pieces.append(allocator, piece);
+        }
+
+        fn count(self: *const ClosureBuilder) usize {
+            return self.pieces.items.len;
+        }
+
+        fn position(self: *const ClosureBuilder) ast.Position {
+            return .{ .start = self.opening.start, .end = self.end };
+        }
+
+        fn toExpression(self: *ClosureBuilder, parser: *Parser) Allocator.Error!*AstNode {
+            const pieces = try self.pieces.toOwnedSlice(parser.allocator);
+            if (pieces.len == 0) {
+                const missing_id = try parser.syntaxErr("An expression must have an ID");
+                return ast.makeExpression(parser.allocator, self.position(), missing_id, &.{}, self.open_err, self.close_err, .{ .meta_type = .standard });
+            }
+
+            return ast.makeExpression(parser.allocator, self.position(), pieces[0], pieces[1..], self.open_err, self.close_err, .{ .meta_type = .standard });
+        }
+
+        fn toList(self: *ClosureBuilder, parser: *Parser) Allocator.Error!*AstNode {
+            return self.toLiteral(parser, ast.LIST_ID, .list_literal);
+        }
+
+        fn toBlock(self: *ClosureBuilder, parser: *Parser) Allocator.Error!*AstNode {
+            return self.toLiteral(parser, ast.BLOCK_ID, .block_literal);
+        }
+
+        fn toLiteral(self: *ClosureBuilder, parser: *Parser, id_name: []const u8, meta_type: AstExpression.MetaType) Allocator.Error!*AstNode {
+            const items = try self.pieces.toOwnedSlice(parser.allocator);
+            const id = try ast.makeValueLiteral(parser.allocator, self.position(), .{ .string = id_name });
+            return ast.makeExpression(parser.allocator, self.position(), id, items, self.open_err, self.close_err, .{ .meta_type = meta_type });
+        }
     };
 
-    fn handleClosure(self: *Parser, nested_count_start: usize) Allocator.Error!ClosureInfo {
+    fn handleClosure(self: *Parser, nested_count_start: usize) Allocator.Error!ClosureBuilder {
         const opening_token = self.token;
         const bracket_depth: i32 = @intCast(self.closure_stack_count);
         self.closure_stack_count += 1;
@@ -371,94 +383,76 @@ pub const Parser = struct {
         };
         self.token = self.lexer.nextToken();
 
-        var expr_count: usize = 0;
-        var open_err: ?AstBracketError = null;
-        var close_err: ?AstBracketError = null;
+        var builder = ClosureBuilder.init(opening_token);
         var nested_count = nested_count_start;
 
         while (true) {
             if ((self.pending_closure_depth >= 0 and self.pending_closure_depth < bracket_depth) or self.isEof()) {
-                open_err = try self.missingCloseErr(opening_token);
-                return self.finishClosure(opening_token, expr_count, open_err, close_err);
+                builder.open_err = try self.missingCloseErr(opening_token);
+                return self.finishClosure(&builder);
             }
 
-            if (expr_count > tok.MAX_PARAMETER_COUNT) {
-                try self.stackPush(try self.syntaxErr("Parameter count threshold reached"));
-                expr_count += 1;
-                return self.finishClosure(opening_token, expr_count, open_err, close_err);
+            if (builder.count() > tok.MAX_PARAMETER_COUNT) {
+                try builder.add(self.allocator, try self.syntaxErr("Parameter count threshold reached"));
+                return self.finishClosure(&builder);
             }
 
             switch (self.token.type) {
                 .unterminated_string => {
-                    try self.stackPush(try self.syntaxErr("Missing closing quotation mark"));
-                    expr_count += 1;
+                    try builder.add(self.allocator, try self.syntaxErr("Missing closing quotation mark"));
                 },
                 .too_long_term => {
-                    try self.stackPush(try self.syntaxErr("The term was too long"));
-                    expr_count += 1;
+                    try builder.add(self.allocator, try self.syntaxErr("The term was too long"));
                 },
                 .too_long_string_literal => {
-                    try self.stackPush(try self.syntaxErr("The string literal was too long"));
-                    expr_count += 1;
+                    try builder.add(self.allocator, try self.syntaxErr("The string literal was too long"));
                 },
                 .deferred_macro_param_symbol => {
-                    try self.stackPush(try self.syntaxErr("Invalid use of a deferred modifier"));
-                    expr_count += 1;
+                    try builder.add(self.allocator, try self.syntaxErr("Invalid use of a deferred modifier"));
                 },
                 .macro_separator => {
-                    try self.stackPush(try self.syntaxErr("Invalid use of a macro separator"));
-                    expr_count += 1;
+                    try builder.add(self.allocator, try self.syntaxErr("Invalid use of a macro separator"));
                 },
                 .macro_break => {
-                    try self.stackPush(try self.syntaxErr("Invalid use of a macro terminator"));
-                    expr_count += 1;
+                    try builder.add(self.allocator, try self.syntaxErr("Invalid use of a macro terminator"));
                 },
                 .identifier => {
-                    try self.stackPush(try self.identifierLiteral());
-                    expr_count += 1;
+                    try builder.add(self.allocator, try self.identifierLiteral());
                 },
                 .int => {
-                    try self.stackPush(try self.intLiteral());
-                    expr_count += 1;
+                    try builder.add(self.allocator, try self.intLiteral());
                 },
                 .float => {
-                    try self.stackPush(try self.floatLiteral());
-                    expr_count += 1;
+                    try builder.add(self.allocator, try self.floatLiteral());
                 },
                 .string_literal => {
-                    try self.stackPush(try self.stringLiteral());
-                    expr_count += 1;
+                    try builder.add(self.allocator, try self.stringLiteral());
                 },
                 .call_expression_symbol => {
                     nested_count += 1;
                     const term = try self.singleTermExpression(nested_count);
-                    try self.stackPush(term.node);
-                    expr_count += 1;
-                    if (try self.tryHandleClosureSingleTermClosing(term, opening_token, &open_err, &close_err))
-                        return self.finishClosure(opening_token, expr_count, open_err, close_err);
+                    try builder.add(self.allocator, term.node);
+                    if (try self.tryHandleClosureSingleTermClosing(term, &builder))
+                        return self.finishClosure(&builder);
                 },
                 .call_scope_thunk_symbol => {
                     nested_count += 1;
                     const term = try self.scopeThunk(nested_count);
-                    try self.stackPush(term.node);
-                    expr_count += 1;
-                    if (try self.tryHandleClosureSingleTermClosing(term, opening_token, &open_err, &close_err))
-                        return self.finishClosure(opening_token, expr_count, open_err, close_err);
+                    try builder.add(self.allocator, term.node);
+                    if (try self.tryHandleClosureSingleTermClosing(term, &builder))
+                        return self.finishClosure(&builder);
                 },
                 .expression_opening_bracket => {
                     nested_count += 1;
-                    try self.stackPush(try self.expression(nested_count));
-                    expr_count += 1;
+                    try builder.add(self.allocator, try self.expression(nested_count));
                 },
                 .list_opening_bracket => {
                     nested_count += 1;
-                    try self.stackPush(try self.listLiteral(nested_count));
-                    expr_count += 1;
+                    try builder.add(self.allocator, try self.listLiteral(nested_count));
                 },
                 .block_opening_bracket => {
                     nested_count += 1;
-                    try self.stackPush(try self.block(nested_count));
-                    expr_count += 1;
+                    try builder.add(self.allocator, try self.block(nested_count));
                 },
                 .expression_closing_bracket,
                 .list_closing_bracket,
@@ -469,40 +463,39 @@ pub const Parser = struct {
                     if (match_depth == bracket_depth) {
                         if (self.pending_closure_depth == bracket_depth)
                             self.pending_closure_depth = NO_PENDING_CLOSURE;
-                        return self.finishClosure(opening_token, expr_count, open_err, close_err);
+                        return self.finishClosure(&builder);
                     }
 
                     if (match_depth != NO_PENDING_CLOSURE) {
                         self.pending_closure_depth = match_depth;
-                        open_err = try self.missingCloseErr(opening_token);
-                        return self.finishClosure(opening_token, expr_count, open_err, close_err);
+                        builder.open_err = try self.missingCloseErr(opening_token);
+                        return self.finishClosure(&builder);
                     }
 
-                    open_err = .{
+                    builder.open_err = .{
                         .message  = try self.bracketMsg("Missing {s}", opening_token.type.paired().?),
                         .position = .{ .start = opening_token.start, .end = opening_token.end },
                     };
-                    close_err = .{
+                    builder.close_err = .{
                         .message  = try self.bracketMsg("Unexpected {s}", self.token.type),
                         .position = .{ .start = self.token.start, .end = self.token.end },
                     };
-                    return self.finishClosure(opening_token, expr_count, open_err, close_err);
+                    return self.finishClosure(&builder);
                 },
                 else => {
-                    try self.stackPush(try self.logicalErr("An unknown token was encountered within the closure"));
-                    expr_count += 1;
+                    try builder.add(self.allocator, try self.logicalErr("An unknown token was encountered within the closure"));
                 },
             }
 
             if (self.pending_closure_depth >= 0) {
                 if (self.pending_closure_depth < bracket_depth) {
-                    open_err = try self.missingCloseErr(opening_token);
-                    return self.finishClosure(opening_token, expr_count, open_err, close_err);
+                    builder.open_err = try self.missingCloseErr(opening_token);
+                    return self.finishClosure(&builder);
                 }
 
                 if (self.pending_closure_depth == bracket_depth) {
                     self.pending_closure_depth = NO_PENDING_CLOSURE;
-                    return self.finishClosure(opening_token, expr_count, open_err, close_err);
+                    return self.finishClosure(&builder);
                 }
             }
 
@@ -520,35 +513,25 @@ pub const Parser = struct {
         return NO_PENDING_CLOSURE;
     }
 
-    fn finishClosure(self: *Parser, opening_token: Token, expr_count: usize, open_err: ?AstBracketError, close_err: ?AstBracketError) ClosureInfo {
+    fn finishClosure(self: *Parser, builder: *ClosureBuilder) ClosureBuilder {
         if (self.closure_stack_count > 0)
             self.closure_stack_count -= 1;
 
-        return .{
-            .expr_count = expr_count,
-            .open_err = open_err,
-            .close_err = close_err,
-            .position = .{ .start = opening_token.start, .end = self.token.end },
-        };
+        builder.end = self.token.end;
+        return builder.*;
     }
 
-    fn tryHandleClosureSingleTermClosing(
-        self: *Parser,
-        result: SingleTermResult,
-        opening_token: Token,
-        open_err: *?AstBracketError,
-        close_err: *?AstBracketError,
-    ) Allocator.Error!bool {
+    fn tryHandleClosureSingleTermClosing(self: *Parser, result: SingleTermResult, builder: *ClosureBuilder) Allocator.Error!bool {
         if (!result.saw_closing_bracket)
             return false;
 
         if (result.closing_match_depth == NO_PENDING_CLOSURE) {
-            open_err.* = .{
-                .message  = try self.bracketMsg("Missing {s}", opening_token.type.paired().?),
-                .position = .{ .start = opening_token.start, .end = opening_token.end },
+            builder.open_err = .{
+                .message  = try self.bracketMsg("Missing {s}", builder.opening.type.paired().?),
+                .position = .{ .start = builder.opening.start, .end = builder.opening.end },
             };
 
-            close_err.* = .{
+            builder.close_err = .{
                 .message  = try self.bracketMsg("Unexpected {s}", self.token.type),
                 .position = .{ .start = self.token.start, .end = self.token.end },
             };
@@ -638,27 +621,6 @@ pub const Parser = struct {
         }
 
         return false;
-    }
-
-    fn stackPush(self: *Parser, node: *AstNode) Allocator.Error!void {
-        return self.node_stack.append(self.allocator, node);
-    }
-
-    fn stackPop(self: *Parser) *AstNode {
-        return self.node_stack.pop().?;
-    }
-
-    fn popNodes(self: *Parser, count: usize) Allocator.Error![]const *const AstNode {
-        if (count == 0) return &.{};
-
-        const args = try self.allocator.alloc(*const AstNode, count);
-        var i: usize = count;
-        while (i > 0) {
-            i -= 1;
-            args[i] = self.stackPop();
-        }
-
-        return args;
     }
 
     fn syntaxErr(self: *Parser, message: []const u8) Allocator.Error!*AstNode {
