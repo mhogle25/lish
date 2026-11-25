@@ -808,6 +808,26 @@ test "collection: sort strings" {
     try std.testing.expectEqualStrings("apple", result.?.string);
 }
 
+test "collection: sort mixes ints and floats" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try testing.evalWithBuiltins(arena.allocator(), "sort [2 1.5 1]");
+    const items = result.?.list;
+    try std.testing.expectEqual(@as(i64, 1), items[0].?.int);
+    try std.testing.expectEqual(@as(f64, 1.5), items[1].?.float);
+    try std.testing.expectEqual(@as(i64, 2), items[2].?.int);
+}
+
+test "collection: sort orders ints past 2^53 exactly" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try testing.evalWithBuiltins(arena.allocator(), "sort [9007199254740993 9007199254740992 9007199254740993]");
+    const items = result.?.list;
+    try std.testing.expectEqual(@as(i64, 9007199254740992), items[0].?.int);
+    try std.testing.expectEqual(@as(i64, 9007199254740993), items[1].?.int);
+    try std.testing.expectEqual(@as(i64, 9007199254740993), items[2].?.int);
+}
+
 test "sortby: key-based ascending" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

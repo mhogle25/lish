@@ -3,6 +3,7 @@ const exec = @import("../exec.zig");
 const val = @import("../value.zig");
 
 const Value = val.Value;
+const Number = val.Number;
 const Args = exec.Args;
 const Env = exec.Env;
 const ExecError = exec.ExecError;
@@ -47,24 +48,19 @@ pub fn numericFold(
     float_op: *const fn (f64, f64) f64,
 ) ExecError!?Value {
     try args.expectMinCount(2);
-    var accumulator = try args.at(0).resolve();
-    if (!accumulator.isNumber()) return args.env.failFmt(.type_mismatch, "Expected a number, got {s}", .{accumulator.typeName()});
+    const first = try args.at(0).resolve();
+    var accumulator = first.asNumber() orelse return args.env.failFmt(.type_mismatch, "Expected a number, got {s}", .{first.typeName()});
 
     for (1..args.count()) |i| {
-        const operand = try args.at(i).resolve();
-        if (!operand.isNumber()) return args.env.failFmt(.type_mismatch, "Expected a number, got {s}", .{operand.typeName()});
+        const value = try args.at(i).resolve();
+        const operand = value.asNumber() orelse return args.env.failFmt(.type_mismatch, "Expected a number, got {s}", .{value.typeName()});
 
-        if (accumulator == .float or operand == .float) {
-            const left  = accumulator.getF() catch unreachable;
-            const right = operand.getF()     catch unreachable;
-            accumulator = .{ .float = float_op(left, right) };
-        } else {
-            const left  = accumulator.getI() catch unreachable;
-            const right = operand.getI()     catch unreachable;
-            accumulator = .{ .int = int_op(left, right) };
-        }
+        accumulator = switch (Number.pair(accumulator, operand)) {
+            .ints   => |both| .{ .int = int_op(both.left, both.right) },
+            .floats => |both| .{ .float = float_op(both.left, both.right) },
+        };
     }
-    return accumulator;
+    return accumulator.toValue();
 }
 
 pub fn intFold(
@@ -105,20 +101,20 @@ pub fn numericComparison(
     float_cmp: *const fn (f64, f64) bool,
 ) ExecError!?Value {
     try args.expectMinCount(2);
-    var prev = try args.at(0).resolve();
-    if (!prev.isNumber()) return args.env.failFmt(.type_mismatch, "Expected a number, got {s}", .{prev.typeName()});
+    const first = try args.at(0).resolve();
+    var previous = first.asNumber() orelse return args.env.failFmt(.type_mismatch, "Expected a number, got {s}", .{first.typeName()});
 
     for (1..args.count()) |i| {
-        const current = try args.at(i).resolve();
-        if (!current.isNumber()) return args.env.failFmt(.type_mismatch, "Expected a number, got {s}", .{current.typeName()});
+        const value = try args.at(i).resolve();
+        const current = value.asNumber() orelse return args.env.failFmt(.type_mismatch, "Expected a number, got {s}", .{value.typeName()});
 
-        const passes = if (prev == .float or current == .float)
-            float_cmp(prev.getF() catch unreachable, current.getF() catch unreachable)
-        else
-            int_cmp(prev.getI() catch unreachable, current.getI() catch unreachable);
+        const passes = switch (Number.pair(previous, current)) {
+            .ints   => |both| int_cmp(both.left, both.right),
+            .floats => |both| float_cmp(both.left, both.right),
+        };
 
         if (!passes) return null;
-        prev = current;
+        previous = current;
     }
     return val.some();
 }
@@ -127,11 +123,9 @@ pub fn naturalLessThan(_: void, left: ?Value, right: ?Value) bool {
     const lv = left orelse return right != null;
     const rv = right orelse return false;
 
-    if (lv.isNumber() and rv.isNumber()) {
-        const lf = lv.getF() catch unreachable;
-        const rf = rv.getF() catch unreachable;
-        return lf < rf;
-    }
+    if (Number.pairValues(lv, rv)) |both| return switch (both) {
+        inline else => |numbers| numbers.left < numbers.right,
+    };
 
     if (lv == .string and rv == .string) {
         return std.mem.order(u8, lv.string, rv.string) == .lt;

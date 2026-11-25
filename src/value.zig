@@ -195,6 +195,13 @@ pub const Number = union(enum) {
             .float => |left_float| .{ .floats = .{ .left = left_float, .right = right.toFloat() } },
         };
     }
+
+    /// Pairs two values when both are numbers; nothing otherwise.
+    pub fn pairValues(left: Value, right: Value) ?NumberPair {
+        const left_number  = left.asNumber() orelse return null;
+        const right_number = right.asNumber() orelse return null;
+        return pair(left_number, right_number);
+    }
 };
 
 pub const NumberPair = union(enum) {
@@ -540,6 +547,16 @@ test "value: Number.pair keeps ints past 2^53 exact, where floats would make the
     const smaller: Number = .{ .int = 9007199254740992 };
     try std.testing.expectEqual(larger.toFloat(), smaller.toFloat());
     try std.testing.expectEqual(NumberPair{ .ints = .{ .left = 9007199254740993, .right = 9007199254740992 } }, Number.pair(larger, smaller));
+}
+
+test "value: Number.pairValues pairs two numbers and gives nothing when either is not a number" {
+    const one: Value = .{ .int = 1 };
+    const two_and_a_half: Value = .{ .float = 2.5 };
+    const word: Value = .{ .string = "2" };
+
+    try std.testing.expectEqual(NumberPair{ .floats = .{ .left = 1.0, .right = 2.5 } }, Number.pairValues(one, two_and_a_half).?);
+    try std.testing.expect(Number.pairValues(one, word) == null);
+    try std.testing.expect(Number.pairValues(word, one) == null);
 }
 
 test "value dupe survives its source arena" {
