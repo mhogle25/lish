@@ -219,51 +219,57 @@ pub const Scope = struct {
     }
 
     pub fn setEntry(self: *Scope, allocator: Allocator, key: []const u8, thunk: *const Thunk, thunk_scope: *const Scope, unit_slots: []ResolvedSlot) Allocator.Error!void {
-        try self.put(allocator, key, .{ .closure = .{ .thunk = thunk, .scope = thunk_scope, .unit_slots = unit_slots } });
+        const entry = try self.getOrPut(allocator, key);
+        entry.* = .{ .closure = .{ .thunk = thunk, .scope = thunk_scope, .unit_slots = unit_slots } };
     }
 
     pub fn setValue(self: *Scope, allocator: Allocator, key: []const u8, value: ?Value) Allocator.Error!void {
-        try self.put(allocator, key, .{ .value = value });
+        const entry = try self.getOrPut(allocator, key);
+        entry.* = .{ .value = value };
     }
 
-    fn put(self: *Scope, allocator: Allocator, key: []const u8, entry: ScopeEntry) Allocator.Error!void {
-        if (self.isHashed()) return self.hashed_entries.put(allocator, key, entry);
-
-        for (self.inline_entries[0..self.inline_count]) |*existing| {
-            if (std.mem.eql(u8, existing.key, key)) {
-                existing.entry = entry;
-                return;
-            }
+    pub fn getOrPut(self: *Scope, allocator: Allocator, key: []const u8) Allocator.Error!*ScopeEntry {
+        if (self.isHashed()) {
+            const slot = try self.hashed_entries.getOrPut(allocator, key);
+            if (!slot.found_existing) slot.value_ptr.* = .{ .value = null };
+            return slot.value_ptr;
         }
 
-        try self.insertNew(allocator, key, entry);
+        for (self.inline_entries[0..self.inline_count]) |*existing| {
+            if (std.mem.eql(u8, existing.key, key)) return &existing.entry;
+        }
+
+        return self.insertNew(allocator, key);
     }
 
     pub fn putNoClobber(self: *Scope, allocator: Allocator, key: []const u8, entry: ScopeEntry) Allocator.Error!void {
         if (std.debug.runtime_safety) std.debug.assert(self.getOwn(key) == null);
 
-        if (self.isHashed()) return self.hashed_entries.putNoClobber(allocator, key, entry);
-
-        try self.insertNew(allocator, key, entry);
+        const new_entry = try self.insertNew(allocator, key);
+        new_entry.* = entry;
     }
 
-    fn insertNew(self: *Scope, allocator: Allocator, key: []const u8, entry: ScopeEntry) Allocator.Error!void {
-        if (self.inline_count < INLINE_CAP) {
-            self.inline_entries[self.inline_count] = .{ .key = key, .entry = entry };
+    fn insertNew(self: *Scope, allocator: Allocator, key: []const u8) Allocator.Error!*ScopeEntry {
+        if (!self.isHashed() and self.inline_count < INLINE_CAP) {
+            const slot = &self.inline_entries[self.inline_count];
+            slot.* = .{ .key = key, .entry = .{ .value = null } };
             self.inline_count += 1;
-            return;
+            return &slot.entry;
         }
 
-        try self.switchToHashed(allocator, key, entry);
+        if (!self.isHashed()) try self.switchToHashed(allocator);
+
+        const slot = try self.hashed_entries.getOrPut(allocator, key);
+        slot.value_ptr.* = .{ .value = null };
+        return slot.value_ptr;
     }
 
-    fn switchToHashed(self: *Scope, allocator: Allocator, key: []const u8, entry: ScopeEntry) Allocator.Error!void {
-        try self.hashed_entries.ensureTotalCapacity(allocator, @intCast(self.inline_count + 1));
+    fn switchToHashed(self: *Scope, allocator: Allocator) Allocator.Error!void {
+        try self.hashed_entries.ensureTotalCapacity(allocator, @intCast(self.inline_count));
 
         for (self.inline_entries[0..self.inline_count]) |*existing| {
             self.hashed_entries.putAssumeCapacityNoClobber(existing.key, existing.entry);
         }
-        self.hashed_entries.putAssumeCapacityNoClobber(key, entry);
         self.inline_count = 0;
     }
 
@@ -1075,6 +1081,84 @@ test "scope: a name added with putNoClobber can later be replaced with setValue"
 
     try std.testing.expectEqual(@as(i64, 2), scope.get("x").?.value.?.int);
     try std.testing.expectEqual(@as(usize, 1), scope.inline_count);
+}
+
+test "scope: getOrPut adds a missing name as none and returns its entry" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var scope = Scope{};
+    const entry = try scope.getOrPut(alloc, "x");
+    try std.testing.expect(entry.value == null);
+
+    entry.* = .{ .value = .{ .int = 5 } };
+    try std.testing.expectEqual(@as(i64, 5), scope.get("x").?.value.?.int);
+    try std.testing.expectEqual(@as(usize, 1), scope.inline_count);
+}
+
+test "scope: getOrPut returns the existing entry for a bound name" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var scope = Scope{};
+    try scope.setValue(alloc, "x", .{ .int = 1 });
+    const entry = try scope.getOrPut(alloc, "x");
+    try std.testing.expectEqual(@as(i64, 1), entry.value.?.int);
+
+    entry.* = .{ .value = .{ .int = 2 } };
+    try std.testing.expectEqual(@as(i64, 2), scope.get("x").?.value.?.int);
+    try std.testing.expectEqual(@as(usize, 1), scope.inline_count);
+}
+
+test "scope: getOrPut on the same name twice gives one entry, so the later write wins" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var scope = Scope{};
+    const first  = try scope.getOrPut(alloc, "x");
+    const second = try scope.getOrPut(alloc, "x");
+    try std.testing.expect(first == second);
+
+    first.*  = .{ .value = .{ .int = 1 } };
+    second.* = .{ .value = .{ .int = 2 } };
+    try std.testing.expectEqual(@as(i64, 2), scope.get("x").?.value.?.int);
+}
+
+test "scope: getOrPut on a full inline scope switches to hashing and keeps every name" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const names = test_scope_names[0 .. INLINE_CAP + 1];
+    var scope = Scope{};
+    for (names[0..INLINE_CAP], 0..) |name, i| try scope.setValue(alloc, name, .{ .int = @intCast(i) });
+
+    const entry = try scope.getOrPut(alloc, names[INLINE_CAP]);
+    try std.testing.expect(scope.isHashed());
+    try std.testing.expect(entry.value == null);
+
+    entry.* = .{ .value = .{ .int = INLINE_CAP } };
+    for (names, 0..) |name, i| try std.testing.expectEqual(@as(i64, @intCast(i)), scope.get(name).?.value.?.int);
+}
+
+test "scope: getOrPut in a hashed scope finds existing names and adds missing ones" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const names = test_scope_names[0..];
+    var scope = Scope{};
+    for (names, 0..) |name, i| try scope.setValue(alloc, name, .{ .int = @intCast(i) });
+
+    const existing = try scope.getOrPut(alloc, names[3]);
+    try std.testing.expectEqual(@as(i64, 3), existing.value.?.int);
+
+    const added = try scope.getOrPut(alloc, "new");
+    try std.testing.expect(added.value == null);
+    try std.testing.expectEqual(@as(u32, names.len + 1), scope.hashed_entries.count());
 }
 
 test "scope: a parent's name is shadowed, not replaced" {
