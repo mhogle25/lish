@@ -2,12 +2,14 @@ const std = @import("std");
 const posix = std.posix;
 const tok = @import("../token.zig");
 const highlight = @import("../highlight.zig");
+const lexer_mod = @import("../lexer.zig");
 const buffer_mod = @import("buffer.zig");
 const renderer_mod = @import("renderer.zig");
 const escape_mod = @import("escape.zig");
 const history_mod = @import("history.zig");
 
 const Allocator = std.mem.Allocator;
+const Lexer = lexer_mod.Lexer;
 const LineBuffer = buffer_mod.LineBuffer;
 const Renderer = renderer_mod.Renderer;
 const BUFFER_SIZE = buffer_mod.BUFFER_SIZE;
@@ -22,10 +24,74 @@ const History = history_mod.History;
 
 const INDENT_WIDTH = 4;
 
+/// The longest command piped input may hold: the same limit as a script file
+/// (`process.LISH_FILE_MAX_SIZE`; a test in `repl.zig` keeps the two equal).
+pub const PIPED_COMMAND_MAX_LENGTH = 1024 * 1024;
+
 pub const ReadLineResult = union(enum) {
     line: []const u8,
+    /// Piped input only: a command longer than `PIPED_COMMAND_MAX_LENGTH`, skipped.
+    /// Holds the input line it started on.
+    too_long: usize,
     eof,
 };
+
+/// Tracks whether a command read from piped input still has a bracket or string
+/// open. Remembers where it stopped, so each line is read once.
+const OpenTracker = struct {
+    /// Brackets opened minus closed so far.
+    depth: usize,
+    /// Where the next check starts reading.
+    resume_at: usize,
+
+    fn init() OpenTracker {
+        return .{ .depth = 0, .resume_at = 0 };
+    }
+
+    /// `command` is everything read so far for this command. A stray closer counts
+    /// as finished, so the parser reports it instead of lish waiting for more.
+    fn isOpen(self: *OpenTracker, command: []const u8) bool {
+        var lexer = Lexer{ .source = command[self.resume_at..] };
+        while (true) {
+            const before = lexer.idx;
+            const piece = lexer.nextToken();
+            switch (piece.type) {
+                .eof => {
+                    self.resume_at = command.len;
+                    return self.depth > 0;
+                },
+                // A string can't be resumed partway, so the next check restarts at its quote.
+                .unterminated_string => {
+                    self.resume_at += before;
+                    return true;
+                },
+                .expression_opening_bracket, .list_opening_bracket, .block_opening_bracket => self.depth += 1,
+                .expression_closing_bracket, .list_closing_bracket, .block_closing_bracket => {
+                    if (self.depth == 0) return false;
+                    self.depth -= 1;
+                },
+                else => {},
+            }
+        }
+    }
+};
+
+/// Piped stdin, read one byte at a time so nothing past the current command is
+/// taken from stdin, as bash does.
+const StdinBytes = struct {
+    fn init() StdinBytes {
+        return .{};
+    }
+
+    fn readByte(_: *StdinBytes) ?u8 {
+        var byte: [1]u8 = undefined;
+        const count = posix.read(posix.STDIN_FILENO, &byte) catch return null;
+        if (count == 0) return null;
+        return byte[0];
+    }
+};
+
+const PipedLineEnd = enum { newline, end_of_input, too_long };
 
 fn structuralIndentLevel(content: []const u8) usize {
     var depth: usize = 0;
@@ -83,6 +149,11 @@ pub const LineEditor = struct {
     /// Bytes received during paste are inserted literally and autopair is disabled.
     paste_mode: bool = false,
 
+    /// The command being read from piped input. Kept between commands so its memory is reused.
+    piped_command: std.ArrayList(u8) = .empty,
+    /// Lines of piped input read so far, for naming the line in an error.
+    piped_lines_read: usize = 0,
+
     renderer: Renderer,
     allocator: Allocator,
 
@@ -97,6 +168,7 @@ pub const LineEditor = struct {
     pub fn deinit(self: *LineEditor) void {
         self.disableRawMode();
         self.history.deinit();
+        self.piped_command.deinit(self.allocator);
     }
 
     fn enableRawMode(self: *LineEditor) void {
@@ -152,7 +224,7 @@ pub const LineEditor = struct {
         self.raw_mode_active = false;
     }
 
-    pub fn readLine(self: *LineEditor) ReadLineResult {
+    pub fn readLine(self: *LineEditor) Allocator.Error!ReadLineResult {
         self.buffer.reset();
         self.escape.reset();
         self.history.endBrowse();
@@ -162,7 +234,8 @@ pub const LineEditor = struct {
         defer self.disableRawMode();
 
         if (!self.is_terminal) {
-            return self.readLineFallback();
+            var stdin_bytes = StdinBytes.init();
+            return self.readPipedCommand(&stdin_bytes);
         }
 
         self.renderer.render(self.buffer.slice(), self.buffer.cursor);
@@ -214,19 +287,50 @@ pub const LineEditor = struct {
         }
     }
 
-    fn readLineFallback(self: *LineEditor) ReadLineResult {
-        var pos: usize = 0;
-        while (pos < self.buffer.data.len) {
-            const bytes_read = posix.read(posix.STDIN_FILENO, self.buffer.data[pos..][0..1]) catch return .eof;
-            if (bytes_read == 0) {
-                return if (pos > 0) .{ .line = self.buffer.data[0..pos] } else .eof;
+    /// Reads one command from piped input. Lines are joined while a bracket or
+    /// string is still open, the way shells and Lisp REPLs read piped text.
+    /// `source` hands out bytes with `readByte() ?u8`: stdin, or a string in tests.
+    fn readPipedCommand(self: *LineEditor, source: anytype) Allocator.Error!ReadLineResult {
+        self.piped_command.clearRetainingCapacity();
+        var tracker = OpenTracker.init();
+        const first_line = self.piped_lines_read + 1;
+
+        while (true) {
+            switch (try self.appendPipedLine(source)) {
+                .newline => {
+                    if (!tracker.isOpen(self.piped_command.items)) return .{ .line = self.piped_command.items };
+                    try self.piped_command.append(self.allocator, '\n');
+                },
+                .end_of_input => {
+                    if (self.piped_command.items.len == 0) return .eof;
+                    return .{ .line = self.piped_command.items };
+                },
+                .too_long => {
+                    self.skipPipedLine(source);
+                    return .{ .too_long = first_line };
+                },
             }
-            if (self.buffer.data[pos] == '\n') {
-                return .{ .line = self.buffer.data[0..pos] };
-            }
-            pos += 1;
         }
-        return .{ .line = self.buffer.data[0..pos] };
+    }
+
+    fn appendPipedLine(self: *LineEditor, source: anytype) Allocator.Error!PipedLineEnd {
+        while (source.readByte()) |byte| {
+            if (byte == '\n') {
+                self.piped_lines_read += 1;
+                return .newline;
+            }
+            if (self.piped_command.items.len >= PIPED_COMMAND_MAX_LENGTH) return .too_long;
+            try self.piped_command.append(self.allocator, byte);
+        }
+        return .end_of_input;
+    }
+
+    fn skipPipedLine(self: *LineEditor, source: anytype) void {
+        while (source.readByte()) |byte| {
+            if (byte != '\n') continue;
+            self.piped_lines_read += 1;
+            return;
+        }
     }
 
     const InputResult = enum {
@@ -1104,4 +1208,115 @@ test "processInput: backspace deletes backward" {
     editor.testInsertString("abc");
     try std.testing.expectEqual(LineEditor.InputResult.continue_reading, editor.processInput(0x7f));
     try std.testing.expectEqualStrings("ab", editor.getLineSlice());
+}
+
+test "OpenTracker: an open bracket or string keeps the command open" {
+    const cases = [_]struct { command: []const u8, open: bool }{
+        .{ .command = "+ 1 2",               .open = false },
+        .{ .command = "+ 1 (* 2",            .open = true },
+        .{ .command = "length [1 [2",        .open = true },
+        .{ .command = "proc {say 1}",        .open = false },
+        .{ .command = "length \"two",        .open = true },
+        .{ .command = "length \"a(\"",       .open = false },
+        .{ .command = "say 1 ## (",          .open = false },
+        .{ .command = ")",                   .open = false },
+        .{ .command = ") (",                 .open = false },
+    };
+
+    for (cases) |case| {
+        var tracker = OpenTracker.init();
+        try std.testing.expectEqual(case.open, tracker.isOpen(case.command));
+    }
+}
+
+test "OpenTracker: resumes where it stopped, or at the quote of an open string" {
+    var tracker = OpenTracker.init();
+    try std.testing.expect(tracker.isOpen("+ 1 (* 2"));
+    try std.testing.expectEqual(@as(usize, 8), tracker.resume_at);
+    try std.testing.expect(!tracker.isOpen("+ 1 (* 2\n 3)"));
+
+    var string_tracker = OpenTracker.init();
+    try std.testing.expect(string_tracker.isOpen("(length \"two"));
+    try std.testing.expectEqual(@as(usize, 7), string_tracker.resume_at);
+    try std.testing.expect(!string_tracker.isOpen("(length \"two\nlines\")"));
+}
+
+/// Hands out a string's bytes the way `StdinBytes` hands out stdin's.
+const TestBytes = struct {
+    remaining: []const u8,
+
+    fn init(text: []const u8) TestBytes {
+        return .{ .remaining = text };
+    }
+
+    fn readByte(self: *TestBytes) ?u8 {
+        if (self.remaining.len == 0) return null;
+        const byte = self.remaining[0];
+        self.remaining = self.remaining[1..];
+        return byte;
+    }
+};
+
+fn expectPipedLine(editor: *LineEditor, bytes: *TestBytes, expected: []const u8) !void {
+    switch (try editor.readPipedCommand(bytes)) {
+        .line          => |line| try std.testing.expectEqualStrings(expected, line),
+        .too_long, .eof => return error.TestUnexpectedResult,
+    }
+}
+
+test "piped input: lines are joined until every bracket and string closes" {
+    var editor = LineEditor.testInit();
+    defer editor.deinit();
+
+    var bytes = TestBytes.init("+ 1 (* 2\n 3)\nlength [1\n  [2\n   3]]\nlength \"two\nlines\"\n)\nsay 4\n");
+    try expectPipedLine(&editor, &bytes, "+ 1 (* 2\n 3)");
+    try expectPipedLine(&editor, &bytes, "length [1\n  [2\n   3]]");
+    try expectPipedLine(&editor, &bytes, "length \"two\nlines\"");
+    try expectPipedLine(&editor, &bytes, ")");
+    try expectPipedLine(&editor, &bytes, "say 4");
+    try std.testing.expect(try editor.readPipedCommand(&bytes) == .eof);
+}
+
+test "piped input: a line longer than the keyboard's buffer stays one command" {
+    var editor = LineEditor.testInit();
+    defer editor.deinit();
+
+    const line = try std.testing.allocator.alloc(u8, BUFFER_SIZE + 1000);
+    defer std.testing.allocator.free(line);
+    @memset(line, 'x');
+
+    const text = try std.mem.concat(std.testing.allocator, u8, &.{ line, "\n" });
+    defer std.testing.allocator.free(text);
+
+    var bytes = TestBytes.init(text);
+    try expectPipedLine(&editor, &bytes, line);
+}
+
+test "piped input: input that ends with something still open is returned for the parser to report" {
+    var editor = LineEditor.testInit();
+    defer editor.deinit();
+
+    var bytes = TestBytes.init("+ 1 (* 2\n");
+    try expectPipedLine(&editor, &bytes, "+ 1 (* 2\n");
+    try std.testing.expect(try editor.readPipedCommand(&bytes) == .eof);
+}
+
+test "piped input: a command over the limit is skipped and named by its first line" {
+    var editor = LineEditor.testInit();
+    defer editor.deinit();
+
+    const too_long = try std.testing.allocator.alloc(u8, PIPED_COMMAND_MAX_LENGTH + 5);
+    defer std.testing.allocator.free(too_long);
+    @memset(too_long, 'x');
+
+    const text = try std.mem.concat(std.testing.allocator, u8, &.{ "say 1\n", too_long, "\nsay 2\n" });
+    defer std.testing.allocator.free(text);
+
+    var bytes = TestBytes.init(text);
+    try expectPipedLine(&editor, &bytes, "say 1");
+    switch (try editor.readPipedCommand(&bytes)) {
+        .too_long    => |first_line| try std.testing.expectEqual(@as(usize, 2), first_line),
+        .line, .eof  => return error.TestUnexpectedResult,
+    }
+    try expectPipedLine(&editor, &bytes, "say 2");
 }

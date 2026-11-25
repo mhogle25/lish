@@ -9,6 +9,9 @@ const line_editor_mod = @import("line_editor.zig");
 const Allocator = std.mem.Allocator;
 const LineEditor = line_editor_mod.LineEditor;
 
+/// The piped-input command limit in MB, for its error message.
+const PIPED_COMMAND_LIMIT_MB = @divExact(line_editor_mod.PIPED_COMMAND_MAX_LENGTH, 1024 * 1024);
+
 const op_autopair_insert   = "autopair-insert";
 const op_autopair_delete   = "autopair-delete";
 const op_bracket_expand    = "bracket-expand";
@@ -359,8 +362,16 @@ pub fn runRepl(
     stderr: *std.Io.Writer,
 ) void {
     while (true) {
-        switch (editor.readLine()) {
+        const read = editor.readLine() catch |err| {
+            stderr.print("Error: {}\n", .{err}) catch {};
+            break;
+        };
+
+        switch (read) {
             .eof => break,
+            .too_long => |first_line| {
+                stderr.print("\x1b[31mInput error: line {d}: command is longer than the {d} MB limit\x1b[0m\n", .{ first_line, PIPED_COMMAND_LIMIT_MB }) catch {};
+            },
             .line => |line| {
                 const trimmed = std.mem.trim(u8, line, " \t\r");
                 if (trimmed.len == 0) continue;
@@ -402,6 +413,10 @@ pub fn runRepl(
 }
 
 const testing = std.testing;
+
+test "piped input and script files share one size limit" {
+    try std.testing.expectEqual(process_mod.LISH_FILE_MAX_SIZE, line_editor_mod.PIPED_COMMAND_MAX_LENGTH);
+}
 
 test "writeResult renders source style" {
     var buf: [64]u8 = undefined;
