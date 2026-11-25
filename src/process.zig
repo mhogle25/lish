@@ -120,7 +120,7 @@ fn executeUnit(env: *Env, unit: Unit, scope: ?*const Scope) (Allocator.Error)!Pr
         error.RuntimeError => return .{ .runtime_err = env.runtime_error orelse .{ .category = .internal, .message = "Unknown runtime error" } },
         error.OutOfMemory => {
             if (env.memory_budget_tripped) {
-                const budget_error: RuntimeErr = .{ .category = .memory_exhausted, .message = "Memory budget exhausted", .source = env.current_source, .position = null };
+                const budget_error: RuntimeErr = .{ .category = .memory_exhausted, .message = "Memory budget exhausted", .macro = env.current_macro, .position = null };
                 env.runtime_error = budget_error;
                 return .{ .runtime_err = budget_error };
             }
@@ -508,7 +508,7 @@ test "processRaw: with scope" {
     const empty_scope = try alloc.create(Scope);
     empty_scope.* = Scope.EMPTY;
     var scope = Scope{};
-    try scope.setEntry(alloc, "x", value_thunk, empty_scope, &.{});
+    try scope.setEntry(alloc, "x", value_thunk, empty_scope, &exec_mod.Caller.top_level);
 
     const result = try processRaw(&env, "+ :x 5", &scope);
     switch (result) {
@@ -625,7 +625,7 @@ test "processRaw: full pipeline with macros and scope" {
     const empty_scope = try alloc.create(Scope);
     empty_scope.* = Scope.EMPTY;
     var scope = Scope{};
-    try scope.setEntry(alloc, "x", value_thunk, empty_scope, &.{});
+    try scope.setEntry(alloc, "x", value_thunk, empty_scope, &exec_mod.Caller.top_level);
 
     var env = Env{ .registry = &registry, .allocator = alloc };
     const result = try processRaw(&env, "add-to-x :x 50", &scope);
@@ -825,6 +825,52 @@ test "loadMacroBundle: loads macro text compiled into the program" {
     try loadMacroBundle(&registry, "double x | * :x 2 ; triple x | * :x 3 ;");
     try std.testing.expect(registry.getMacro("double") != null);
     try std.testing.expect(registry.getMacro("triple") != null);
+}
+
+fn runtimeErrorOf(env: *Env, source: []const u8) !RuntimeErr {
+    return switch (try processRaw(env, source, null)) {
+        .runtime_err => |problem| problem,
+        .ok, .validation_err => error.TestUnexpectedResult,
+    };
+}
+
+fn spanText(text: []const u8, problem: RuntimeErr) []const u8 {
+    const position = problem.position orelse return "";
+    return text[position.start..position.end];
+}
+
+test "a runtime error records whose text its position is in" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var registry = Registry.init(alloc);
+    try builtins.registerAll(&registry, alloc);
+    const macros =
+        \\boom x | + 1 (+ :x "bad") ;
+        \\twice ~x | list :x :x ;
+        \\pass-along | twice (nosuchop) ;
+    ;
+    try std.testing.expectEqual(MacroLoadResult{ .ok = 3 }, try loadMacroModule(&registry, macros));
+    var env = Env{ .registry = &registry, .allocator = alloc };
+
+    const in_run_text = "list 1 (+ 2 \"x\")";
+    const plain = try runtimeErrorOf(&env, in_run_text);
+    try std.testing.expect(plain.macro == null);
+    try std.testing.expectEqualStrings("(+ 2 \"x\")", spanText(in_run_text, plain));
+
+    const nested = try runtimeErrorOf(&env, "boom 2");
+    try std.testing.expectEqual(registry.getMacro("boom").?, nested.macro.?);
+    try std.testing.expectEqualStrings("(+ :x \"bad\")", spanText(nested.macro.?.text, nested));
+
+    const deferred_text = "twice (nosuchop)";
+    const deferred = try runtimeErrorOf(&env, deferred_text);
+    try std.testing.expect(deferred.macro == null);
+    try std.testing.expectEqualStrings("(nosuchop)", spanText(deferred_text, deferred));
+
+    const passed_along = try runtimeErrorOf(&env, "pass-along");
+    try std.testing.expectEqual(registry.getMacro("pass-along").?, passed_along.macro.?);
+    try std.testing.expectEqualStrings("(nosuchop)", spanText(passed_along.macro.?.text, passed_along));
 }
 
 test "loadMacroModule: each macro keeps the text it was loaded from" {

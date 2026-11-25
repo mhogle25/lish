@@ -24,17 +24,6 @@ pub const Position = struct {
     pub const synthetic: Position = .{ .start = 0, .end = 0 };
 };
 
-/// Identifier for which source a Position indexes into. Hosts populate this
-/// at evaluation entry (top-level eval) and per-Macro (when the macro is
-/// loaded). At runtime, Env.current_source reflects the macro/source whose
-/// thunks are currently executing.
-pub const SourceId = union(enum) {
-    none,
-    repl,
-    embedded_stdlib,
-    file: u16,
-};
-
 // Runtime errors
 
 /// lish signals a non-happy path in one of three tiers; pick by asking "would
@@ -66,13 +55,13 @@ pub const ErrorCategory = enum {
 };
 
 /// Structured runtime error stored on Env.runtime_error after env.fail().
-/// Source and position are captured automatically from Env's current
-/// evaluation context at the moment of failure.
+/// Where it happened is captured automatically from Env at the moment of failure.
 pub const RuntimeErr = struct {
     category: ErrorCategory,
     message:  []const u8,
-    source:   SourceId    = .none,
-    position: ?Position   = null,
+    /// The macro whose text `position` is in, or null for the text that was run.
+    macro:    ?*const Macro = null,
+    position: ?Position     = null,
 };
 
 // Thunk
@@ -160,19 +149,29 @@ pub fn nextUnitId() u32 {
 
 // Scope 
 
+/// Where a deferred argument was written: the caller's call-site slots and the
+/// macro whose text it is in (null for the text that was run). A macro call keeps
+/// one in its frame for all its deferred arguments, which never outlive the call.
+pub const Caller = struct {
+    unit_slots: []?Resolution,
+    macro: ?*const Macro,
+
+    pub const top_level: Caller = .{ .unit_slots = &.{}, .macro = null };
+};
+
 /// A scope binding is one of two things, and lookup distinguishes them with no
 /// thunk wrapper in between:
 ///   - `value`:   a pre-evaluated value (value params, `let`/`loop`/`fold`/`reduce`
 ///                bindings). Returned directly; never dispatches.
-///   - `closure`: a deferred thunk plus the scope and unit slots its expressions
-///                dispatch against, captured at bind time (a deferred macro arg
-///                belongs to the caller's unit, not the macro body's).
+///   - `closure`: a deferred thunk plus the scope it reads and where it was
+///                written (`Caller`), captured at bind time (a deferred macro arg
+///                belongs to the caller, not the macro body).
 pub const ScopeEntry = union(enum) {
     value: ?Value,
     closure: struct {
         thunk: *const Thunk,
         scope: *const Scope,
-        unit_slots: []?Resolution = &.{},
+        caller: *const Caller,
     },
 
     pub fn run(self: ScopeEntry, env: *Env) ExecError!?Value {
@@ -180,8 +179,11 @@ pub const ScopeEntry = union(enum) {
             .value => |stored| return stored,
             .closure => |c| {
                 const saved_slots = env.unit_slots;
-                env.unit_slots = c.unit_slots;
+                const saved_macro = env.current_macro;
+                env.unit_slots = c.caller.unit_slots;
+                env.current_macro = c.caller.macro;
                 defer env.unit_slots = saved_slots;
+                defer env.current_macro = saved_macro;
                 return c.thunk.proc(env, c.scope);
             },
         }
@@ -222,9 +224,9 @@ pub const Scope = struct {
         return self.hashed_entries.count() > 0;
     }
 
-    pub fn setEntry(self: *Scope, allocator: Allocator, key: []const u8, thunk: *const Thunk, thunk_scope: *const Scope, unit_slots: []?Resolution) Allocator.Error!void {
+    pub fn setEntry(self: *Scope, allocator: Allocator, key: []const u8, thunk: *const Thunk, thunk_scope: *const Scope, caller: *const Caller) Allocator.Error!void {
         const entry = try self.getOrPut(allocator, key);
-        entry.* = .{ .closure = .{ .thunk = thunk, .scope = thunk_scope, .unit_slots = unit_slots } };
+        entry.* = .{ .closure = .{ .thunk = thunk, .scope = thunk_scope, .caller = caller } };
     }
 
     pub fn setValue(self: *Scope, allocator: Allocator, key: []const u8, value: ?Value) Allocator.Error!void {
@@ -519,10 +521,6 @@ pub const Macro = struct {
     /// One-line docstring (the `##` comment run directly above the macro head), or
     /// empty. Surfaced by hover and `--dump-macros`, mirroring an op's description.
     description: []const u8 = "",
-    /// Source the macro body's thunks belong to. Swapped into env.current_source
-    /// during execution so positions captured by env.fail resolve to the right
-    /// file. Defaults to `.none` for macros constructed in tests.
-    source: SourceId = .none,
 
     pub fn writeSignature(self: *const Macro, writer: *std.Io.Writer) std.Io.Writer.Error!void {
         try writer.writeAll(self.id);
@@ -558,6 +556,8 @@ pub const Macro = struct {
         var macro_scope = Scope{};
         defer macro_scope.deinit(env.allocator);
 
+        const caller: Caller = .{ .unit_slots = env.unit_slots, .macro = env.current_macro };
+
         for (self.parameters, arg_thunks) |param, arg_thunk| {
             switch (param.param_type) {
                 .value => {
@@ -565,7 +565,7 @@ pub const Macro = struct {
                     try macro_scope.putNoClobber(env.allocator, param.id, .{ .value = evaluated });
                 },
                 .deferred => {
-                    try macro_scope.putNoClobber(env.allocator, param.id, .{ .closure = .{ .thunk = arg_thunk, .scope = caller_scope, .unit_slots = env.unit_slots } });
+                    try macro_scope.putNoClobber(env.allocator, param.id, .{ .closure = .{ .thunk = arg_thunk, .scope = caller_scope, .caller = &caller } });
                 },
             }
         }
@@ -573,9 +573,9 @@ pub const Macro = struct {
         const frame = try env.enterUnit(self.unit_id, self.site_count);
         defer env.exitUnit(frame);
 
-        const saved_source = env.current_source;
-        env.current_source = self.source;
-        defer env.current_source = saved_source;
+        const saved_macro = env.current_macro;
+        env.current_macro = self;
+        defer env.current_macro = saved_macro;
 
         return env.processExpression(self.body, &macro_scope);
     }
@@ -799,10 +799,10 @@ pub const Env = struct {
     /// the innermost position to runtime errors.
     current_position: ?Position = null,
 
-    /// Source the currently-executing thunks belong to. Updated on macro
-    /// entry (Macro.run swaps to self.source) and on top-level evaluation
-    /// entry (host sets it before kicking off processing).
-    current_source: SourceId = .none,
+    /// The macro whose text the running code is written in, or null for the text
+    /// that was run. A macro body switches to its macro; a deferred argument
+    /// switches back to the text it was written in.
+    current_macro: ?*const Macro = null,
 
     /// Slot array of the unit currently executing; an expression's `site` indexes
     /// it. Empty means dispatch dynamically (un-cached unit or runtime-built site).
@@ -884,7 +884,7 @@ pub const Env = struct {
         self.runtime_error = .{
             .category = category,
             .message  = message,
-            .source   = self.current_source,
+            .macro    = self.current_macro,
             .position = self.current_position,
         };
         return error.RuntimeError;
@@ -895,7 +895,7 @@ pub const Env = struct {
         self.runtime_error = .{
             .category = category,
             .message  = message,
-            .source   = self.current_source,
+            .macro    = self.current_macro,
             .position = self.current_position,
         };
         return error.RuntimeError;
@@ -1010,7 +1010,7 @@ test "scope: setting an existing name replaces a closure with a value" {
 
     const value_thunk = try makeValueLiteral(alloc, Position.synthetic, .{ .int = 1 });
     var scope = Scope{};
-    try scope.setEntry(alloc, "x", value_thunk, &Scope.EMPTY, &.{});
+    try scope.setEntry(alloc, "x", value_thunk, &Scope.EMPTY, &Caller.top_level);
     try scope.setValue(alloc, "x", .{ .int = 2 });
 
     try std.testing.expectEqual(@as(i64, 2), scope.get("x").?.value.?.int);
@@ -1055,7 +1055,7 @@ test "scope: one name past the inline capacity moves every name to the hash map"
     const names = test_scope_names[0 .. INLINE_CAP + 1];
     const value_thunk = try makeValueLiteral(alloc, Position.synthetic, .{ .int = 1 });
     var scope = Scope{};
-    try scope.setEntry(alloc, names[0], value_thunk, &Scope.EMPTY, &.{});
+    try scope.setEntry(alloc, names[0], value_thunk, &Scope.EMPTY, &Caller.top_level);
     for (names[1..], 1..) |name, i| try scope.setValue(alloc, name, .{ .int = @intCast(i) });
 
     try std.testing.expectEqual(@as(usize, 0), scope.inline_count);
@@ -1219,7 +1219,7 @@ test "scope thunk resolves entry from scope" {
     const empty_scope = try alloc.create(Scope);
     empty_scope.* = Scope.EMPTY;
     var scope = Scope{};
-    try scope.setEntry(alloc, "x", value_thunk, empty_scope, &.{});
+    try scope.setEntry(alloc, "x", value_thunk, empty_scope, &Caller.top_level);
 
     const id_thunk = try makeValueLiteral(alloc, Position.synthetic, .{ .string = "x" });
     const lookup_thunk = try makeScopeThunk(alloc, Position.synthetic, id_thunk);
@@ -1641,13 +1641,13 @@ test "scope entry closure captures scope" {
     inner_scope.* = .{};
     const empty_scope = try alloc.create(Scope);
     empty_scope.* = Scope.EMPTY;
-    try inner_scope.setEntry(alloc, "y", y_value, empty_scope, &.{});
+    try inner_scope.setEntry(alloc, "y", y_value, empty_scope, &Caller.top_level);
 
     const y_id = try makeValueLiteral(alloc, Position.synthetic, .{ .string = "y" });
     const y_ref = try makeScopeThunk(alloc, Position.synthetic, y_id);
 
     var outer_scope = Scope{};
-    try outer_scope.setEntry(alloc, "my-val", y_ref, inner_scope, &.{});
+    try outer_scope.setEntry(alloc, "my-val", y_ref, inner_scope, &Caller.top_level);
 
     const entry = outer_scope.get("my-val").?;
     const result = try entry.run(&env);
