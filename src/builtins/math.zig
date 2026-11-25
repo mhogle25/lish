@@ -3,6 +3,7 @@ const exec = @import("../exec.zig");
 const val = @import("../value.zig");
 
 const Value = val.Value;
+const Number = val.Number;
 const Args = exec.Args;
 const ExecError = exec.ExecError;
 const Registry = exec.Registry;
@@ -89,46 +90,36 @@ pub fn register(registry: *Registry, allocator: Allocator) Allocator.Error!void 
 
 fn minOp(args: Args) ExecError!?Value {
     try args.expectMinCount(2);
-    var result = try args.at(0).resolve();
-    if (!result.isNumber()) return args.env.failFmt(.type_mismatch, "'min' expects numbers, got {s}", .{result.typeName()});
+    const first = try args.at(0).resolve();
+    var result = first.asNumber() orelse return args.env.failFmt(.type_mismatch, "'min' expects numbers, got {s}", .{first.typeName()});
 
     for (1..args.count()) |i| {
-        const operand = try args.at(i).resolve();
-        if (!operand.isNumber()) return args.env.failFmt(.type_mismatch, "'min' expects numbers, got {s}", .{operand.typeName()});
+        const value = try args.at(i).resolve();
+        const operand = value.asNumber() orelse return args.env.failFmt(.type_mismatch, "'min' expects numbers, got {s}", .{value.typeName()});
 
-        if (result == .float or operand == .float) {
-            const left = result.getF() catch unreachable;
-            const right = operand.getF() catch unreachable;
-            result = .{ .float = @min(left, right) };
-        } else {
-            const left = result.getI() catch unreachable;
-            const right = operand.getI() catch unreachable;
-            result = .{ .int = @min(left, right) };
-        }
+        result = switch (Number.pair(result, operand)) {
+            .ints   => |both| .{ .int = @min(both.left, both.right) },
+            .floats => |both| .{ .float = @min(both.left, both.right) },
+        };
     }
-    return result;
+    return result.toValue();
 }
 
 fn maxOp(args: Args) ExecError!?Value {
     try args.expectMinCount(2);
-    var result = try args.at(0).resolve();
-    if (!result.isNumber()) return args.env.failFmt(.type_mismatch, "'max' expects numbers, got {s}", .{result.typeName()});
+    const first = try args.at(0).resolve();
+    var result = first.asNumber() orelse return args.env.failFmt(.type_mismatch, "'max' expects numbers, got {s}", .{first.typeName()});
 
     for (1..args.count()) |i| {
-        const operand = try args.at(i).resolve();
-        if (!operand.isNumber()) return args.env.failFmt(.type_mismatch, "'max' expects numbers, got {s}", .{operand.typeName()});
+        const value = try args.at(i).resolve();
+        const operand = value.asNumber() orelse return args.env.failFmt(.type_mismatch, "'max' expects numbers, got {s}", .{value.typeName()});
 
-        if (result == .float or operand == .float) {
-            const left = result.getF() catch unreachable;
-            const right = operand.getF() catch unreachable;
-            result = .{ .float = @max(left, right) };
-        } else {
-            const left = result.getI() catch unreachable;
-            const right = operand.getI() catch unreachable;
-            result = .{ .int = @max(left, right) };
-        }
+        result = switch (Number.pair(result, operand)) {
+            .ints   => |both| .{ .int = @max(both.left, both.right) },
+            .floats => |both| .{ .float = @max(both.left, both.right) },
+        };
     }
-    return result;
+    return result.toValue();
 }
 
 fn absOp(args: Args) ExecError!?Value {
@@ -243,6 +234,13 @@ test "math: max" {
     defer arena.deinit();
     const result = try testing.evalWithBuiltins(arena.allocator(), "max 3 1 2");
     try std.testing.expectEqual(@as(i64, 3), result.?.int);
+}
+
+test "math: max float promotion" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try testing.evalWithBuiltins(arena.allocator(), "max 3 4.5 2");
+    try std.testing.expectEqual(@as(f64, 4.5), result.?.float);
 }
 
 test "math: abs positive" {
