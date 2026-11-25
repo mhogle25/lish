@@ -243,8 +243,6 @@ pub const Scope = struct {
     }
 
     pub fn putNoClobber(self: *Scope, allocator: Allocator, key: []const u8, entry: ScopeEntry) Allocator.Error!void {
-        if (std.debug.runtime_safety) std.debug.assert(self.getOwn(key) == null);
-
         const new_entry = try self.addNewName(allocator, key);
         new_entry.* = entry;
     }
@@ -518,7 +516,16 @@ pub const Macro = struct {
         }
     }
 
-    pub fn run(
+    fn hasRepeatedParameter(self: *const Macro) bool {
+        for (self.parameters, 0..) |parameter, i| {
+            for (self.parameters[i + 1 ..]) |later| {
+                if (std.mem.eql(u8, parameter.id, later.id)) return true;
+            }
+        }
+        return false;
+    }
+
+    fn run(
         self: *const Macro,
         arg_thunks: []const *const Thunk,
         env: *Env,
@@ -579,6 +586,8 @@ pub const GroupRegistrar = struct {
 /// evaluation pins at once (root + macros on the stack), so steady state evicts nothing.
 pub const DEFAULT_RESOLUTION_CAPACITY: usize = 256;
 
+pub const RegisterMacroError = Allocator.Error || error{DuplicateParameterName};
+
 pub const Registry = struct {
     operations: std.StringHashMapUnmanaged(Operation) = .{},
     macros: std.StringHashMapUnmanaged(*const Macro) = .{},
@@ -626,7 +635,9 @@ pub const Registry = struct {
         return .{ .registry = self, .allocator = allocator, .category = category };
     }
 
-    pub fn registerMacro(self: *Registry, id: []const u8, macro: *const Macro) Allocator.Error!void {
+    pub fn registerMacro(self: *Registry, id: []const u8, macro: *const Macro) RegisterMacroError!void {
+        if (macro.hasRepeatedParameter()) return error.DuplicateParameterName;
+
         try self.macros.put(self.macroAllocator(), id, macro);
         self.clearResolution();
     }
@@ -1355,6 +1366,49 @@ fn testAddOp(args: Args) ExecError!?Value {
     const left = try args.at(0).resolveInt();
     const right = try args.at(1).resolveInt();
     return .{ .int = left + right };
+}
+
+fn makeTestMacro(allocator: Allocator, id: []const u8, parameters: []const MacroParameter) Allocator.Error!*Macro {
+    const name = try makeValueLiteral(allocator, Position.synthetic, .{ .string = "add" });
+    const macro = try allocator.create(Macro);
+    macro.* = .{ .id = id, .parameters = parameters, .body = .{ .name = name, .args = &.{} } };
+    return macro;
+}
+
+test "registry: registerMacro rejects a repeated parameter name and registers nothing" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var registry = Registry.init(alloc);
+    const plain_twice = [_]MacroParameter{
+        .{ .id = "a", .param_type = .value },
+        .{ .id = "a", .param_type = .value },
+    };
+    const plain_and_deferred = [_]MacroParameter{
+        .{ .id = "a", .param_type = .value },
+        .{ .id = "b", .param_type = .value },
+        .{ .id = "a", .param_type = .deferred },
+    };
+
+    try std.testing.expectError(error.DuplicateParameterName, registry.registerMacro("pick", try makeTestMacro(alloc, "pick", &plain_twice)));
+    try std.testing.expectError(error.DuplicateParameterName, registry.registerMacro("pick", try makeTestMacro(alloc, "pick", &plain_and_deferred)));
+    try std.testing.expect(!registry.macros.contains("pick"));
+}
+
+test "registry: registerMacro accepts distinct parameter names" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var registry = Registry.init(alloc);
+    const distinct = [_]MacroParameter{
+        .{ .id = "a", .param_type = .value },
+        .{ .id = "b", .param_type = .deferred },
+    };
+
+    try registry.registerMacro("pick", try makeTestMacro(alloc, "pick", &distinct));
+    try std.testing.expect(registry.macros.contains("pick"));
 }
 
 test "macro with value parameters" {

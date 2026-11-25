@@ -487,6 +487,7 @@ fn macroErrToValidationErr(macro_error: MacroError) validation_mod.ValidationErr
 }
 
 const builtins = @import("builtins.zig");
+const ast_builder = @import("ast_builder.zig");
 
 test "parse single macro" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -608,6 +609,28 @@ test "duplicate parameter name fails module validation" {
             try std.testing.expectEqualStrings("Duplicate parameter name 'a'", errors[0].message);
         },
     }
+}
+
+test "a MacroBuilder macro with a repeated parameter passes validation but is rejected at registration" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const b = ast_builder.AstBuilder.init(alloc);
+    var body_builder = b.expr("+");
+    const body = try body_builder.arg(try b.scope("a")).arg(try b.int(0)).build();
+    var macro_builder = b.macro("pick");
+    const ast_macro = try macro_builder.param("a").param("a").body(body);
+
+    const module = AstMacroModule{ .macros = &.{.{ .macro = ast_macro }} };
+    const macros = switch (try validateMacroModule(alloc, module)) {
+        .ok  => |valid| valid,
+        .err => return error.TestUnexpectedResult,
+    };
+
+    var registry = exec.Registry.init(alloc);
+    try std.testing.expectError(error.DuplicateParameterName, registry.registerMacro(macros[0].id, &macros[0]));
+    try std.testing.expect(!registry.macros.contains("pick"));
 }
 
 test "validate macro module" {

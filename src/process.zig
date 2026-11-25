@@ -136,7 +136,10 @@ pub fn loadMacroModule(
     switch (validation_result) {
         .ok => |macros| {
             for (macros) |*macro| {
-                try registry.registerMacro(macro.id, macro);
+                registry.registerMacro(macro.id, macro) catch |err| switch (err) {
+                    error.OutOfMemory            => return error.OutOfMemory,
+                    error.DuplicateParameterName => std.debug.panic("macro '{s}' passed validation with a repeated parameter name; the macro parser should have rejected it", .{macro.id}),
+                };
             }
             return .{ .ok = macros.len };
         },
