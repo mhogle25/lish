@@ -14,7 +14,7 @@
 | Output            | `say`, `error`                                                                                                                   |
 | List              | `list`, `flat`, `flatten`, `range`, `until`, `sort`, `sortby`, `sortwith`, `fillby`                                              |
 | Collection        | `length`, `first`, `last`, `rest`, `at`, `reverse`, `take`, `drop`, `slice`, `zip`                                               |
-| Higher-Order      | `map`, `for`, `filter`, `reduce`, `any`, `all`, `count`, `findby`                                                                |
+| Higher-Order      | `map`, `for`, `filter`, `reduce`, `fold`, `any`, `all`, `count`, `findby`                                                        |
 | Meta              | `apply`, `known`, `ops`                                                                                                          |
 | Math              | `min`, `max`, `abs`, `floor`, `ceil`, `round`, `even`, `odd`, `sqrt`, `sin`, `cos`, `log`, `exp`                                 |
 | Type              | `type`, `int`, `float`, `string`, `inspect`                                                                                      |
@@ -36,9 +36,9 @@ The **bitwise** operations (`&` AND, `|` OR, `^` XOR, `~` NOT, `<<` left shift, 
 
 `proc` takes its name from three overlapping meanings: **procedure** (execute a sequence of steps), **procure** (retrieve a value), and **process** (transform a sequence). With one argument it returns that argument's value; with multiple arguments it evaluates each in order and returns the last.
 
-`let NAME EXPR BODY` evaluates `EXPR` once, binds the result to `NAME` for the duration of `BODY`, and returns the body's value. Inside `BODY`, references via `:NAME` resolve to the bound value. Bindings are immutable, lexically scoped, and do not leak into sibling expressions or called macros. `let` accepts multiple name/value pairs before the body, evaluated sequentially so later pairs can reference earlier ones.
+`let NAME EXPR BODY` evaluates `EXPR` once, binds the result to `NAME` for the duration of `BODY`, and returns the body's value. Inside `BODY`, references via `:NAME` resolve to the bound value. Bindings are immutable, lexically scoped, and do not leak into sibling expressions or called macros. `let` accepts multiple name/value pairs before the body, evaluated sequentially so later pairs can reference earlier ones. If a name repeats, the later pair shadows the earlier one, and its value can still use the earlier one: `let x 1 x (+ :x 10) :x` gives `11`.
 
-`unpack NAME... SOURCE BODY` binds each `NAME` to the positional element of `SOURCE` (a list or string) in a new scope, then evaluates `BODY`. A name past the source length binds `$none`; extra elements are ignored. Panics if `SOURCE` is not a list or string. It tears apart a Result or any small positional structure without repeated `at`/`first`/`last`: `unpack tag value :r (concat :tag " => " :value)`.
+`unpack NAME... SOURCE BODY` binds each `NAME` to the positional element of `SOURCE` (a list or string) in a new scope, then evaluates `BODY`. A name past the source length binds `$none`; extra elements are ignored. A repeated name takes the later element: `unpack a a [1 2] :a` gives `2`. Panics if `SOURCE` is not a list or string. It tears apart a Result or any small positional structure without repeated `at`/`first`/`last`: `unpack tag value :r (concat :tag " => " :value)`.
 
 `pipe NAME INITIAL STEP...` threads a value through a sequence of transformations. The first step is evaluated with `:NAME` bound to `INITIAL`; each subsequent step receives the previous step's result via the same binding. Returns the final step's value. Example: `pipe x 25 (sqrt :x) (+ :x 3)` -> `(+ (sqrt 25) 3)` -> `8`.
 
@@ -46,18 +46,19 @@ The **bitwise** operations (`&` AND, `|` OR, `^` XOR, `~` NOT, `<<` left shift, 
 
 ## Binding form for iterative ops
 
-`map`, `for`, `filter`, `reduce`, `any`, `all`, `count`, `findby`, `sortby`, and `sortwith` all take a **binding name** followed by a **source** and a **body expression**. Inside the body, `:NAME` refers to the current element (or accumulator).
+`map`, `for`, `filter`, `reduce`, `fold`, `any`, `all`, `count`, `findby`, `sortby`, and `sortwith` all take a **binding name** followed by a **source** and a **body expression**. Inside the body, `:NAME` refers to the current element (or accumulator).
 
 ```
 map x [1 2 3] (* :x 2)                              ## [2 4 6]
 filter n [1 2 3 4 5 6] (even :n)                    ## [2 4 6]
 reduce acc 0 x [1 2 3 4 5] (+ :acc :x)              ## 15
+fold acc 0 i 4 (+ :acc :i)                          ## 6
 findby x [1 2 3 4] (> :x 2)                         ## 3
 sortby x [3 1 2] :x                                 ## [1 2 3]
 sortwith a b [3 1 2] (compare :a :b)                ## [1 2 3]
 ```
 
-`reduce` is the only op with two bindings: an accumulator name with its initial value, then an item name with its source list, then the body. `sortwith` is similar in shape: two element names (`a` and `b`) compared per swap.
+`reduce` and `fold` take two bindings: an accumulator name with its initial value, then an item name with its source, then the body. For `reduce` the source is a list; for `fold` it is a count `N`, and the item is the index `0..N-1`, so it accumulates without building a list. `sortwith` is similar in shape: two element names (`a` and `b`) compared per swap. If both names are the same, the later one wins: in `reduce x 0 x [1 2 3] :x` the body sees the item, not the accumulator, and in `sortwith a a ...` it sees the second element.
 
 `loop` and `fillby` accept an **optional** binding for the iteration index: `loop n body` repeats N times without exposing the index; `loop i n body` binds `:i` to `0..N-1` in each iteration. `fillby` mirrors this for slot index.
 

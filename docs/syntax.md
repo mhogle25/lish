@@ -72,6 +72,8 @@ Macros are written `name params | body ;` (params accessed with `:`):
 ```
 greet name | say (concat "hello " :name) ;
 ```
+Parameter names must be distinct. A repeated name, including one plain and one deferred (`pick a ~a`), is an error when the macro file loads: `Duplicate parameter name 'a'`.
+
 The header (the name and its parameters) runs up to the first `|`; the body runs
 from there to the terminating `;`. The `;` is required between macros in a file
 and optional after the last one (end of file also terminates a body). Because the
@@ -102,4 +104,4 @@ lish borrows Lisp's prefix notation and parenthesized sub-expressions, but diver
 - **Call-by-name, not call-by-value.** Arguments are not evaluated before the call. They are re-evaluated each time the callee accesses them. This applies uniformly to all operations, not just special forms.
 - **No cons cells.** Lists are flat arrays. There is no `car`, `cdr`, or dotted pair notation.
 - **No first-class functions.** There is no `lambda` and no closures. Macros are named parameter-substitution patterns evaluated at call time, not compile-time code transformers.
-- **No mutable state.** There is no `set`, `define`, or `setq`. Host state flows in through scope thunks and is read-only from within lish. Bindings exist (`let`, `pipe`, and the iterative ops like `map`/`filter`/`reduce` all introduce a name for the duration of a body expression) but every binding is immutable, lexically scoped, and evaporates at the end of its body; none of them can be reassigned, and they don't leak into sibling expressions or called macros.
+- **No mutable state.** There is no `set`, `define`, or `setq`. Host state flows in through scope thunks and is read-only from within lish. Bindings exist (`let`, `pipe`, and the iterative ops like `map`/`filter`/`reduce` all introduce a name for the duration of a body expression) but every binding is immutable, lexically scoped, and evaporates at the end of its body; none of them can be reassigned (a repeated name in one `let` shadows the earlier binding rather than reassigning it), and they don't leak into sibling expressions or called macros.
