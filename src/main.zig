@@ -24,6 +24,10 @@ const HELP =
 /// Exit code for a command line lish can't act on.
 const USAGE_EXIT_CODE = 2;
 
+/// The line editor's own output buffer, big enough that a full redraw of a
+/// maximum-length line reaches the terminal in one piece.
+const EDITOR_OUTPUT_BUFFER_SIZE = 64 * 1024;
+
 const Option = enum { help, macros, init_config, dump_ops, dump_macros };
 
 const OPTIONS = std.StaticStringMap(Option).initComptime(.{
@@ -79,7 +83,7 @@ const ParsedCommandLine = union(enum) {
 pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
 
-    var stdout_writer = std.Io.File.stdout().writer(init.io, &.{});
+    var stdout_writer = std.Io.File.stdout().writerStreaming(init.io, &.{});
     var stderr_writer = std.Io.File.stderr().writer(init.io, &.{});
     const stdout = &stdout_writer.interface;
     const stderr = &stderr_writer.interface;
@@ -239,7 +243,12 @@ fn runLish(
     switch (run) {
         .script => |path| runScript(io, allocator, &session, stdout, stderr, path),
         .repl => {
-            var editor = line_editor_mod.LineEditor.init(allocator, stdout);
+            // Streaming like `stdout`, so the two writers share the file position
+            // instead of overwriting each other when stdout is redirected to a file.
+            var editor_output_buffer: [EDITOR_OUTPUT_BUFFER_SIZE]u8 = undefined;
+            var editor_output = std.Io.File.stdout().writerStreaming(io, &editor_output_buffer);
+
+            var editor = line_editor_mod.LineEditor.init(allocator, &editor_output.interface);
             editor.autopair_insert = repl_config.autopair_insert;
             editor.autopair_delete = repl_config.autopair_delete;
             editor.bracket_expand = repl_config.bracket_expand;

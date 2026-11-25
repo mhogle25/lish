@@ -1,8 +1,5 @@
 const std = @import("std");
-const buffer_mod = @import("buffer.zig");
 const highlight = @import("../highlight.zig");
-
-const BUFFER_SIZE = buffer_mod.BUFFER_SIZE;
 
 pub const PROMPT = "lish> ";
 
@@ -83,17 +80,23 @@ pub const Renderer = struct {
     }
 
     pub fn render(self: *Renderer, content: []const u8, cursor: usize) void {
-        var buf: [BUFFER_SIZE + 1024]u8 = undefined;
-        var writer = std.Io.Writer.fixed(&buf);
+        self.draw(content, cursor) catch {};
+        self.stdout.flush() catch {};
+    }
+
+    /// Writes the redraw straight to `stdout`. A buffered writer sends itself on
+    /// when full, so no line is too long to draw.
+    fn draw(self: *Renderer, content: []const u8, cursor: usize) std.Io.Writer.Error!void {
+        const writer = self.stdout;
 
         if (self.prev_cursor_row > 0) {
-            writer.print("\x1b[{d}A", .{self.prev_cursor_row}) catch return;
+            try writer.print("\x1b[{d}A", .{self.prev_cursor_row});
         }
-        writer.writeAll("\r") catch return;
-        writer.writeAll("\x1b[J") catch return;
+        try writer.writeAll("\r");
+        try writer.writeAll("\x1b[J");
 
         const prompt_width = displayWidth(self.prompt);
-        writer.writeAll(self.prompt) catch return;
+        try writer.writeAll(self.prompt);
 
         var hl_state = HighlightState.init(content, self.highlight_enabled);
 
@@ -111,14 +114,14 @@ pub const Renderer = struct {
                 saw_cursor = true;
             }
             if (content[i] == '\n') {
-                emitRange(&writer, content, line_start, i, &hl_state);
-                writer.writeAll("\r\n") catch return;
-                writeContinuation(&writer, prompt_width) catch return;
+                try emitRange(writer, content, line_start, i, &hl_state);
+                try writer.writeAll("\r\n");
+                try writeContinuation(writer, prompt_width);
                 row_count += 1;
                 line_start = i + 1;
             }
         }
-        emitRange(&writer, content, line_start, content.len, &hl_state);
+        try emitRange(writer, content, line_start, content.len, &hl_state);
 
         if (!saw_cursor) {
             cursor_row = row_count;
@@ -128,17 +131,14 @@ pub const Renderer = struct {
         const last_row = row_count;
         const rows_to_move_up = last_row - cursor_row;
         if (rows_to_move_up > 0) {
-            writer.print("\x1b[{d}A", .{rows_to_move_up}) catch return;
+            try writer.print("\x1b[{d}A", .{rows_to_move_up});
         }
-        writer.writeAll("\r") catch return;
+        try writer.writeAll("\r");
         if (cursor_col > 0) {
-            writer.print("\x1b[{d}C", .{cursor_col}) catch return;
+            try writer.print("\x1b[{d}C", .{cursor_col});
         }
 
         self.prev_cursor_row = cursor_row;
-
-        self.stdout.writeAll(writer.buffered()) catch {};
-        self.stdout.flush() catch {};
     }
 
     pub fn reset(self: *Renderer) void {
@@ -157,11 +157,8 @@ fn emitRange(
     from: usize,
     to: usize,
     state: *HighlightState,
-) void {
-    if (!state.enabled()) {
-        writer.writeAll(content[from..to]) catch return;
-        return;
-    }
+) std.Io.Writer.Error!void {
+    if (!state.enabled()) return writer.writeAll(content[from..to]);
 
     var pos = from;
     while (pos < to) {
@@ -169,18 +166,48 @@ fn emitRange(
         if (span.start >= to) break;
 
         if (span.start > pos) {
-            writer.writeAll(content[pos..span.start]) catch return;
+            try writer.writeAll(content[pos..span.start]);
         }
 
         const color = ansiFor(span.category);
         const span_end = @min(span.end, to);
 
-        if (color.len > 0) writer.writeAll(color) catch return;
-        writer.writeAll(content[span.start..span_end]) catch return;
-        if (color.len > 0) writer.writeAll(ANSI_RESET) catch return;
+        if (color.len > 0) try writer.writeAll(color);
+        try writer.writeAll(content[span.start..span_end]);
+        if (color.len > 0) try writer.writeAll(ANSI_RESET);
 
         pos = span_end;
     }
 
-    writer.writeAll(content[pos..to]) catch return;
+    try writer.writeAll(content[pos..to]);
+}
+
+fn renderLongHighlightedLine(writer: *std.Io.Writer) void {
+    var content: [4000]u8 = undefined;
+    for (&content, 0..) |*byte, index| byte.* = if (index % 2 == 0) '1' else ' ';
+
+    var renderer = Renderer.init(writer);
+    renderer.render(&content, content.len);
+}
+
+test "render draws a long highlighted line in full" {
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    renderLongHighlightedLine(&output.writer);
+
+    const drawn = output.written();
+    try std.testing.expectEqual(@as(usize, 2000), std.mem.count(u8, drawn, "\x1b[36m1\x1b[0m"));
+    try std.testing.expect(std.mem.endsWith(u8, drawn, "\r\x1b[4006C"));
+}
+
+test "render sends the whole frame through a buffer much smaller than the frame" {
+    var whole: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer whole.deinit();
+    renderLongHighlightedLine(&whole.writer);
+
+    var small_buffer: [256]u8 = undefined;
+    var draining: std.Io.Writer.Discarding = .init(&small_buffer);
+    renderLongHighlightedLine(&draining.writer);
+
+    try std.testing.expectEqual(@as(u64, whole.written().len), draining.fullCount());
 }
