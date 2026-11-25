@@ -3,6 +3,7 @@ const exec = @import("exec.zig");
 const val = @import("value.zig");
 
 const Value = val.Value;
+const Number = val.Number;
 const Args = exec.Args;
 const ExecError = exec.ExecError;
 const Registry = exec.Registry;
@@ -62,45 +63,43 @@ fn requireIo(args: Args) ExecError!std.Io {
 
 fn randInclusiveOp(args: Args) ExecError!?Value {
     try args.expectCount(2);
-    const x = try args.at(0).resolve();
-    const y = try args.at(1).resolve();
-    if (!x.isNumber()) return args.env.failFmt(.type_mismatch, "'?' expects numbers, got {s}", .{x.typeName()});
-    if (!y.isNumber()) return args.env.failFmt(.type_mismatch, "'?' expects numbers, got {s}", .{y.typeName()});
+    const x_value = try args.at(0).resolve();
+    const y_value = try args.at(1).resolve();
+    const x = x_value.asNumber() orelse return args.env.failFmt(.type_mismatch, "'?' expects numbers, got {s}", .{x_value.typeName()});
+    const y = y_value.asNumber() orelse return args.env.failFmt(.type_mismatch, "'?' expects numbers, got {s}", .{y_value.typeName()});
 
     const io = try requireIo(args);
 
-    if (x == .float or y == .float) {
-        const xf = x.getF() catch unreachable;
-        const yf = y.getF() catch unreachable;
-        if (xf > yf) return args.env.fail(.invalid_argument, "'?' expects x <= y");
-        return .{ .float = xf + randomF64(io) * (yf - xf) };
-    } else {
-        const xi = x.getI() catch unreachable;
-        const yi = y.getI() catch unreachable;
-        if (xi > yi) return args.env.fail(.invalid_argument, "'?' expects x <= y");
-        return .{ .int = randomIntRangeAtMost(io, i64, xi, yi) };
+    switch (Number.pair(x, y)) {
+        .ints => |bounds| {
+            if (bounds.left > bounds.right) return args.env.fail(.invalid_argument, "'?' expects x <= y");
+            return .{ .int = randomIntRangeAtMost(io, i64, bounds.left, bounds.right) };
+        },
+        .floats => |bounds| {
+            if (bounds.left > bounds.right) return args.env.fail(.invalid_argument, "'?' expects x <= y");
+            return .{ .float = bounds.left + randomF64(io) * (bounds.right - bounds.left) };
+        },
     }
 }
 
 fn randExclusiveOp(args: Args) ExecError!?Value {
     try args.expectCount(2);
-    const x = try args.at(0).resolve();
-    const y = try args.at(1).resolve();
-    if (!x.isNumber()) return args.env.failFmt(.type_mismatch, "'?<' expects numbers, got {s}", .{x.typeName()});
-    if (!y.isNumber()) return args.env.failFmt(.type_mismatch, "'?<' expects numbers, got {s}", .{y.typeName()});
+    const x_value = try args.at(0).resolve();
+    const y_value = try args.at(1).resolve();
+    const x = x_value.asNumber() orelse return args.env.failFmt(.type_mismatch, "'?<' expects numbers, got {s}", .{x_value.typeName()});
+    const y = y_value.asNumber() orelse return args.env.failFmt(.type_mismatch, "'?<' expects numbers, got {s}", .{y_value.typeName()});
 
     const io = try requireIo(args);
 
-    if (x == .float or y == .float) {
-        const xf = x.getF() catch unreachable;
-        const yf = y.getF() catch unreachable;
-        if (xf >= yf) return args.env.fail(.invalid_argument, "'?<' expects x < y");
-        return .{ .float = xf + randomF64(io) * (yf - xf) };
-    } else {
-        const xi = x.getI() catch unreachable;
-        const yi = y.getI() catch unreachable;
-        if (xi >= yi) return args.env.fail(.invalid_argument, "'?<' expects x < y");
-        return .{ .int = randomIntRangeLessThan(io, i64, xi, yi) };
+    switch (Number.pair(x, y)) {
+        .ints => |bounds| {
+            if (bounds.left >= bounds.right) return args.env.fail(.invalid_argument, "'?<' expects x < y");
+            return .{ .int = randomIntRangeLessThan(io, i64, bounds.left, bounds.right) };
+        },
+        .floats => |bounds| {
+            if (bounds.left >= bounds.right) return args.env.fail(.invalid_argument, "'?<' expects x < y");
+            return .{ .float = bounds.left + randomF64(io) * (bounds.right - bounds.left) };
+        },
     }
 }
 
@@ -174,6 +173,58 @@ test "?: same value returns that value" {
 
     const result = try process.processRaw(&env, "? 7 7", null);
     try std.testing.expectEqual(@as(i64, 7), result.ok.?.int);
+}
+
+test "? and ?<: float and mixed ranges give floats within bounds" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var registry = Registry.init(alloc);
+    try builtins.registerAll(&registry, alloc);
+    try registerAll(&registry, alloc);
+    var env = exec.Env{ .registry = &registry, .allocator = alloc, .io = io };
+
+    for (0..100) |_| {
+        const inclusive = (try process.processRaw(&env, "? 1.5 2.5", null)).ok.?;
+        try std.testing.expect(inclusive == .float);
+        try std.testing.expect(inclusive.float >= 1.5 and inclusive.float <= 2.5);
+
+        const exclusive = (try process.processRaw(&env, "?< 1 1.5", null)).ok.?;
+        try std.testing.expect(exclusive == .float);
+        try std.testing.expect(exclusive.float >= 1.0 and exclusive.float < 1.5);
+    }
+}
+
+test "? and ?<: bounds in the wrong order are an error for ints and floats" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var registry = Registry.init(alloc);
+    try builtins.registerAll(&registry, alloc);
+    try registerAll(&registry, alloc);
+    var env = exec.Env{ .registry = &registry, .allocator = alloc, .io = io };
+
+    const cases = [_]struct { source: []const u8, message: []const u8 }{
+        .{ .source = "? 3 1",     .message = "'?' expects x <= y" },
+        .{ .source = "? 2.5 1",   .message = "'?' expects x <= y" },
+        .{ .source = "?< 2 2",    .message = "'?<' expects x < y" },
+        .{ .source = "?< 2 2.0",  .message = "'?<' expects x < y" },
+        .{ .source = "? \"a\" 1", .message = "'?' expects numbers, got string" },
+    };
+    for (cases) |case| {
+        const result = try process.processRaw(&env, case.source, null);
+        try std.testing.expectEqualStrings(case.message, result.runtime_err.message);
+    }
 }
 
 test "??: picks from provided values" {

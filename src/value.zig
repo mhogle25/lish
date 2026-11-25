@@ -18,10 +18,6 @@ pub const Value = union(enum) {
     float: f64,
     list: []const ?Value,
 
-    pub fn isNumber(self: Value) bool {
-        return self == .int or self == .float;
-    }
-
     pub fn asNumber(self: Value) ?Number {
         return switch (self) {
             .int           => |int_val| .{ .int = int_val },
