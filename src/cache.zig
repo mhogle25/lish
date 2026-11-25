@@ -4,7 +4,7 @@ const exec_mod = @import("exec.zig");
 const Allocator = std.mem.Allocator;
 const Expression = exec_mod.Expression;
 const Unit = exec_mod.Unit;
-const ResolvedSlot = exec_mod.ResolvedSlot;
+const Resolution = exec_mod.Resolution;
 
 pub fn LruCache(comptime V: type) type {
     return struct {
@@ -141,14 +141,14 @@ pub fn LruCache(comptime V: type) type {
 pub const ExpressionCache = LruCache(Unit);
 
 /// Per-registry name resolution: a pin-aware LRU keyed by a unit's `unit_id`, each
-/// entry owning that unit's `[]ResolvedSlot`. Per-unit keying makes site-id
+/// entry owning that unit's `[]?Resolution`. Per-unit keying makes site-id
 /// aliasing impossible. Eviction frees the slot array, so an entry whose slots are
 /// live on the stack is pinned (re-entrant count); eviction skips pinned entries,
 /// and the new unit runs un-cached if all are pinned.
 pub const ResolutionCache = struct {
     const Node = struct {
         unit_id: u32 = 0,
-        slots: []ResolvedSlot = &.{},
+        slots: []?Resolution = &.{},
         pins: u32 = 0,
         prev: ?usize = null,
         next: ?usize = null,
@@ -175,7 +175,7 @@ pub const ResolutionCache = struct {
         self.map.deinit(self.allocator);
     }
 
-    pub fn enter(self: *ResolutionCache, unit_id: u32, site_count: u32) Allocator.Error!?[]ResolvedSlot {
+    pub fn enter(self: *ResolutionCache, unit_id: u32, site_count: u32) Allocator.Error!?[]?Resolution {
         try self.ensureNodes();
 
         if (self.map.get(unit_id)) |index| {
@@ -191,8 +191,8 @@ pub const ResolutionCache = struct {
             break :blk idx;
         } else (self.evictVictim() orelse return null);
 
-        const slots = try self.allocator.alloc(ResolvedSlot, site_count);
-        @memset(slots, .unresolved);
+        const slots = try self.allocator.alloc(?Resolution, site_count);
+        @memset(slots, null);
         self.nodes[index] = .{ .unit_id = unit_id, .slots = slots, .pins = 1, .active = true };
         self.map.putAssumeCapacity(unit_id, index);
         self.addToFront(index);
@@ -441,13 +441,13 @@ test "cache: generic with simple values" {
     try std.testing.expectEqual(@as(i32, 2), cache.get("two").?);
 }
 
-test "resolution cache: enter allocates unresolved slots, re-enter reuses them" {
+test "resolution cache: enter allocates slots not looked up yet, re-enter reuses them" {
     var cache = ResolutionCache.init(std.testing.allocator, 4);
     defer cache.deinit();
 
     const slots = (try cache.enter(1, 3)).?;
     try std.testing.expectEqual(@as(usize, 3), slots.len);
-    try std.testing.expect(slots[0] == .unresolved);
+    try std.testing.expect(slots[0] == null);
     cache.unpin(1);
 
     const again = (try cache.enter(1, 3)).?;

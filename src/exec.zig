@@ -117,13 +117,17 @@ pub const ThunkBody = union(enum) {
 /// never lowered. Always dispatched dynamically, never memoized.
 pub const NO_SITE: u32 = std.math.maxInt(u32);
 
-/// One memoized resolution of a call site, stored in a registry's resolution cache
-/// (never in the AST). `unresolved` is the default; `dynamic` marks a computed or
-/// not-yet-known name, looked up at runtime.
-pub const ResolvedSlot = union(enum) {
-    unresolved,
-    resolved_op:    Operation,
-    resolved_macro: *const Macro,
+/// What a name in the registry points to.
+pub const Callable = union(enum) {
+    op:    Operation,
+    macro: *const Macro,
+};
+
+/// What a call site's name turned out to be, remembered in a registry's resolution
+/// cache (never in the AST). `dynamic` marks a computed or unknown name, looked up
+/// again on every call. A site that hasn't been looked up yet holds null.
+pub const Resolution = union(enum) {
+    callable: Callable,
     dynamic,
 };
 
@@ -168,7 +172,7 @@ pub const ScopeEntry = union(enum) {
     closure: struct {
         thunk: *const Thunk,
         scope: *const Scope,
-        unit_slots: []ResolvedSlot = &.{},
+        unit_slots: []?Resolution = &.{},
     },
 
     pub fn run(self: ScopeEntry, env: *Env) ExecError!?Value {
@@ -218,7 +222,7 @@ pub const Scope = struct {
         return self.hashed_entries.count() > 0;
     }
 
-    pub fn setEntry(self: *Scope, allocator: Allocator, key: []const u8, thunk: *const Thunk, thunk_scope: *const Scope, unit_slots: []ResolvedSlot) Allocator.Error!void {
+    pub fn setEntry(self: *Scope, allocator: Allocator, key: []const u8, thunk: *const Thunk, thunk_scope: *const Scope, unit_slots: []?Resolution) Allocator.Error!void {
         const entry = try self.getOrPut(allocator, key);
         entry.* = .{ .closure = .{ .thunk = thunk, .scope = thunk_scope, .unit_slots = unit_slots } };
     }
@@ -648,9 +652,9 @@ pub const Registry = struct {
         self.macro_arena.deinit();
     }
 
-    pub fn resolveId(self: *const Registry, name: []const u8) ?ResolvedSlot {
-        if (self.getOperation(name)) |op|    return .{ .resolved_op    = op };
-        if (self.getMacro(name))    |macro|  return .{ .resolved_macro = macro };
+    pub fn resolveId(self: *const Registry, name: []const u8) ?Callable {
+        if (self.getOperation(name)) |op|    return .{ .op    = op };
+        if (self.getMacro(name))    |macro|  return .{ .macro = macro };
         return null;
     }
 };
@@ -789,11 +793,11 @@ pub const Env = struct {
 
     /// Slot array of the unit currently executing; an expression's `site` indexes
     /// it. Empty means dispatch dynamically (un-cached unit or runtime-built site).
-    unit_slots: []ResolvedSlot = &.{},
+    unit_slots: []?Resolution = &.{},
 
     /// What `exitUnit` restores: the previous slots, and whether a pin is held.
     pub const UnitFrame = struct {
-        previous: []ResolvedSlot,
+        previous: []?Resolution,
         unit_id: u32,
         pinned: bool,
     };
@@ -836,16 +840,9 @@ pub const Env = struct {
         if (expression.site >= self.unit_slots.len) return self.dispatchDynamic(expression, scope);
 
         const slot = &self.unit_slots[expression.site];
-        if (slot.* == .unresolved) slot.* = resolveSite(self.registry, expression.name);
-
-        switch (slot.*) {
-            .resolved_op => |operation| {
-                const args = Args{ .items = expression.args, .env = self, .scope = scope };
-                return operation.call(args);
-            },
-            .resolved_macro => |macro| return macro.run(expression.args, self, scope),
-            .dynamic => return self.dispatchDynamic(expression, scope),
-            .unresolved => unreachable, // just resolved above
+        switch (slotResolution(slot, self.registry, expression.name)) {
+            .callable => |callable| return self.call(callable, expression.args, scope),
+            .dynamic  => return self.dispatchDynamic(expression, scope),
         }
     }
 
@@ -858,14 +855,16 @@ pub const Env = struct {
             .float  => |n| return self.failFmt(.type_mismatch, "Expected operation name, got float: {d}", .{n}),
             .list   =>     return self.fail(.type_mismatch, "Expected operation name, got list"),
         };
-        if (self.registry.getOperation(id_string)) |operation| {
-            const args = Args{ .items = expression.args, .env = self, .scope = scope };
-            return operation.call(args);
-        }
-        if (self.registry.getMacro(id_string)) |macro| {
-            return macro.run(expression.args, self, scope);
-        }
-        return self.failFmt(.unknown_op, "Unknown operation or macro: '{s}'", .{id_string});
+        const callable = self.registry.resolveId(id_string) orelse
+            return self.failFmt(.unknown_op, "Unknown operation or macro: '{s}'", .{id_string});
+        return self.call(callable, expression.args, scope);
+    }
+
+    fn call(self: *Env, callable: Callable, arg_thunks: []const *const Thunk, scope: *const Scope) ExecError!?Value {
+        return switch (callable) {
+            .op    => |operation| operation.call(.{ .items = arg_thunks, .env = self, .scope = scope }),
+            .macro => |macro| macro.run(arg_thunks, self, scope),
+        };
     }
 
     pub fn fail(self: *Env, category: ErrorCategory, message: []const u8) error{RuntimeError} {
@@ -913,7 +912,15 @@ pub fn makeExpression(allocator: Allocator, position: Position, id: *const Thunk
 
 // Resolution
 
-fn resolveSite(registry: *const Registry, name: *const Thunk) ResolvedSlot {
+/// The slot's remembered resolution, worked out and remembered the first time.
+fn slotResolution(slot: *?Resolution, registry: *const Registry, name: *const Thunk) Resolution {
+    if (slot.*) |known| return known;
+    const resolution = resolveSite(registry, name);
+    slot.* = resolution;
+    return resolution;
+}
+
+fn resolveSite(registry: *const Registry, name: *const Thunk) Resolution {
     const literal = switch (name.body) {
         .value_literal => |v| v orelse return .dynamic,
         else => return .dynamic,
@@ -922,7 +929,8 @@ fn resolveSite(registry: *const Registry, name: *const Thunk) ResolvedSlot {
         .string => |s| s,
         else => return .dynamic,
     };
-    return registry.resolveId(id) orelse .dynamic;
+    const callable = registry.resolveId(id) orelse return .dynamic;
+    return .{ .callable = callable };
 }
 
 // Tests

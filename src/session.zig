@@ -277,6 +277,80 @@ test "session: multiple executions reuse cache" {
     try std.testing.expectEqual(@as(usize, 1), session.expression_cache.count());
 }
 
+test "session: a worked-out op or macro name calls the same thing as a written one, run after run" {
+    var session = try Session.init(std.testing.allocator, .{
+        .io = std.Io.failing,
+        .fragments = &.{&builtins.registerAll},
+    });
+    defer session.deinit();
+
+    const cases = [_]struct { source: []const u8, expected: i64 }{
+        .{ .source = "let op \"+\" (:op 1 2)",     .expected = 3 },
+        .{ .source = "let m \"square\" (:m 4)",    .expected = 16 },
+        .{ .source = "(concat \"sq\" \"uare\") 5", .expected = 25 },
+    };
+    for (0..2) |_| {
+        for (cases) |case| {
+            const result = try session.execute(case.source);
+            switch (result) {
+                .ok             => |maybe_value| try std.testing.expectEqual(case.expected, maybe_value.?.int),
+                .validation_err => return error.TestUnexpectedResult,
+                .runtime_err    => return error.TestUnexpectedResult,
+            }
+        }
+    }
+}
+
+test "session: a remembered op or macro call gives the right answer on every pass of a loop" {
+    var session = try Session.init(std.testing.allocator, .{
+        .io = std.Io.failing,
+        .fragments = &.{&builtins.registerAll},
+    });
+    defer session.deinit();
+
+    const cases = [_]struct { source: []const u8, expected: [3]i64 }{
+        .{ .source = "map x [1 2 3] (+ :x 1)",    .expected = .{ 2, 3, 4 } },
+        .{ .source = "map x [1 2 3] (square :x)", .expected = .{ 1, 4, 9 } },
+    };
+    for (0..2) |_| {
+        for (cases) |case| {
+            const result = try session.execute(case.source);
+            switch (result) {
+                .ok => |maybe_value| {
+                    const items = maybe_value.?.list;
+                    try std.testing.expectEqual(@as(usize, 3), items.len);
+                    for (case.expected, items) |expected, item| try std.testing.expectEqual(expected, item.?.int);
+                },
+                .validation_err => return error.TestUnexpectedResult,
+                .runtime_err    => return error.TestUnexpectedResult,
+            }
+        }
+    }
+}
+
+test "session: an unknown name, written or worked out, is an error naming it, run after run" {
+    var session = try Session.init(std.testing.allocator, .{
+        .io = std.Io.failing,
+        .fragments = &.{&builtins.registerAll},
+    });
+    defer session.deinit();
+
+    const cases = [_]struct { source: []const u8, message: []const u8 }{
+        .{ .source = "nosuchop 1",                .message = "Unknown operation or macro: 'nosuchop'" },
+        .{ .source = "let op \"nosuch\" (:op 1)", .message = "Unknown operation or macro: 'nosuch'" },
+    };
+    for (0..2) |_| {
+        for (cases) |case| {
+            const result = try session.execute(case.source);
+            switch (result) {
+                .runtime_err    => |runtime_error| try std.testing.expectEqualStrings(case.message, runtime_error.message),
+                .ok             => return error.TestUnexpectedResult,
+                .validation_err => return error.TestUnexpectedResult,
+            }
+        }
+    }
+}
+
 test "session: runtime error does not break subsequent executions" {
     var session = try Session.init(std.testing.allocator, .{
         .io = std.Io.failing,
