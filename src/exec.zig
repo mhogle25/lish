@@ -424,8 +424,7 @@ pub const Signature = struct {
 };
 
 pub const Operation = struct {
-    context: ?*anyopaque,
-    callFn: *const fn (?*anyopaque, Args) ExecError!?Value,
+    function: Function,
     signature: Signature,
     description: []const u8,
 
@@ -446,19 +445,27 @@ pub const Operation = struct {
         description: []const u8,
     };
 
+    /// A plain op is just its function; a bound op also carries the host data
+    /// its function needs (e.g. the REPL's config), always present.
+    pub const Function = union(enum) {
+        plain: *const fn (Args) ExecError!?Value,
+        bound: struct {
+            context: *anyopaque,
+            call:    *const fn (*anyopaque, Args) ExecError!?Value,
+        },
+    };
+
     pub fn call(self: Operation, args: Args) ExecError!?Value {
-        return self.callFn(self.context, args);
+        return switch (self.function) {
+            .plain => |function| function(args),
+            .bound => |bound| bound.call(bound.context, args),
+        };
     }
 
     pub fn fromFn(comptime func: fn (Args) ExecError!?Value, meta: Meta) Operation {
         return .{
-            .context = null,
-            .callFn = struct {
-                fn call(_: ?*anyopaque, args: Args) ExecError!?Value {
-                    return func(args);
-                }
-            }.call,
-            .signature = meta.signature,
+            .function    = .{ .plain = func },
+            .signature   = meta.signature,
             .description = meta.description,
         };
     }
@@ -470,14 +477,16 @@ pub const Operation = struct {
         meta: Meta,
     ) Operation {
         return .{
-            .context = context,
-            .callFn = struct {
-                fn call(ctx: ?*anyopaque, args: Args) ExecError!?Value {
-                    const typed: *Context = @ptrCast(@alignCast(ctx.?));
-                    return func(typed, args);
-                }
-            }.call,
-            .signature = meta.signature,
+            .function = .{ .bound = .{
+                .context = context,
+                .call    = struct {
+                    fn call(untyped: *anyopaque, args: Args) ExecError!?Value {
+                        const typed: *Context = @ptrCast(@alignCast(untyped));
+                        return func(typed, args);
+                    }
+                }.call,
+            } },
+            .signature   = meta.signature,
             .description = meta.description,
         };
     }
@@ -1374,6 +1383,48 @@ fn testAddOp(args: Args) ExecError!?Value {
     const left = try args.at(0).resolveInt();
     const right = try args.at(1).resolveInt();
     return .{ .int = left + right };
+}
+
+const TestCounter = struct {
+    count: i64,
+
+    fn init() TestCounter {
+        return .{ .count = 0 };
+    }
+};
+
+fn testCountOp(counter: *TestCounter, _: Args) ExecError!?Value {
+    counter.count += 1;
+    return .{ .int = counter.count };
+}
+
+test "a bound op gets its own host data, and ops bound to different data don't mix them up" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var first_counter = TestCounter.init();
+    var second_counter = TestCounter.init();
+    const meta: Operation.Meta = .{ .signature = .{ .returns = .int }, .description = "Test op: count calls." };
+
+    var registry = Registry.init(alloc);
+    try registry.registerOperation(alloc, "count-first", Operation.fromBoundFn(TestCounter, testCountOp, &first_counter, meta));
+    try registry.registerOperation(alloc, "count-second", Operation.fromBoundFn(TestCounter, testCountOp, &second_counter, meta));
+
+    var env = Env{ .registry = &registry, .allocator = alloc };
+    const scope = Scope.EMPTY;
+
+    const first_name = try makeValueLiteral(alloc, Position.synthetic, .{ .string = "count-first" });
+    const second_name = try makeValueLiteral(alloc, Position.synthetic, .{ .string = "count-second" });
+    const count_first = try makeExpression(alloc, Position.synthetic, first_name, &.{});
+    const count_second = try makeExpression(alloc, Position.synthetic, second_name, &.{});
+
+    try std.testing.expectEqual(@as(i64, 1), (try count_first.proc(&env, &scope)).?.int);
+    try std.testing.expectEqual(@as(i64, 2), (try count_first.proc(&env, &scope)).?.int);
+    try std.testing.expectEqual(@as(i64, 1), (try count_second.proc(&env, &scope)).?.int);
+
+    try std.testing.expectEqual(@as(i64, 2), first_counter.count);
+    try std.testing.expectEqual(@as(i64, 1), second_counter.count);
 }
 
 fn makeTestMacro(allocator: Allocator, id: []const u8, parameters: []const MacroParameter) Allocator.Error!*Macro {
