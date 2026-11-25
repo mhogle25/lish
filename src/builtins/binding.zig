@@ -1,6 +1,7 @@
 const std = @import("std");
 const exec = @import("../exec.zig");
 const val = @import("../value.zig");
+const helpers = @import("helpers.zig");
 
 const Value = val.Value;
 const Args = exec.Args;
@@ -84,30 +85,26 @@ fn unpackOp(args: Args) ExecError!?Value {
     }
 
     const source_index = count - 2;
-    const body_index = count - 1;
+    const body_index   = count - 1;
+    const name_count   = source_index;
 
     var extended_scope = exec.Scope{ .parent = args.scope };
     defer extended_scope.deinit(args.env.allocator);
 
     const source = (try args.items[source_index].proc(args.env, &extended_scope)) orelse
         return args.env.fail(.type_mismatch, "'unpack' expects a list or string, got none");
-    const len: usize = switch (source) {
-        .list => |xs| xs.len,
-        .string => |s| s.len,
-        else => return args.env.failFmt(.type_mismatch, "'unpack' expects a list or string, got {s}", .{source.typeName()}),
+    const items: []const ?Value = switch (source) {
+        .list   => |list| list,
+        .string => |text| try helpers.lettersOf(args.env.allocator, text[0..@min(text.len, name_count)]),
+        else    => return args.env.failFmt(.type_mismatch, "'unpack' expects a list or string, got {s}", .{source.typeName()}),
     };
 
     var name_buf: [256]u8 = undefined;
     var i: usize = 0;
-    while (i < source_index) : (i += 1) {
+    while (i < name_count) : (i += 1) {
         const raw_name = try args.at(i).resolveString(&name_buf);
         const name = try args.env.allocator.dupe(u8, raw_name);
-        const value: ?Value = if (i < len) switch (source) {
-            .list => |xs| xs[i],
-            .string => |s| .{ .string = s[i .. i + 1] },
-            else => unreachable,
-        } else null;
-        try extended_scope.setValue(args.env.allocator, name, value);
+        try extended_scope.setValue(args.env.allocator, name, if (i < items.len) items[i] else null);
     }
 
     return args.items[body_index].proc(args.env, &extended_scope);
@@ -436,6 +433,13 @@ test "unpack: a name past the source length is none" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const result = try testing.evalWithBuiltins(arena.allocator(), "unpack a b c (list 1 2) :c");
+    try std.testing.expect(result == null);
+}
+
+test "unpack: a name past a string's length is none" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try testing.evalWithBuiltins(arena.allocator(), "unpack a b c \"hi\" :c");
     try std.testing.expect(result == null);
 }
 

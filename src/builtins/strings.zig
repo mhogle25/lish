@@ -169,14 +169,8 @@ fn charsOp(args: Args) ExecError!?Value {
     if (value != .string) return args.env.failFmt(.type_mismatch, "'chars' expects a string, got {s}", .{value.typeName()});
     const string = value.string;
 
-    const alloc = args.env.allocator;
-    var parts = std.ArrayList(?Value).empty;
-    for (0..string.len) |i| {
-        try helpers.checkListLength(args.env, parts.items.len + 1);
-        const char = try alloc.dupe(u8, string[i .. i + 1]);
-        try parts.append(alloc, .{ .string = char });
-    }
-    return .{ .list = parts.items };
+    try helpers.checkListLength(args.env, string.len);
+    return .{ .list = try helpers.lettersOf(args.env.allocator, string) };
 }
 
 fn linesOp(args: Args) ExecError!?Value {

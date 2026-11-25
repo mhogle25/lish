@@ -25,6 +25,14 @@ pub fn checkListLength(env: *Env, n: usize) ExecError!void {
     }
 }
 
+pub fn lettersOf(allocator: std.mem.Allocator, text: []const u8) std.mem.Allocator.Error![]?Value {
+    const letters = try allocator.alloc(?Value, text.len);
+    for (letters, 0..) |*letter, i| {
+        letter.* = .{ .string = try allocator.dupe(u8, text[i .. i + 1]) };
+    }
+    return letters;
+}
+
 pub fn checkStringLength(env: *Env, n: usize) ExecError!void {
     if (env.bounds.max_string_length) |limit| {
         if (n > limit) {
