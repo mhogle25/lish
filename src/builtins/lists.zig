@@ -437,8 +437,9 @@ fn sortbyOp(args: Args) ExecError!?Value {
     const alloc = args.env.allocator;
 
     const keys = try alloc.alloc(?Value, list.len);
+    const item_entry = try sort_scope.getOrPut(alloc, name);
     for (list, 0..) |item, i| {
-        try sort_scope.setValue(alloc, name, item);
+        item_entry.* = .{ .value = item };
         keys[i] = try body.proc(args.env, &sort_scope);
     }
 
@@ -460,8 +461,8 @@ fn sortbyOp(args: Args) ExecError!?Value {
 const SortWithContext = struct {
     env:        *exec.Env,
     scope:      *exec.Scope,
-    a_name:     []const u8,
-    b_name:     []const u8,
+    a_entry:    *exec.ScopeEntry,
+    b_entry:    *exec.ScopeEntry,
     body:       *const Thunk,
     sticky_err: ?ExecError,
 };
@@ -469,14 +470,8 @@ const SortWithContext = struct {
 fn sortwithLessThan(ctx: *SortWithContext, left: ?Value, right: ?Value) bool {
     if (ctx.sticky_err != null) return false;
 
-    ctx.scope.setValue(ctx.env.allocator, ctx.a_name, left) catch |err| {
-        ctx.sticky_err = err;
-        return false;
-    };
-    ctx.scope.setValue(ctx.env.allocator, ctx.b_name, right) catch |err| {
-        ctx.sticky_err = err;
-        return false;
-    };
+    ctx.a_entry.* = .{ .value = left };
+    ctx.b_entry.* = .{ .value = right };
 
     const result = ctx.body.proc(ctx.env, ctx.scope) catch |err| {
         ctx.sticky_err = err;
@@ -506,12 +501,17 @@ fn sortwithOp(args: Args) ExecError!?Value {
     const list = try args.at(2).resolveList();
     try helpers.checkListLength(args.env, list.len);
 
+    try sort_scope.setValue(args.env.allocator, a_name, null);
+    try sort_scope.setValue(args.env.allocator, b_name, null);
+    const a_entry = try sort_scope.getOrPut(args.env.allocator, a_name);
+    const b_entry = try sort_scope.getOrPut(args.env.allocator, b_name);
+
     const sorted = try args.env.allocator.dupe(?Value, list);
     var ctx = SortWithContext{
         .env        = args.env,
         .scope      = &sort_scope,
-        .a_name     = a_name,
-        .b_name     = b_name,
+        .a_entry    = a_entry,
+        .b_entry    = b_entry,
         .body       = args.items[3],
         .sticky_err = null,
     };
@@ -553,8 +553,9 @@ fn fillbyOp(args: Args) ExecError!?Value {
     try helpers.checkListLength(args.env, @intCast(n));
     const body  = args.items[2];
     const items = try alloc.alloc(?Value, @intCast(n));
+    const index_entry = try iter_scope.getOrPut(alloc, name);
     for (items, 0..) |*slot, idx| {
-        try iter_scope.setValue(alloc, name, .{ .int = @intCast(idx) });
+        index_entry.* = .{ .value = .{ .int = @intCast(idx) } };
         slot.* = try body.proc(args.env, &iter_scope);
     }
     return .{ .list = items };

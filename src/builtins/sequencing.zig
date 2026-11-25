@@ -60,9 +60,10 @@ fn loopOp(args: Args) ExecError!?Value {
     if (n < 0) return args.env.fail(.invalid_argument, "'loop' count cannot be negative");
 
     const body = args.items[2];
+    const index_entry = try iter_scope.getOrPut(args.env.allocator, name);
     var i: i64 = 0;
     while (i < n) : (i += 1) {
-        try iter_scope.setValue(args.env.allocator, name, .{ .int = i });
+        index_entry.* = .{ .value = .{ .int = i } };
         _ = try body.proc(args.env, &iter_scope);
     }
     return null;

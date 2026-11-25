@@ -127,10 +127,11 @@ fn pipeOp(args: Args) ExecError!?Value {
     const name     = try args.env.allocator.dupe(u8, raw_name);
 
     var current = try args.items[1].proc(args.env, &pipe_scope);
+    const current_entry = try pipe_scope.getOrPut(args.env.allocator, name);
 
     var i: usize = 2;
     while (i < count) : (i += 1) {
-        try pipe_scope.setValue(args.env.allocator, name, current);
+        current_entry.* = .{ .value = current };
         current = try args.items[i].proc(args.env, &pipe_scope);
     }
 
@@ -359,6 +360,13 @@ test "pipe: inner pipe sees outer binding" {
     const result = try testing.evalWithBuiltins(arena.allocator(),
         "pipe a 7 (pipe b 3 (+ :a :b))");
     try std.testing.expectEqual(@as(i64, 10), result.?.int);
+}
+
+test "pipe: the initial value sees an outer binding of the same name" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try testing.evalWithBuiltins(arena.allocator(), "let x 5 (pipe x :x (+ :x 1))");
+    try std.testing.expectEqual(@as(i64, 6), result.?.int);
 }
 
 test "pipe: too few args fails" {

@@ -76,8 +76,9 @@ fn mapOp(args: Args) ExecError!?Value {
     const body = args.items[2];
 
     const results = try args.env.allocator.alloc(?Value, list.len);
+    const item_entry = try iter_scope.getOrPut(args.env.allocator, name);
     for (list, 0..) |item, i| {
-        try iter_scope.setValue(args.env.allocator, name, item);
+        item_entry.* = .{ .value = item };
         results[i] = try body.proc(args.env, &iter_scope);
     }
     return .{ .list = results };
@@ -96,8 +97,9 @@ fn forOp(args: Args) ExecError!?Value {
     const list = try args.at(1).resolveList();
     const body = args.items[2];
 
+    const item_entry = try iter_scope.getOrPut(args.env.allocator, name);
     for (list) |item| {
-        try iter_scope.setValue(args.env.allocator, name, item);
+        item_entry.* = .{ .value = item };
         _ = try body.proc(args.env, &iter_scope);
     }
     return null;
@@ -117,8 +119,9 @@ fn filterOp(args: Args) ExecError!?Value {
     const predicate = args.items[2];
 
     var results = std.ArrayList(?Value).empty;
+    const item_entry = try iter_scope.getOrPut(args.env.allocator, name);
     for (list) |item| {
-        try iter_scope.setValue(args.env.allocator, name, item);
+        item_entry.* = .{ .value = item };
         const result = try predicate.proc(args.env, &iter_scope);
         if (result != null) {
             try helpers.checkListLength(args.env, results.items.len + 1);
@@ -145,9 +148,14 @@ fn reduceOp(args: Args) ExecError!?Value {
     const list = try args.at(3).resolveList();
     const body = args.items[4];
 
+    try iter_scope.setValue(args.env.allocator, acc_name,  null);
+    try iter_scope.setValue(args.env.allocator, item_name, null);
+    const acc_entry  = try iter_scope.getOrPut(args.env.allocator, acc_name);
+    const item_entry = try iter_scope.getOrPut(args.env.allocator, item_name);
+
     for (list) |item| {
-        try iter_scope.setValue(args.env.allocator, acc_name,  accumulator);
-        try iter_scope.setValue(args.env.allocator, item_name, item);
+        acc_entry.*  = .{ .value = accumulator };
+        item_entry.* = .{ .value = item };
         accumulator = try body.proc(args.env, &iter_scope);
     }
     return accumulator;
@@ -170,10 +178,15 @@ fn foldOp(args: Args) ExecError!?Value {
     const n = try args.at(3).resolveInt();
     const body = args.items[4];
 
+    try iter_scope.setValue(args.env.allocator, acc_name,  null);
+    try iter_scope.setValue(args.env.allocator, item_name, null);
+    const acc_entry  = try iter_scope.getOrPut(args.env.allocator, acc_name);
+    const item_entry = try iter_scope.getOrPut(args.env.allocator, item_name);
+
     var i: i64 = 0;
     while (i < n) : (i += 1) {
-        try iter_scope.setValue(args.env.allocator, acc_name,  accumulator);
-        try iter_scope.setValue(args.env.allocator, item_name, .{ .int = i });
+        acc_entry.*  = .{ .value = accumulator };
+        item_entry.* = .{ .value = .{ .int = i } };
         accumulator = try body.proc(args.env, &iter_scope);
     }
     return accumulator;
@@ -192,8 +205,9 @@ fn anyOp(args: Args) ExecError!?Value {
     const list      = try args.at(1).resolveList();
     const predicate = args.items[2];
 
+    const item_entry = try iter_scope.getOrPut(args.env.allocator, name);
     for (list) |item| {
-        try iter_scope.setValue(args.env.allocator, name, item);
+        item_entry.* = .{ .value = item };
         const result = try predicate.proc(args.env, &iter_scope);
         if (result != null) return val.some();
     }
@@ -213,8 +227,9 @@ fn allOp(args: Args) ExecError!?Value {
     const list      = try args.at(1).resolveList();
     const predicate = args.items[2];
 
+    const item_entry = try iter_scope.getOrPut(args.env.allocator, name);
     for (list) |item| {
-        try iter_scope.setValue(args.env.allocator, name, item);
+        item_entry.* = .{ .value = item };
         const result = try predicate.proc(args.env, &iter_scope);
         if (result == null) return null;
     }
@@ -235,8 +250,9 @@ fn countOp(args: Args) ExecError!?Value {
     const predicate = args.items[2];
 
     var tally: i64 = 0;
+    const item_entry = try iter_scope.getOrPut(args.env.allocator, name);
     for (list) |item| {
-        try iter_scope.setValue(args.env.allocator, name, item);
+        item_entry.* = .{ .value = item };
         const result = try predicate.proc(args.env, &iter_scope);
         if (result != null) tally += 1;
     }
@@ -255,8 +271,9 @@ fn findbyOp(args: Args) ExecError!?Value {
 
     const list = try args.at(1).resolveList();
 
+    const item_entry = try find_scope.getOrPut(args.env.allocator, name);
     for (list) |item| {
-        try find_scope.setValue(args.env.allocator, name, item);
+        item_entry.* = .{ .value = item };
         const matched = try args.items[2].proc(args.env, &find_scope);
         if (matched != null) return item;
     }
@@ -323,6 +340,20 @@ test "higher-order: fold with the same name for both binds the index" {
     defer arena.deinit();
     const result = try testing.evalWithBuiltins(arena.allocator(), "fold x 100 x 3 :x");
     try std.testing.expectEqual(@as(i64, 2), result.?.int);
+}
+
+test "higher-order: reduce's initial value sees an outer binding of the accumulator name" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try testing.evalWithBuiltins(arena.allocator(), "let acc 10 (reduce acc :acc x [1 2] (+ :acc :x))");
+    try std.testing.expectEqual(@as(i64, 13), result.?.int);
+}
+
+test "higher-order: fold's initial value sees an outer binding of the accumulator name" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try testing.evalWithBuiltins(arena.allocator(), "let acc 10 (fold acc :acc x 3 (+ :acc :x))");
+    try std.testing.expectEqual(@as(i64, 13), result.?.int);
 }
 
 test "higher-order: fold counts without a list" {
