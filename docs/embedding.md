@@ -66,7 +66,7 @@ var session = try lish.Session.init(allocator, .{
     .fragments = &.{&lish.builtins.registerAll},
     // Load all .lishmacro files from these directories at init time
     .macro_paths = &.{"macros/"},
-    // LRU cache capacity for parsed expressions (default: 256)
+    // LRU cache capacity for parsed expressions (default: 256, 0 disables it)
     .expression_cache_capacity = 512,
     .stdout = lish.session.fdWriter(std.posix.STDOUT_FILENO),
     .stderr = lish.session.fdWriter(std.posix.STDERR_FILENO),

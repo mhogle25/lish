@@ -27,7 +27,6 @@ pub fn LruCache(comptime V: type) type {
         allocator: Allocator,
 
         pub fn init(allocator: Allocator, capacity: usize) Allocator.Error!Self {
-            std.debug.assert(capacity > 0);
             const nodes = try allocator.alloc(Node, capacity);
             @memset(nodes, Node{});
             return .{
@@ -55,6 +54,8 @@ pub fn LruCache(comptime V: type) type {
         }
 
         pub fn put(self: *Self, key: []const u8, value: V) Allocator.Error!void {
+            if (self.capacity == 0) return;
+
             if (self.map.get(key)) |index| {
                 self.nodes[index].value = value;
                 self.moveToFront(index);
@@ -66,7 +67,7 @@ pub fn LruCache(comptime V: type) type {
                 self.len += 1;
                 break :blk idx;
             } else blk: {
-                const tail_idx = self.tail.?;
+                const tail_idx = self.tail orelse std.debug.panic("LruCache is full ({d} entries) but its list has no tail", .{self.len});
                 _ = self.map.remove(self.nodes[tail_idx].key);
                 self.allocator.free(self.nodes[tail_idx].key);
                 self.removeFromList(tail_idx);
@@ -163,7 +164,6 @@ pub const ResolutionCache = struct {
     allocator: Allocator,
 
     pub fn init(allocator: Allocator, capacity: usize) ResolutionCache {
-        std.debug.assert(capacity > 0);
         return .{ .capacity = capacity, .allocator = allocator };
     }
 
@@ -470,6 +470,31 @@ test "resolution cache: a pinned entry is never evicted" {
     const s1b = (try cache.enter(1, 1)).?;
     try std.testing.expectEqual(s1.ptr, s1b.ptr);
     cache.unpin(1);
+}
+
+test "cache: capacity 0 disables caching" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var cache = try ExpressionCache.init(std.testing.allocator, 0);
+    defer cache.deinit();
+
+    const expression = try parseAndValidate(alloc, "+ 1 2");
+    try cache.put("+ 1 2", expression);
+    try cache.put("+ 1 2", expression);
+
+    try std.testing.expect(cache.get("+ 1 2") == null);
+    try std.testing.expectEqual(@as(usize, 0), cache.count());
+}
+
+test "resolution cache: capacity 0 runs every unit un-cached" {
+    var cache = ResolutionCache.init(std.testing.allocator, 0);
+    defer cache.deinit();
+
+    try std.testing.expect((try cache.enter(1, 3)) == null);
+    try std.testing.expect((try cache.enter(1, 3)) == null);
+    try std.testing.expectEqual(@as(usize, 0), cache.count());
 }
 
 test "resolution cache: runs un-cached when every entry is pinned" {

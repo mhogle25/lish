@@ -35,9 +35,10 @@ pub const SessionConfig = struct {
     io: std.Io,
     fragments: []const RegistryFragment = &.{},
     macro_paths: []const []const u8 = &.{},
+    /// Parsed inputs kept for reuse; 0 disables the cache.
     expression_cache_capacity: usize = 256,
     /// Capacity (in units) of the registry's resolution cache. Size it above the
-    /// distinct units a single evaluation keeps on the stack at once.
+    /// distinct units a single evaluation keeps on the stack at once; 0 disables it.
     resolution_cache_capacity: usize = exec_mod.DEFAULT_RESOLUTION_CAPACITY,
     stdout: ?*std.Io.Writer = null,
     stderr: ?*std.Io.Writer = null,
@@ -213,6 +214,26 @@ fn initReentrantSession() !Session {
     try session.registry.registerOperation(std.testing.allocator, "reenter-reporting", exec_mod.Operation.fromFn(reenterReportingOp, reentry_meta));
     try session.registry.registerOperation(std.testing.allocator, "reenter-with-scope", exec_mod.Operation.fromFn(reenterWithScopeOp, reentry_meta));
     return session;
+}
+
+test "session: both caches at capacity 0 still execute correctly, repeatedly" {
+    var session = try Session.init(std.testing.allocator, .{
+        .io = std.Io.failing,
+        .fragments = &.{&builtins.registerAll},
+        .expression_cache_capacity = 0,
+        .resolution_cache_capacity = 0,
+    });
+    defer session.deinit();
+
+    for (0..2) |_| {
+        const result = try session.execute("+ 1 2");
+        switch (result) {
+            .ok             => |maybe_value| try std.testing.expectEqual(@as(i64, 3), maybe_value.?.int),
+            .validation_err => return error.TestUnexpectedResult,
+            .runtime_err    => return error.TestUnexpectedResult,
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 0), session.expression_cache.count());
 }
 
 test "session: basic execute" {
