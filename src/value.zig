@@ -4,6 +4,12 @@ const tok = @import("token.zig");
 /// Nesting depth at which format stops descending and emits `[ ... ]`.
 pub const MAX_DISPLAY_DEPTH: usize = 1000;
 
+/// What format writes in place of a list nested past MAX_DISPLAY_DEPTH.
+const TRUNCATED_LIST_SOURCE = std.fmt.comptimePrint("{c} ... {c}", .{ tok.LIST_OPEN, tok.LIST_CLOSE });
+
+/// The printer's choice of gap between list items; when reading, any whitespace works.
+const LIST_ITEM_SEPARATOR = ' ';
+
 /// The core value type for the shell language.
 /// Represents one of four types: string, integer, float, or list.
 pub const Value = union(enum) {
@@ -60,76 +66,17 @@ pub const Value = union(enum) {
         };
     }
 
-    fn writeSourceDepth(self: Value, writer: *std.Io.Writer, depth: usize) std.Io.Writer.Error!void {
-        switch (self) {
-            .string, .int, .float => try writeScalarSource(writer, self),
-            .list => |items| {
-                if (depth >= MAX_DISPLAY_DEPTH) {
-                    try writer.writeAll("[ ... ]");
-                    return;
-                }
-
-                try writer.writeByte(tok.LIST_OPEN);
-                for (items, 0..) |item, i| {
-                    if (i > 0) try writer.writeByte(' ');
-
-                    if (item) |inner_val| {
-                        try inner_val.writeSourceDepth(writer, depth + 1);
-                    } else {
-                        try writeNoneSource(writer);
-                    }
-                }
-                try writer.writeByte(tok.LIST_CLOSE);
-            },
-        }
-    }
-
     pub fn sourceText(self: Value, allocator: std.mem.Allocator, max_length: ?usize) error{ OutOfMemory, StringTooLarge }![]const u8 {
         var out = std.Io.Writer.Allocating.init(allocator);
         errdefer out.deinit();
-        const writer = &out.writer;
 
-        switch (self) {
-            .list => {},
-            else => {
-                writeScalarSource(writer, self) catch return error.OutOfMemory;
-                try checkSourceLength(out.written().len, max_length);
-                return out.toOwnedSlice();
-            },
-        }
+        var mode = SourceTextMode.init(allocator, &out, max_length);
+        defer mode.deinit();
 
-        var stack = std.ArrayList(SourceFrame).empty;
-        defer stack.deinit(allocator);
-        writer.writeByte(tok.LIST_OPEN) catch return error.OutOfMemory;
-        try stack.append(allocator, .{ .items = self.list });
-
-        while (stack.items.len > 0) {
-            const frame = &stack.items[stack.items.len - 1];
-            if (frame.index >= frame.items.len) {
-                writer.writeByte(tok.LIST_CLOSE) catch return error.OutOfMemory;
-                _ = stack.pop();
-                try checkSourceLength(out.written().len, max_length);
-                continue;
-            }
-
-            if (frame.index > 0) writer.writeByte(' ') catch return error.OutOfMemory;
-            const item = frame.items[frame.index];
-            frame.index += 1;
-
-            if (item) |inner| {
-                switch (inner) {
-                    .list => |items| {
-                        writer.writeByte(tok.LIST_OPEN) catch return error.OutOfMemory;
-                        try stack.append(allocator, .{ .items = items });
-                    },
-                    else => writeScalarSource(writer, inner) catch return error.OutOfMemory,
-                }
-            } else {
-                writeNoneSource(writer) catch return error.OutOfMemory;
-            }
-            try checkSourceLength(out.written().len, max_length);
-        }
-
+        writeSource(SourceTextMode, &mode, self, &out.writer) catch |err| switch (err) {
+            error.WriteFailed, error.OutOfMemory => return error.OutOfMemory,
+            error.StringTooLarge                 => return error.StringTooLarge,
+        };
         return out.toOwnedSlice();
     }
 
@@ -200,7 +147,8 @@ pub const Value = union(enum) {
     }
 
     pub fn format(self: Value, writer: *std.Io.Writer) std.Io.Writer.Error!void {
-        return self.writeSourceDepth(writer, 0);
+        var mode = FormatMode.init();
+        return writeSource(FormatMode, &mode, self, writer);
     }
 };
 
@@ -210,12 +158,40 @@ pub fn optionalEql(lhs: ?Value, rhs: ?Value, allocator: std.mem.Allocator) std.m
     return left.eql(right, allocator);
 }
 
-fn writeScalarSource(writer: *std.Io.Writer, value: Value) std.Io.Writer.Error!void {
+fn writeSource(comptime Mode: type, mode: *Mode, value: Value, writer: *std.Io.Writer) Mode.Error!void {
+    try writeValue(Mode, mode, value, writer);
+    try mode.checkLength();
+
+    while (mode.top()) |frame| {
+        if (frame.index == frame.items.len) {
+            try writer.writeByte(tok.LIST_CLOSE);
+            mode.pop();
+            try mode.checkLength();
+            continue;
+        }
+
+        if (frame.index > 0) try writer.writeByte(LIST_ITEM_SEPARATOR);
+        const item = frame.items[frame.index];
+        frame.index += 1;
+
+        if (item) |inner| {
+            try writeValue(Mode, mode, inner, writer);
+        } else {
+            try writer.writeAll(NONE_SOURCE);
+        }
+        try mode.checkLength();
+    }
+}
+
+fn writeValue(comptime Mode: type, mode: *Mode, value: Value, writer: *std.Io.Writer) Mode.Error!void {
     switch (value) {
-        .string => |str| try writeQuotedString(writer, str),
-        .int    => |int_val| try writer.print("{d}", .{int_val}),
-        .float  => |float_val| try writer.print("{d}", .{float_val}),
-        .list   => unreachable,
+        .string => |text| try writeQuotedString(writer, text),
+        .int    => |number| try writer.print("{d}", .{number}),
+        .float  => |number| try writer.print("{d}", .{number}),
+        .list   => |items| {
+            if (!try mode.enter(items)) return writer.writeAll(TRUNCATED_LIST_SOURCE);
+            try writer.writeByte(tok.LIST_OPEN);
+        },
     }
 }
 
@@ -234,19 +210,74 @@ fn writeQuotedString(writer: *std.Io.Writer, s: []const u8) std.Io.Writer.Error!
     try writer.writeByte(tok.QUOTE_DOUBLE);
 }
 
-fn writeNoneSource(writer: *std.Io.Writer) std.Io.Writer.Error!void {
-    try writer.writeAll(NONE_SOURCE);
-}
-
-fn checkSourceLength(length: usize, max_length: ?usize) error{StringTooLarge}!void {
-    if (max_length) |limit| {
-        if (length > limit) return error.StringTooLarge;
-    }
-}
-
 const SourceFrame = struct {
     items: []const ?Value,
     index: usize = 0,
+};
+
+const FormatMode = struct {
+    const Error = std.Io.Writer.Error;
+
+    frames: [MAX_DISPLAY_DEPTH]SourceFrame = undefined,
+    len:    usize                          = 0,
+
+    fn init() FormatMode {
+        return .{};
+    }
+
+    fn enter(self: *FormatMode, items: []const ?Value) Error!bool {
+        if (self.len == self.frames.len) return false;
+        self.frames[self.len] = .{ .items = items };
+        self.len += 1;
+        return true;
+    }
+
+    fn top(self: *FormatMode) ?*SourceFrame {
+        if (self.len == 0) return null;
+        return &self.frames[self.len - 1];
+    }
+
+    fn pop(self: *FormatMode) void {
+        self.len -= 1;
+    }
+
+    fn checkLength(_: *FormatMode) Error!void {}
+};
+
+const SourceTextMode = struct {
+    const Error = std.Io.Writer.Error || error{ OutOfMemory, StringTooLarge };
+
+    frames:     std.ArrayList(SourceFrame) = .empty,
+    allocator:  std.mem.Allocator,
+    out:        *std.Io.Writer.Allocating,
+    max_length: ?usize,
+
+    fn init(allocator: std.mem.Allocator, out: *std.Io.Writer.Allocating, max_length: ?usize) SourceTextMode {
+        return .{ .allocator = allocator, .out = out, .max_length = max_length };
+    }
+
+    fn deinit(self: *SourceTextMode) void {
+        self.frames.deinit(self.allocator);
+    }
+
+    fn enter(self: *SourceTextMode, items: []const ?Value) Error!bool {
+        try self.frames.append(self.allocator, .{ .items = items });
+        return true;
+    }
+
+    fn top(self: *SourceTextMode) ?*SourceFrame {
+        if (self.frames.items.len == 0) return null;
+        return &self.frames.items[self.frames.items.len - 1];
+    }
+
+    fn pop(self: *SourceTextMode) void {
+        self.frames.shrinkRetainingCapacity(self.frames.items.len - 1);
+    }
+
+    fn checkLength(self: *SourceTextMode) Error!void {
+        const limit = self.max_length orelse return;
+        if (self.out.written().len > limit) return error.StringTooLarge;
+    }
 };
 
 /// One shallow eql step: scalars settle; equal-length lists need their elements walked.
@@ -557,4 +588,38 @@ test "value: sourceText matches format and is depth-unbounded" {
     try std.testing.expectEqual(@as(u8, '7'), text[100_000]);
 
     try std.testing.expectError(error.StringTooLarge, deep.sourceText(alloc, 10));
+}
+
+test "value: sourceText enforces the length limit partway through a nested list" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const left  = [_]?Value{ .{ .int = 1 }, .{ .int = 2 } };
+    const right = [_]?Value{ .{ .int = 3 }, .{ .int = 4 } };
+    const outer = [_]?Value{ .{ .list = &left }, .{ .list = &right } };
+    const value: Value = .{ .list = &outer };
+
+    const expected = "[[1 2] [3 4]]";
+    try std.testing.expectEqualStrings(expected, try value.sourceText(alloc, expected.len));
+    try std.testing.expectError(error.StringTooLarge, value.sourceText(alloc, expected.len - 1));
+
+    var buf: [64]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    try value.format(&writer);
+    try std.testing.expectEqualStrings(expected, writer.buffered());
+}
+
+test "value: format and sourceText write a lone scalar the same way" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const values = [_]Value{ .{ .int = 5 }, .{ .float = 2.5 }, .{ .string = "a \"b\"" } };
+    for (values) |value| {
+        var buf: [64]u8 = undefined;
+        var writer = std.Io.Writer.fixed(&buf);
+        try value.format(&writer);
+        try std.testing.expectEqualStrings(writer.buffered(), try value.sourceText(alloc, null));
+    }
 }
