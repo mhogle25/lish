@@ -236,6 +236,18 @@ pub const Scope = struct {
             }
         }
 
+        try self.insertNew(allocator, key, entry);
+    }
+
+    pub fn putNoClobber(self: *Scope, allocator: Allocator, key: []const u8, entry: ScopeEntry) Allocator.Error!void {
+        if (std.debug.runtime_safety) std.debug.assert(self.getOwn(key) == null);
+
+        if (self.isHashed()) return self.hashed_entries.putNoClobber(allocator, key, entry);
+
+        try self.insertNew(allocator, key, entry);
+    }
+
+    fn insertNew(self: *Scope, allocator: Allocator, key: []const u8, entry: ScopeEntry) Allocator.Error!void {
         if (self.inline_count < INLINE_CAP) {
             self.inline_entries[self.inline_count] = .{ .key = key, .entry = entry };
             self.inline_count += 1;
@@ -520,10 +532,10 @@ pub const Macro = struct {
             switch (param.param_type) {
                 .value => {
                     const evaluated = try arg_thunk.proc(env, caller_scope);
-                    try macro_scope.setValue(env.allocator, param.id, evaluated);
+                    try macro_scope.putNoClobber(env.allocator, param.id, .{ .value = evaluated });
                 },
                 .deferred => {
-                    try macro_scope.setEntry(env.allocator, param.id, arg_thunk, caller_scope, env.unit_slots);
+                    try macro_scope.putNoClobber(env.allocator, param.id, .{ .closure = .{ .thunk = arg_thunk, .scope = caller_scope, .unit_slots = env.unit_slots } });
                 },
             }
         }
@@ -1034,6 +1046,35 @@ test "scope: a hashed scope replaces names and falls back to its parent" {
     try std.testing.expectEqual(@as(i64, 200), scope.get(names[names.len - 1]).?.value.?.int);
     try std.testing.expectEqual(@as(i64, 7), scope.get("outer").?.value.?.int);
     try std.testing.expect(scope.get("missing") == null);
+}
+
+test "scope: putNoClobber adds names inline and switches to hashing past the capacity" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const names = test_scope_names[0 .. INLINE_CAP + 1];
+    var scope = Scope{};
+    for (names[0..INLINE_CAP], 0..) |name, i| try scope.putNoClobber(alloc, name, .{ .value = .{ .int = @intCast(i) } });
+    try std.testing.expectEqual(@as(usize, INLINE_CAP), scope.inline_count);
+    try std.testing.expect(!scope.isHashed());
+
+    try scope.putNoClobber(alloc, names[INLINE_CAP], .{ .value = .{ .int = INLINE_CAP } });
+    try std.testing.expect(scope.isHashed());
+    for (names, 0..) |name, i| try std.testing.expectEqual(@as(i64, @intCast(i)), scope.get(name).?.value.?.int);
+}
+
+test "scope: a name added with putNoClobber can later be replaced with setValue" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var scope = Scope{};
+    try scope.putNoClobber(alloc, "x", .{ .value = .{ .int = 1 } });
+    try scope.setValue(alloc, "x", .{ .int = 2 });
+
+    try std.testing.expectEqual(@as(i64, 2), scope.get("x").?.value.?.int);
+    try std.testing.expectEqual(@as(usize, 1), scope.inline_count);
 }
 
 test "scope: a parent's name is shadowed, not replaced" {
