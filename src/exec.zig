@@ -218,25 +218,24 @@ pub const Scope = struct {
     }
 
     fn put(self: *Scope, allocator: Allocator, key: []const u8, entry: ScopeEntry) Allocator.Error!void {
+        for (self.inline_entries[0..self.inline_count]) |*existing| {
+            if (std.mem.eql(u8, existing.key, key)) {
+                existing.entry = entry;
+                return;
+            }
+        }
+
         if (self.inline_count < INLINE_CAP) {
             self.inline_entries[self.inline_count] = .{ .key = key, .entry = entry };
             self.inline_count += 1;
             return;
         }
 
-        try self.spillToOverflow(allocator);
         try self.overflow.put(allocator, key, entry);
     }
 
     pub fn deinit(self: *Scope, allocator: Allocator) void {
         self.overflow.deinit(allocator);
-    }
-
-    fn spillToOverflow(self: *Scope, allocator: Allocator) Allocator.Error!void {
-        if (self.overflow.count() > 0) return;
-        for (self.inline_entries[0..self.inline_count]) |*entry| {
-            try self.overflow.put(allocator, entry.key, entry.entry);
-        }
     }
 
     pub const EMPTY: Scope = .{};
@@ -918,6 +917,69 @@ test "value literal none thunk returns null" {
     const thunk = try makeValueLiteral(alloc, Position.synthetic, null);
     const result = try thunk.proc(&env, &scope);
     try std.testing.expect(result == null);
+}
+
+test "scope: setting an existing name replaces its value" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var scope = Scope{};
+    try scope.setValue(alloc, "x", .{ .int = 1 });
+    try scope.setValue(alloc, "x", .{ .int = 2 });
+
+    try std.testing.expectEqual(@as(i64, 2), scope.get("x").?.value.?.int);
+    try std.testing.expectEqual(@as(usize, 1), scope.inline_count);
+}
+
+test "scope: setting an existing name replaces a closure with a value" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const value_thunk = try makeValueLiteral(alloc, Position.synthetic, .{ .int = 1 });
+    var scope = Scope{};
+    try scope.setEntry(alloc, "x", value_thunk, &Scope.EMPTY, &.{});
+    try scope.setValue(alloc, "x", .{ .int = 2 });
+
+    try std.testing.expectEqual(@as(i64, 2), scope.get("x").?.value.?.int);
+}
+
+test "scope: names past the inline capacity are stored once and can be replaced" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const names = [_][]const u8{ "a", "b", "c", "d", "e", "f", "g", "h", "i", "j" };
+    try std.testing.expect(names.len > INLINE_CAP);
+
+    var scope = Scope{};
+    for (names, 0..) |name, i| try scope.setValue(alloc, name, .{ .int = @intCast(i) });
+    try std.testing.expect(scope.overflow.count() == names.len - INLINE_CAP);
+
+    const inline_name   = names[0];
+    const overflow_name = names[names.len - 1];
+    try scope.setValue(alloc, inline_name, .{ .int = 100 });
+    try scope.setValue(alloc, overflow_name, .{ .int = 200 });
+
+    try std.testing.expectEqual(@as(i64, 100), scope.get(inline_name).?.value.?.int);
+    try std.testing.expectEqual(@as(i64, 200), scope.get(overflow_name).?.value.?.int);
+    try std.testing.expectEqual(@as(i64, 4), scope.get("e").?.value.?.int);
+    try std.testing.expect(scope.overflow.count() == names.len - INLINE_CAP);
+}
+
+test "scope: a parent's name is shadowed, not replaced" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var parent = Scope{};
+    try parent.setValue(alloc, "x", .{ .int = 1 });
+    var child = Scope{ .parent = &parent };
+    try child.setValue(alloc, "x", .{ .int = 2 });
+
+    try std.testing.expectEqual(@as(i64, 2), child.get("x").?.value.?.int);
+    try std.testing.expectEqual(@as(i64, 1), parent.get("x").?.value.?.int);
 }
 
 test "scope thunk resolves entry from scope" {

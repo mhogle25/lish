@@ -130,7 +130,6 @@ fn pipeOp(args: Args) ExecError!?Value {
 
     var i: usize = 2;
     while (i < count) : (i += 1) {
-        pipe_scope.inline_count = 0;
         try pipe_scope.setValue(args.env.allocator, name, current);
         current = try args.items[i].proc(args.env, &pipe_scope);
     }
@@ -280,6 +279,44 @@ test "let: later binding can compute from earlier" {
     try std.testing.expectEqual(@as(i64, 10), result.?.int);
 }
 
+test "let: a repeated name takes the later value" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try testing.evalWithBuiltins(arena.allocator(), "let x 1 x 2 :x");
+    try std.testing.expectEqual(@as(i64, 2), result.?.int);
+}
+
+test "let: a repeated name can compute from its earlier value" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try testing.evalWithBuiltins(arena.allocator(), "let x 1 x (+ :x 10) :x");
+    try std.testing.expectEqual(@as(i64, 11), result.?.int);
+}
+
+test "let: a repeated name leaves other names alone" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try testing.evalWithBuiltins(arena.allocator(), "let x 1 y 5 x 2 (list :x :y)");
+    const items = result.?.list;
+    try std.testing.expectEqual(@as(i64, 2), items[0].?.int);
+    try std.testing.expectEqual(@as(i64, 5), items[1].?.int);
+}
+
+test "let: repeated names past nine bindings take the later value" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try testing.evalWithBuiltins(arena.allocator(),
+        "let a 1 b 2 c 3 d 4 e 5 f 6 g 7 h 8 i 9 j 10 a 100 j 200 (+ :a :j :e)");
+    try std.testing.expectEqual(@as(i64, 305), result.?.int);
+}
+
+test "let: a repeated name rebinds to none" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try testing.evalWithBuiltins(arena.allocator(), "let x 1 x $none :x");
+    try std.testing.expect(result == null);
+}
+
 test "let: even arg count fails" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -406,6 +443,13 @@ test "unpack: destructures a string into chars" {
     defer arena.deinit();
     const result = try testing.evalWithBuiltins(arena.allocator(), "unpack a b \"hi\" (concat :a :b)");
     try std.testing.expectEqualStrings("hi", result.?.string);
+}
+
+test "unpack: a repeated name takes the later element" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try testing.evalWithBuiltins(arena.allocator(), "unpack a a (list 1 2) :a");
+    try std.testing.expectEqual(@as(i64, 2), result.?.int);
 }
 
 test "unpack: a non-collection source panics" {

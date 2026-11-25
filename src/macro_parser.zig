@@ -184,20 +184,7 @@ const MacroParser = struct {
 
     fn handleInParams(self: *MacroParser) Allocator.Error!void {
         if (isTerm(self.token.type)) {
-            const param_position: Position = .{ .start = self.token.start, .end = self.token.end };
-            const identifier = try self.processIdentifier();
-
-            if (identifier) |param_id| {
-                try self.parameters.append(self.allocator, .{
-                    .valid = .{ .id = param_id, .param_type = .value, .position = param_position },
-                });
-            } 
-            else {
-                try self.parameters.append(self.allocator, .{
-                    .err = self.errorAtToken("Invalid escape sequences in parameter name"),
-                });
-            }
-
+            try self.appendParam(.value);
             self.token = self.lexer.nextToken();
         }
         else
@@ -219,18 +206,7 @@ const MacroParser = struct {
 
     fn handleDeferredParam(self: *MacroParser) Allocator.Error!void {
         if (isTerm(self.token.type)) {
-            const param_position: Position = .{ .start = self.token.start, .end = self.token.end };
-            const identifier = try self.processIdentifier();
-            if (identifier) |param_id| {
-                try self.parameters.append(self.allocator, .{
-                    .valid = .{ .id = param_id, .param_type = .deferred, .position = param_position },
-                });
-            } 
-            else {
-                try self.parameters.append(self.allocator, .{
-                    .err = self.errorAtToken("Invalid escape sequences in parameter name"),
-                });
-            }
+            try self.appendParam(.deferred);
             self.state = .in_params;
             self.token = self.lexer.nextToken();
         }
@@ -248,6 +224,36 @@ const MacroParser = struct {
             self.state = .in_params;
             self.token = self.lexer.nextToken();
         }
+    }
+
+    fn appendParam(self: *MacroParser, param_type: MacroParamType) Allocator.Error!void {
+        const param_position: Position = .{ .start = self.token.start, .end = self.token.end };
+        const param_id = try self.processIdentifier() orelse {
+            try self.parameters.append(self.allocator, .{
+                .err = self.errorAtToken("Invalid escape sequences in parameter name"),
+            });
+            return;
+        };
+
+        if (self.hasParam(param_id)) {
+            const message = try std.fmt.allocPrint(self.allocator, "Duplicate parameter name '{s}'", .{param_id});
+            try self.parameters.append(self.allocator, .{ .err = self.errorAtToken(message) });
+            return;
+        }
+
+        try self.parameters.append(self.allocator, .{
+            .valid = .{ .id = param_id, .param_type = param_type, .position = param_position },
+        });
+    }
+
+    fn hasParam(self: *const MacroParser, param_id: []const u8) bool {
+        for (self.parameters.items) |existing| {
+            switch (existing) {
+                .valid => |param| if (std.mem.eql(u8, param.id, param_id)) return true,
+                .err   => {},
+            }
+        }
+        return false;
     }
 
     fn parseMacroBody(self: *MacroParser) Allocator.Error!void {
@@ -545,6 +551,63 @@ test "duplicate macro id produces error" {
 
     try std.testing.expectEqual(@as(usize, 2), module.macros.len);
     try std.testing.expect(module.macros[1].macro.id == .err);
+}
+
+test "duplicate parameter name produces error at the repeat" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source = "pick a a | + :a 0 ;";
+    const module = try parseMacroModule(alloc, source);
+
+    const parameters = module.macros[0].macro.parameters;
+    try std.testing.expectEqual(@as(usize, 2), parameters.len);
+    try std.testing.expect(parameters[0] == .valid);
+    try std.testing.expectEqualStrings("Duplicate parameter name 'a'", parameters[1].err.message);
+    try std.testing.expectEqual(@as(usize, "pick a ".len), parameters[1].err.start);
+}
+
+test "duplicate parameter name across value and deferred produces error" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const value_then_deferred = try parseMacroModule(alloc, "pick a ~a | + :a 0 ;");
+    try std.testing.expectEqualStrings("Duplicate parameter name 'a'", value_then_deferred.macros[0].macro.parameters[1].err.message);
+
+    const deferred_then_value = try parseMacroModule(alloc, "pick ~a a | + :a 0 ;");
+    try std.testing.expectEqualStrings("Duplicate parameter name 'a'", deferred_then_value.macros[0].macro.parameters[1].err.message);
+}
+
+test "duplicate parameter name is not reported for distinct or later-macro names" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const module = try parseMacroModule(alloc, "first a b | + :a :b ; second a b | - :a :b ;");
+
+    try std.testing.expectEqual(@as(usize, 2), module.macros.len);
+    for (module.macros) |macro_node| {
+        for (macro_node.macro.parameters) |param| try std.testing.expect(param == .valid);
+    }
+}
+
+test "duplicate parameter name fails module validation" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const module = try parseMacroModule(alloc, "pick a a | + :a 0 ;");
+    const result = try validateMacroModule(alloc, module);
+
+    switch (result) {
+        .ok => return error.TestUnexpectedResult,
+        .err => |errors| {
+            try std.testing.expectEqual(@as(usize, 1), errors.len);
+            try std.testing.expectEqualStrings("Duplicate parameter name 'a'", errors[0].message);
+        },
+    }
 }
 
 test "validate macro module" {

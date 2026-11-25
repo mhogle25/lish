@@ -62,7 +62,6 @@ fn loopOp(args: Args) ExecError!?Value {
     const body = args.items[2];
     var i: i64 = 0;
     while (i < n) : (i += 1) {
-        iter_scope.inline_count = 0;
         try iter_scope.setValue(args.env.allocator, name, .{ .int = i });
         _ = try body.proc(args.env, &iter_scope);
     }

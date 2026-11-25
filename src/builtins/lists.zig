@@ -438,7 +438,6 @@ fn sortbyOp(args: Args) ExecError!?Value {
 
     const keys = try alloc.alloc(?Value, list.len);
     for (list, 0..) |item, i| {
-        sort_scope.inline_count = 0;
         try sort_scope.setValue(alloc, name, item);
         keys[i] = try body.proc(args.env, &sort_scope);
     }
@@ -470,7 +469,6 @@ const SortWithContext = struct {
 fn sortwithLessThan(ctx: *SortWithContext, left: ?Value, right: ?Value) bool {
     if (ctx.sticky_err != null) return false;
 
-    ctx.scope.inline_count = 0;
     ctx.scope.setValue(ctx.env.allocator, ctx.a_name, left) catch |err| {
         ctx.sticky_err = err;
         return false;
@@ -556,7 +554,6 @@ fn fillbyOp(args: Args) ExecError!?Value {
     const body  = args.items[2];
     const items = try alloc.alloc(?Value, @intCast(n));
     for (items, 0..) |*slot, idx| {
-        iter_scope.inline_count = 0;
         try iter_scope.setValue(alloc, name, .{ .int = @intCast(idx) });
         slot.* = try body.proc(args.env, &iter_scope);
     }
