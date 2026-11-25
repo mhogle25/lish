@@ -11,11 +11,14 @@ const Value = val_mod.Value;
 
 pub const SerializeError = error{InvalidNode};
 
-pub fn serializeExpression(node: *const AstNode, writer: anytype) !void {
+/// A part the parser marked broken can't be written out; otherwise only the writer can fail.
+pub const Error = SerializeError || std.Io.Writer.Error;
+
+pub fn serializeExpression(node: *const AstNode, writer: *std.Io.Writer) Error!void {
     try serializeNode(node, writer, false);
 }
 
-pub fn serializeMacro(macro: AstMacro, writer: anytype) !void {
+pub fn serializeMacro(macro: AstMacro, writer: *std.Io.Writer) Error!void {
     switch (macro.id) {
         .valid => |id_data| try writer.writeAll(id_data.name),
         .err => return SerializeError.InvalidNode,
@@ -38,14 +41,14 @@ pub fn serializeMacro(macro: AstMacro, writer: anytype) !void {
     try writer.writeByte(tok.MACRO_BREAK);
 }
 
-pub fn serializeMacroModule(macros: []const AstMacro, writer: anytype) !void {
+pub fn serializeMacroModule(macros: []const AstMacro, writer: *std.Io.Writer) Error!void {
     for (macros, 0..) |macro, idx| {
         if (idx > 0) try writer.writeByte(tok.NEWLINE);
         try serializeMacro(macro, writer);
     }
 }
 
-fn serializeNode(node: *const AstNode, writer: anytype, nested: bool) anyerror!void {
+fn serializeNode(node: *const AstNode, writer: *std.Io.Writer, nested: bool) Error!void {
     switch (node.body) {
         .value_literal => |v| try serializeValue(v, writer, nested),
         .scope_thunk => |id_node| {
@@ -63,7 +66,7 @@ fn serializeNode(node: *const AstNode, writer: anytype, nested: bool) anyerror!v
     }
 }
 
-fn serializeExprNode(expr: AstExpression, writer: anytype, nested: bool) anyerror!void {
+fn serializeExprNode(expr: AstExpression, writer: *std.Io.Writer, nested: bool) Error!void {
     if (expr.meta.meta_type == .single_term) {
         try writer.writeByte(tok.EXPRESSION_SINGLE);
         try serializeNode(expr.id, writer, false);
@@ -79,7 +82,7 @@ fn serializeExprNode(expr: AstExpression, writer: anytype, nested: bool) anyerro
     if (nested) try writer.writeByte(tok.EXPRESSION_CLOSE);
 }
 
-fn serializeValue(v: Value, writer: anytype, nested: bool) anyerror!void {
+fn serializeValue(v: Value, writer: *std.Io.Writer, nested: bool) Error!void {
     switch (v) {
         .string => |str| try serializeString(str, writer),
         .int => |int_val| try writer.print("{d}", .{int_val}),
@@ -101,7 +104,7 @@ fn serializeValue(v: Value, writer: anytype, nested: bool) anyerror!void {
     }
 }
 
-fn serializeString(str: []const u8, writer: anytype) anyerror!void {
+fn serializeString(str: []const u8, writer: *std.Io.Writer) Error!void {
     if (!needsQuoting(str)) {
         try writer.writeAll(str);
         return;

@@ -382,14 +382,15 @@ pub const MacroValidationResult = union(enum) {
     err: []const validation_mod.ValidationError,
 };
 
-pub fn validateMacroModule(allocator: Allocator, module: AstMacroModule) Allocator.Error!MacroValidationResult {
+/// `text` is what `module` was parsed from; each macro keeps it.
+pub fn validateMacroModule(allocator: Allocator, module: AstMacroModule, text: []const u8) Allocator.Error!MacroValidationResult {
     var errors = validation_mod.ValidationErrors{};
     var valid_macros = std.ArrayList(exec.Macro).empty;
 
     for (module.macros) |macro_node| {
         switch (macro_node) {
             .macro => |macro| {
-                if (try validateMacro(allocator, macro, &errors)) |valid| {
+                if (try validateMacro(allocator, macro, text, &errors)) |valid| {
                     try valid_macros.append(allocator, valid);
                 }
             },
@@ -408,6 +409,7 @@ pub fn validateMacroModule(allocator: Allocator, module: AstMacroModule) Allocat
 fn validateMacro(
     allocator: Allocator,
     macro: AstMacro,
+    text: []const u8,
     errors: *validation_mod.ValidationErrors,
 ) Allocator.Error!?exec.Macro {
     const init_error_count = errors.count();
@@ -450,6 +452,7 @@ fn validateMacro(
 
     return .{
         .id = id,
+        .text = text,
         .parameters = valid_params.items,
         .body = body_thunk.body.expression,
         .unit_id = exec.nextUnitId(),
@@ -487,7 +490,6 @@ fn macroErrToValidationErr(macro_error: MacroError) validation_mod.ValidationErr
 }
 
 const builtins = @import("builtins.zig");
-const ast_builder = @import("ast_builder.zig");
 
 test "parse single macro" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -599,8 +601,10 @@ test "duplicate parameter name fails module validation" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    const module = try parseMacroModule(alloc, "pick a a | + :a 0 ;");
-    const result = try validateMacroModule(alloc, module);
+    const source = "pick a a | + :a 0 ;";
+
+    const module = try parseMacroModule(alloc, source);
+    const result = try validateMacroModule(alloc, module, source);
 
     switch (result) {
         .ok => return error.TestUnexpectedResult,
@@ -611,35 +615,15 @@ test "duplicate parameter name fails module validation" {
     }
 }
 
-test "a MacroBuilder macro with a repeated parameter passes validation but is rejected at registration" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
-    const b = ast_builder.AstBuilder.init(alloc);
-    var body_builder = b.expr("+");
-    const body = try body_builder.arg(try b.scope("a")).arg(try b.int(0)).build();
-    var macro_builder = b.macro("pick");
-    const ast_macro = try macro_builder.param("a").param("a").body(body);
-
-    const module = AstMacroModule{ .macros = &.{.{ .macro = ast_macro }} };
-    const macros = switch (try validateMacroModule(alloc, module)) {
-        .ok  => |valid| valid,
-        .err => return error.TestUnexpectedResult,
-    };
-
-    var registry = exec.Registry.init(alloc);
-    try std.testing.expectError(error.DuplicateParameterName, registry.registerMacro(macros[0].id, &macros[0]));
-    try std.testing.expect(!registry.macros.contains("pick"));
-}
-
 test "validate macro module" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    const module = try parseMacroModule(alloc, "double x | * :x 2 ;");
-    const result = try validateMacroModule(alloc, module);
+    const source = "double x | * :x 2 ;";
+
+    const module = try parseMacroModule(alloc, source);
+    const result = try validateMacroModule(alloc, module, source);
 
     switch (result) {
         .ok => |macros| {
@@ -656,8 +640,10 @@ test "validate and execute macro" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    const module = try parseMacroModule(alloc, "double x | * :x 2 ;");
-    const macro_result = try validateMacroModule(alloc, module);
+    const source = "double x | * :x 2 ;";
+
+    const module = try parseMacroModule(alloc, source);
+    const macro_result = try validateMacroModule(alloc, module, source);
     const macros = switch (macro_result) {
         .ok => |valid_macros| valid_macros,
         .err => return error.TestUnexpectedResult,
@@ -688,8 +674,10 @@ test "end-to-end: macro with deferred parameter" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    const module = try parseMacroModule(alloc, "do-twice ~action | proc :action :action ;");
-    const macro_result = try validateMacroModule(alloc, module);
+    const source = "do-twice ~action | proc :action :action ;";
+
+    const module = try parseMacroModule(alloc, source);
+    const macro_result = try validateMacroModule(alloc, module, source);
     const macros = switch (macro_result) {
         .ok => |valid_macros| valid_macros,
         .err => return error.TestUnexpectedResult,
@@ -722,7 +710,7 @@ test "end-to-end: multiple macros in module" {
 
     const source = "double x | * :x 2 ; quadruple x | double (double :x) ;";
     const module = try parseMacroModule(alloc, source);
-    const macro_result = try validateMacroModule(alloc, module);
+    const macro_result = try validateMacroModule(alloc, module, source);
     const macros = switch (macro_result) {
         .ok => |valid_macros| valid_macros,
         .err => return error.TestUnexpectedResult,

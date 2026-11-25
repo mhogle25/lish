@@ -506,6 +506,10 @@ pub const MacroParameter = struct {
 
 pub const Macro = struct {
     id: []const u8,
+    /// The text this macro was written in: the whole file or string it was loaded
+    /// from, or the lish text a Zig-built macro was written out as. Its positions
+    /// are offsets into this text.
+    text: []const u8,
     parameters: []const MacroParameter,
     body: Expression,
     /// The body is its own unit: `unit_id` keys the resolution cache, `site_count`
@@ -950,7 +954,7 @@ test "Macro.writeSignature renders params, marking deferred with ~" {
         .{ .id = "hi", .param_type = .value },
         .{ .id = "body", .param_type = .deferred },
     };
-    const macro = Macro{ .id = "guard", .parameters = &params, .body = undefined };
+    const macro = Macro{ .id = "guard", .text = "guard lo hi ~body | :body ;", .parameters = &params, .body = undefined };
 
     var buf: [64]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buf);
@@ -1430,7 +1434,12 @@ test "a bound op gets its own host data, and ops bound to different data don't m
 fn makeTestMacro(allocator: Allocator, id: []const u8, parameters: []const MacroParameter) Allocator.Error!*Macro {
     const name = try makeValueLiteral(allocator, Position.synthetic, .{ .string = "add" });
     const macro = try allocator.create(Macro);
-    macro.* = .{ .id = id, .parameters = parameters, .body = .{ .name = name, .args = &.{} } };
+    macro.* = .{ .id = id, .text = "", .parameters = parameters, .body = .{ .name = name, .args = &.{} } };
+
+    var text: std.Io.Writer.Allocating = .init(allocator);
+    macro.writeSignature(&text.writer) catch return error.OutOfMemory;
+    text.writer.writeAll(" | add ;") catch return error.OutOfMemory;
+    macro.text = text.written();
     return macro;
 }
 
@@ -1493,6 +1502,7 @@ test "macro with value parameters" {
     const macro = try alloc.create(Macro);
     macro.* = .{
         .id = "add-one",
+        .text = "add-one x | add :x 1 ;",
         .parameters = &params,
         .body = .{
             .name = add_id,
@@ -1534,6 +1544,7 @@ test "macro with deferred parameter" {
     const macro = try alloc.create(Macro);
     macro.* = .{
         .id = "run-deferred",
+        .text = "run-deferred ~thunk | passthrough :thunk ;",
         .parameters = &params,
         .body = .{
             .name = identity_id,
@@ -1571,6 +1582,7 @@ test "macro arity mismatch" {
     const macro = try alloc.create(Macro);
     macro.* = .{
         .id = "needs-two",
+        .text = "needs-two x y | proc ;",
         .parameters = &params,
         .body = .{ .name = dummy_id, .args = &.{} },
     };

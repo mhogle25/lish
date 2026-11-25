@@ -173,7 +173,12 @@ const body = try say_eb.arg(concat_node).build();
 var mb = b.macro("greet");
 const macro_def = try mb.param("name").body(body);
 // -> greet name | say (concat "hello " :name) ;
+
+// Load built macros into a registry
+_ = try lish.loadBuiltMacros(&registry, &.{macro_def});
 ```
+
+`loadBuiltMacros` writes the macros out as lish text and loads that text like any other macro source. They get the same checks (a repeated parameter name comes back as a validation error), and an error inside one shows that text.
 
 ## Serializing AST to Source
 

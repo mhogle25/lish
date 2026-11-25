@@ -2,6 +2,7 @@ const std = @import("std");
 const expr_parser = @import("parser.zig");
 const validation_mod = @import("validation.zig");
 const macro_parser_mod = @import("macro_parser.zig");
+const serializer_mod = @import("serializer.zig");
 const exec_mod = @import("exec.zig");
 const val = @import("value.zig");
 const cache_mod = @import("cache.zig");
@@ -15,6 +16,7 @@ const Expression = exec_mod.Expression;
 const Unit = exec_mod.Unit;
 const RuntimeErr = exec_mod.RuntimeErr;
 const ValidationError = validation_mod.ValidationError;
+const AstMacro = macro_parser_mod.AstMacro;
 pub const ExpressionCache = cache_mod.ExpressionCache;
 pub const LruCache = cache_mod.LruCache;
 
@@ -134,9 +136,11 @@ pub fn loadMacroModule(
 ) Allocator.Error!MacroLoadResult {
     const alloc = registry.macroAllocator();
 
-    const module = (try macro_parser_mod.parseMacroModuleWithComments(alloc, source)).module;
+    // The macros keep this copy, so a file's buffer can be freed after loading.
+    const text = try alloc.dupe(u8, source);
+    const module = (try macro_parser_mod.parseMacroModuleWithComments(alloc, text)).module;
 
-    const validation_result = try macro_parser_mod.validateMacroModule(alloc, module);
+    const validation_result = try macro_parser_mod.validateMacroModule(alloc, module, text);
 
     switch (validation_result) {
         .ok => |macros| {
@@ -150,6 +154,22 @@ pub fn loadMacroModule(
         },
         .err => |errors| return .{ .validation_err = errors },
     }
+}
+
+pub const LoadBuiltError = Allocator.Error || serializer_mod.SerializeError;
+
+/// Loads macros built in Zig with `ast_builder.MacroBuilder`. They're written out
+/// as lish text and loaded like any other, so they have real text and positions,
+/// and the parser checks them like any other. A macro with a part the parser
+/// marked broken can't be written out (`error.InvalidNode`); load parser output
+/// as text with `loadMacroModule` instead.
+pub fn loadBuiltMacros(registry: *Registry, macros: []const AstMacro) LoadBuiltError!MacroLoadResult {
+    var text: std.Io.Writer.Allocating = .init(registry.macroAllocator());
+    serializer_mod.serializeMacroModule(macros, &text.writer) catch |err| switch (err) {
+        error.WriteFailed => return error.OutOfMemory,
+        error.InvalidNode => return error.InvalidNode,
+    };
+    return loadMacroModule(registry, text.written());
 }
 
 /// Lish standard library source, bundled into the compiled binary.
@@ -265,6 +285,7 @@ pub fn loadMacroDir(
 }
 
 const builtins = @import("builtins.zig");
+const ast_builder = @import("ast_builder.zig");
 
 test "processRaw: simple expression" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -804,6 +825,90 @@ test "loadMacroBundle: loads macro text compiled into the program" {
     try loadMacroBundle(&registry, "double x | * :x 2 ; triple x | * :x 3 ;");
     try std.testing.expect(registry.getMacro("double") != null);
     try std.testing.expect(registry.getMacro("triple") != null);
+}
+
+test "loadMacroModule: each macro keeps the text it was loaded from" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var registry = Registry.init(arena.allocator());
+
+    const source = "double x | * :x 2 ;\ntriple x | * :x 3 ;";
+    try std.testing.expectEqual(MacroLoadResult{ .ok = 2 }, try loadMacroModule(&registry, source));
+    try std.testing.expectEqualStrings(source, registry.getMacro("double").?.text);
+    try std.testing.expectEqualStrings(source, registry.getMacro("triple").?.text);
+}
+
+test "loadMacroFile: a macro keeps its text after the file's buffer is freed" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var io_instance: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer io_instance.deinit();
+    const io = io_instance.io();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "double.lishmacro", .data = "double x | * :x 2 ;" });
+    const path = try std.Io.Dir.path.join(arena.allocator(), &.{ ".zig-cache", "tmp", tmp.sub_path[0..], "double.lishmacro" });
+
+    var registry = Registry.init(arena.allocator());
+    try std.testing.expectEqual(MacroFileResult{ .ok = 1 }, try loadMacroFile(io, std.testing.allocator, &registry, path));
+    try std.testing.expectEqualStrings("double x | * :x 2 ;", registry.getMacro("double").?.text);
+}
+
+fn buildGreetMacro(b: ast_builder.AstBuilder) !AstMacro {
+    var concat_builder = b.expr("concat");
+    const concat_node = try concat_builder.arg(try b.string("hello ")).arg(try b.scope("name")).build();
+    var say_builder = b.expr("say");
+    const body = try say_builder.arg(concat_node).build();
+    var macro_builder = b.macro("greet");
+    return macro_builder.param("name").body(body);
+}
+
+test "loadBuiltMacros: a built macro carries its written-out text and real positions" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var registry = Registry.init(alloc);
+    const greet = try buildGreetMacro(ast_builder.AstBuilder.init(alloc));
+    try std.testing.expectEqual(MacroLoadResult{ .ok = 1 }, try loadBuiltMacros(&registry, &.{greet}));
+
+    const macro = registry.getMacro("greet").?;
+    try std.testing.expectEqualStrings("greet name | say (concat \"hello \" :name) ;", macro.text);
+    const concat_position = macro.body.args[0].position;
+    try std.testing.expectEqualStrings("(concat \"hello \" :name)", macro.text[concat_position.start..concat_position.end]);
+}
+
+test "loadBuiltMacros: a built macro with a repeated parameter is rejected like written text" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const b = ast_builder.AstBuilder.init(alloc);
+    var body_builder = b.expr("+");
+    const body = try body_builder.arg(try b.scope("a")).arg(try b.int(0)).build();
+    var macro_builder = b.macro("pick");
+    const pick = try macro_builder.param("a").param("a").body(body);
+
+    var registry = Registry.init(alloc);
+    switch (try loadBuiltMacros(&registry, &.{pick})) {
+        .validation_err => |errors| try std.testing.expectEqualStrings("Duplicate parameter name 'a'", errors[0].message),
+        .ok             => return error.TestUnexpectedResult,
+    }
+    try std.testing.expect(registry.getMacro("pick") == null);
+}
+
+test "loadBuiltMacros: a macro with a part the parser marked broken is refused" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var broken = try buildGreetMacro(ast_builder.AstBuilder.init(alloc));
+    broken.id = .{ .err = .{ .message = "Expected a macro name", .line = 1, .column = 1, .start = 0, .end = 0 } };
+
+    var registry = Registry.init(alloc);
+    try std.testing.expectError(error.InvalidNode, loadBuiltMacros(&registry, &.{broken}));
 }
 
 test "loadMacroFile: loads a file, returns its problems, or says it can't be read" {
