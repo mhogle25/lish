@@ -4,6 +4,7 @@ const val = @import("../value.zig");
 const helpers = @import("helpers.zig");
 
 const Value = val.Value;
+const Number = val.Number;
 const Args = exec.Args;
 const ExecError = exec.ExecError;
 const Registry = exec.Registry;
@@ -238,23 +239,20 @@ fn modFloat(left: f64, right: f64) f64 {
 
 fn powerOp(args: Args) ExecError!?Value {
     try args.expectMinCount(2);
-    var accumulator = try args.at(0).resolve();
-    if (!accumulator.isNumber()) return args.env.failFmt(.type_mismatch, "'{s}' expects numbers, got {s}", .{ POWER_ID, accumulator.typeName() });
+    const first = try args.at(0).resolve();
+    var accumulator = first.asNumber() orelse return args.env.failFmt(.type_mismatch, "'{s}' expects numbers, got {s}", .{ POWER_ID, first.typeName() });
 
     for (1..args.count()) |i| {
-        const operand = try args.at(i).resolve();
-        if (!operand.isNumber()) return args.env.failFmt(.type_mismatch, "'{s}' expects numbers, got {s}", .{ POWER_ID, operand.typeName() });
+        const value = try args.at(i).resolve();
+        const operand = value.asNumber() orelse return args.env.failFmt(.type_mismatch, "'{s}' expects numbers, got {s}", .{ POWER_ID, value.typeName() });
 
-        if (accumulator == .float or operand == .float) {
-            const base = accumulator.getF() catch unreachable;
-            const exponent = operand.getF() catch unreachable;
-            accumulator = .{ .float = std.math.pow(f64, base, exponent) };
-        } else {
-            accumulator = .{ .int = intPowSat(accumulator.int, operand.int) };
-        }
+        accumulator = switch (Number.pair(accumulator, operand)) {
+            .ints   => |both| .{ .int = intPowSat(both.left, both.right) },
+            .floats => |both| .{ .float = std.math.pow(f64, both.left, both.right) },
+        };
     }
 
-    return accumulator;
+    return accumulator.toValue();
 }
 
 fn powerWrapOp(args: Args) ExecError!?Value {
@@ -460,6 +458,13 @@ test "arithmetic: float power still uses floating point" {
     defer arena.deinit();
     const result = try testing.evalWithBuiltins(arena.allocator(), "** 2.0 10");
     try std.testing.expectEqual(@as(f64, 1024.0), result.?.float);
+}
+
+test "arithmetic: an int raised to a float exponent uses floating point" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try testing.evalWithBuiltins(arena.allocator(), "** 4 0.5");
+    try std.testing.expectEqual(@as(f64, 2.0), result.?.float);
 }
 
 test "arithmetic: default add/subtract saturate at the i64 bounds" {
