@@ -63,18 +63,6 @@ pub const TokenType = enum {
         };
     }
 
-    pub fn paired(self: TokenType) ?TokenType {
-        return switch (self) {
-            .expression_opening_bracket => .expression_closing_bracket,
-            .expression_closing_bracket => .expression_opening_bracket,
-            .list_opening_bracket       => .list_closing_bracket,
-            .list_closing_bracket       => .list_opening_bracket,
-            .block_opening_bracket      => .block_closing_bracket,
-            .block_closing_bracket      => .block_opening_bracket,
-            else                        => null,
-        };
-    }
-
     pub fn pairsWith(self: TokenType, other: TokenType) bool {
         return switch (self) {
             .expression_opening_bracket => other == .expression_closing_bracket,

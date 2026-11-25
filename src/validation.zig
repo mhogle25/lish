@@ -300,6 +300,41 @@ test "validate with bracket errors" {
     }
 }
 
+fn parsedErrorMessages(allocator: Allocator, source: []const u8) ![]const []const u8 {
+    const root = try parser.parse(allocator, source);
+    const errors = switch (try validate(allocator, root)) {
+        .ok  => return &.{},
+        .err => |errors| errors,
+    };
+
+    const messages = try allocator.alloc([]const u8, errors.len);
+    for (errors, messages) |validation_error, *message| message.* = validation_error.message;
+    return messages;
+}
+
+test "parsed bracket errors name the missing and the unexpected bracket" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const cases = [_]struct { source: []const u8, messages: []const []const u8 }{
+        .{ .source = "(say 1",     .messages = &.{"Missing closing parenthesis"} },
+        .{ .source = "[1 2",       .messages = &.{"Missing closing bracket"} },
+        .{ .source = "{say 1",     .messages = &.{"Missing closing brace"} },
+        .{ .source = "(say [1 2)", .messages = &.{"Missing closing bracket"} },
+        .{ .source = "(say 1]",    .messages = &.{ "Missing closing parenthesis", "Unexpected closing bracket" } },
+        .{ .source = "(say :x]",   .messages = &.{ "Missing closing parenthesis", "Unexpected closing bracket" } },
+        .{ .source = "(say $x]",   .messages = &.{ "Missing closing parenthesis", "Unexpected closing bracket" } },
+        .{ .source = "[1 :x)",     .messages = &.{ "Missing closing bracket", "Unexpected closing parenthesis" } },
+    };
+
+    for (cases) |case| {
+        const messages = try parsedErrorMessages(alloc, case.source);
+        try std.testing.expectEqual(case.messages.len, messages.len);
+        for (case.messages, messages) |expected, actual| try std.testing.expectEqualStrings(expected, actual);
+    }
+}
+
 test "validate end-to-end with execution" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

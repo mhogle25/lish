@@ -145,7 +145,7 @@ pub const Parser = struct {
         if (nested_count > tok.MAX_EXPRESSION_NESTING)
             return self.expressionNestingErr();
 
-        var closure = try self.handleClosure(nested_count);
+        var closure = try self.handleClosure(nested_count, .expression_closing_bracket);
         return closure.toExpression(self);
     }
 
@@ -153,7 +153,7 @@ pub const Parser = struct {
         if (nested_count > tok.MAX_EXPRESSION_NESTING)
             return self.expressionNestingErr();
 
-        var closure = try self.handleClosure(nested_count);
+        var closure = try self.handleClosure(nested_count, .list_closing_bracket);
         return closure.toList(self);
     }
 
@@ -161,7 +161,7 @@ pub const Parser = struct {
         if (nested_count > tok.MAX_EXPRESSION_NESTING)
             return self.expressionNestingErr();
 
-        var closure = try self.handleClosure(nested_count);
+        var closure = try self.handleClosure(nested_count, .block_closing_bracket);
         return closure.toBlock(self);
     }
 
@@ -323,13 +323,21 @@ pub const Parser = struct {
 
     const ClosureBuilder = struct {
         opening:   Token,
+        closing:   TokenType,
         end:       u32,
         pieces:    std.ArrayList(*const AstNode) = .empty,
         open_err:  ?AstBracketError = null,
         close_err: ?AstBracketError = null,
 
-        fn init(opening: Token) ClosureBuilder {
-            return .{ .opening = opening, .end = opening.end };
+        fn init(opening: Token, closing: TokenType) ClosureBuilder {
+            return .{ .opening = opening, .closing = closing, .end = opening.end };
+        }
+
+        fn markMissingClose(self: *ClosureBuilder, parser: *Parser) Allocator.Error!void {
+            self.open_err = .{
+                .message  = try parser.bracketMsg("Missing {s}", self.closing),
+                .position = .{ .start = self.opening.start, .end = self.opening.end },
+            };
         }
 
         fn add(self: *ClosureBuilder, allocator: Allocator, piece: *const AstNode) Allocator.Error!void {
@@ -369,7 +377,7 @@ pub const Parser = struct {
         }
     };
 
-    fn handleClosure(self: *Parser, nested_count_start: usize) Allocator.Error!ClosureBuilder {
+    fn handleClosure(self: *Parser, nested_count_start: usize, closing: TokenType) Allocator.Error!ClosureBuilder {
         const opening_token = self.token;
         const bracket_depth: i32 = @intCast(self.closure_stack_count);
         self.closure_stack_count += 1;
@@ -383,12 +391,12 @@ pub const Parser = struct {
         };
         self.token = self.lexer.nextToken();
 
-        var builder = ClosureBuilder.init(opening_token);
+        var builder = ClosureBuilder.init(opening_token, closing);
         var nested_count = nested_count_start;
 
         while (true) {
             if ((self.pending_closure_depth >= 0 and self.pending_closure_depth < bracket_depth) or self.isEof()) {
-                builder.open_err = try self.missingCloseErr(opening_token);
+                try builder.markMissingClose(self);
                 return self.finishClosure(&builder);
             }
 
@@ -468,14 +476,11 @@ pub const Parser = struct {
 
                     if (match_depth != NO_PENDING_CLOSURE) {
                         self.pending_closure_depth = match_depth;
-                        builder.open_err = try self.missingCloseErr(opening_token);
+                        try builder.markMissingClose(self);
                         return self.finishClosure(&builder);
                     }
 
-                    builder.open_err = .{
-                        .message  = try self.bracketMsg("Missing {s}", opening_token.type.paired().?),
-                        .position = .{ .start = opening_token.start, .end = opening_token.end },
-                    };
+                    try builder.markMissingClose(self);
                     builder.close_err = .{
                         .message  = try self.bracketMsg("Unexpected {s}", self.token.type),
                         .position = .{ .start = self.token.start, .end = self.token.end },
@@ -489,7 +494,7 @@ pub const Parser = struct {
 
             if (self.pending_closure_depth >= 0) {
                 if (self.pending_closure_depth < bracket_depth) {
-                    builder.open_err = try self.missingCloseErr(opening_token);
+                    try builder.markMissingClose(self);
                     return self.finishClosure(&builder);
                 }
 
@@ -526,10 +531,7 @@ pub const Parser = struct {
             return false;
 
         if (result.closing_match_depth == NO_PENDING_CLOSURE) {
-            builder.open_err = .{
-                .message  = try self.bracketMsg("Missing {s}", builder.opening.type.paired().?),
-                .position = .{ .start = builder.opening.start, .end = builder.opening.end },
-            };
+            try builder.markMissingClose(self);
 
             builder.close_err = .{
                 .message  = try self.bracketMsg("Unexpected {s}", self.token.type),
@@ -647,13 +649,6 @@ pub const Parser = struct {
 
     fn bracketMsg(self: *Parser, comptime fmt: []const u8, token_type: TokenType) Allocator.Error![]const u8 {
         return self.allocator.print(fmt, .{token_type.label()});
-    }
-
-    fn missingCloseErr(self: *Parser, opening_token: Token) Allocator.Error!AstBracketError {
-        return .{
-            .message  = try self.bracketMsg("Missing {s}", opening_token.type.paired().?),
-            .position = .{ .start = opening_token.start, .end = opening_token.end },
-        };
     }
 };
 
