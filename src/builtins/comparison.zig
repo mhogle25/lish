@@ -4,6 +4,7 @@ const val = @import("../value.zig");
 const helpers = @import("helpers.zig");
 
 const Value = val.Value;
+const Number = val.Number;
 const Args = exec.Args;
 const ExecError = exec.ExecError;
 const Registry = exec.Registry;
@@ -117,10 +118,10 @@ fn compareOp(args: Args) ExecError!?Value {
     const left = try args.at(0).resolve();
     const right = try args.at(1).resolve();
 
-    if (left.isNumber() and right.isNumber()) {
-        const left_f = left.getF() catch unreachable;
-        const right_f = right.getF() catch unreachable;
-        const result: i64 = if (left_f < right_f) -1 else if (left_f > right_f) @as(i64, 1) else 0;
+    if (Number.pairValues(left, right)) |both| {
+        const result: i64 = switch (both) {
+            inline else => |numbers| if (numbers.left < numbers.right) -1 else if (numbers.left > numbers.right) 1 else 0,
+        };
         return .{ .int = result };
     }
 
@@ -189,6 +190,28 @@ test "comparison: compare" {
     const greater = try testing.evalWithBuiltins(arena.allocator(), "compare 2 1");
     try std.testing.expectEqual(@as(i64, 1), greater.?.int);
     const equal = try testing.evalWithBuiltins(arena.allocator(), "compare 5 5");
+    try std.testing.expectEqual(@as(i64, 0), equal.?.int);
+}
+
+test "comparison: compare mixes ints and floats" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const less = try testing.evalWithBuiltins(arena.allocator(), "compare 1 1.5");
+    try std.testing.expectEqual(@as(i64, -1), less.?.int);
+    const greater = try testing.evalWithBuiltins(arena.allocator(), "compare 2.5 2");
+    try std.testing.expectEqual(@as(i64, 1), greater.?.int);
+    const equal = try testing.evalWithBuiltins(arena.allocator(), "compare 2 2.0");
+    try std.testing.expectEqual(@as(i64, 0), equal.?.int);
+}
+
+test "comparison: compare orders ints past 2^53 exactly" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const greater = try testing.evalWithBuiltins(arena.allocator(), "compare 9007199254740993 9007199254740992");
+    try std.testing.expectEqual(@as(i64, 1), greater.?.int);
+    const less = try testing.evalWithBuiltins(arena.allocator(), "compare 9007199254740992 9007199254740993");
+    try std.testing.expectEqual(@as(i64, -1), less.?.int);
+    const equal = try testing.evalWithBuiltins(arena.allocator(), "compare 9007199254740993 9007199254740993");
     try std.testing.expectEqual(@as(i64, 0), equal.?.int);
 }
 
