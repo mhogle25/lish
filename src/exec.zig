@@ -239,17 +239,17 @@ pub const Scope = struct {
             if (std.mem.eql(u8, existing.key, key)) return &existing.entry;
         }
 
-        return self.insertNew(allocator, key);
+        return self.addMissingName(allocator, key);
     }
 
     pub fn putNoClobber(self: *Scope, allocator: Allocator, key: []const u8, entry: ScopeEntry) Allocator.Error!void {
         if (std.debug.runtime_safety) std.debug.assert(self.getOwn(key) == null);
 
-        const new_entry = try self.insertNew(allocator, key);
+        const new_entry = try self.addMissingName(allocator, key);
         new_entry.* = entry;
     }
 
-    fn insertNew(self: *Scope, allocator: Allocator, key: []const u8) Allocator.Error!*ScopeEntry {
+    fn addMissingName(self: *Scope, allocator: Allocator, key: []const u8) Allocator.Error!*ScopeEntry {
         if (!self.isHashed() and self.inline_count < INLINE_CAP) {
             const slot = &self.inline_entries[self.inline_count];
             slot.* = .{ .key = key, .entry = .{ .value = null } };
