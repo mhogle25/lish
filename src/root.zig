@@ -89,6 +89,7 @@ test {
     _ = builtins;
     _ = introspect;
     _ = boundary;
+    _ = scanner_corpus;
     _ = macro_parser;
     _ = cache;
     _ = process;

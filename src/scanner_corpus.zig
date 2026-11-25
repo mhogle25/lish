@@ -21,8 +21,8 @@ pub const Parsed = struct {
 };
 
 pub fn parse(text: []const u8) !Parsed {
-    var terminator: ?u8 = null;
-    var expected: ?u32 = null;
+    var found_terminator: ?u8 = null;
+    var found_boundary: ?u32 = null;
 
     var rest = text;
     while (std.mem.findScalar(u8, rest, '\n')) |nl| { 
@@ -41,16 +41,17 @@ pub fn parse(text: []const u8) !Parsed {
             if (std.mem.eql(u8, key, "terminator")) {
                 if (value.len != 1) return error.MalformedCase;
 
-                terminator = value[0];
+                found_terminator = value[0];
             }
 
             if (std.mem.eql(u8, key, "boundary")) {
-                expected = try std.fmt.parseInt(u32, value, 10);
+                found_boundary = try std.fmt.parseInt(u32, value, 10);
             }
         }
     }
 
-    if (terminator == null or expected == null) return error.MalformedCase;
+    const terminator        = found_terminator orelse return error.MalformedCase;
+    const expected_boundary = found_boundary orelse return error.MalformedCase;
 
     var source = rest;
     if (source.len > 0 and source[source.len - 1] == '\n') {
@@ -58,9 +59,9 @@ pub fn parse(text: []const u8) !Parsed {
     }
 
     return .{
-        .terminator = terminator.?,
-        .expected_boundary = expected.?,
-        .source = source,
+        .terminator        = terminator,
+        .expected_boundary = expected_boundary,
+        .source            = source,
     };
 }
 
@@ -97,4 +98,24 @@ test "parse: minimal case" {
     try std.testing.expectEqual(@as(u8, '|'), p.terminator);
     try std.testing.expectEqual(@as(u32, 8), p.expected_boundary);
     try std.testing.expectEqualStrings("do-thing|next", p.source);
+}
+
+test "parse: a case without a terminator is malformed" {
+    const text =
+        \\boundary: 8
+        \\---
+        \\do-thing|next
+        \\
+    ;
+    try std.testing.expectError(error.MalformedCase, parse(text));
+}
+
+test "parse: a case without a boundary is malformed" {
+    const text =
+        \\terminator: |
+        \\---
+        \\do-thing|next
+        \\
+    ;
+    try std.testing.expectError(error.MalformedCase, parse(text));
 }
