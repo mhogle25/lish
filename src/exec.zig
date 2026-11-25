@@ -195,18 +195,27 @@ pub const Scope = struct {
     parent:         ?*const Scope                          = null,
     inline_entries: [INLINE_CAP]InlineEntry                = undefined,
     inline_count:   usize                                  = 0,
-    overflow:       std.StringHashMapUnmanaged(ScopeEntry) = .empty,
+    hashed_entries: std.StringHashMapUnmanaged(ScopeEntry) = .empty,
 
     pub fn get(self: *const Scope, key: []const u8) ?ScopeEntry {
-        for (self.inline_entries[0..self.inline_count]) |*entry| {
-            if (std.mem.eql(u8, entry.key, key)) return entry.entry;
-        }
-
-        if (self.overflow.get(key)) |entry| return entry;
+        if (self.getOwn(key)) |entry| return entry;
 
         if (self.parent) |parent| return parent.get(key);
 
         return null;
+    }
+
+    fn getOwn(self: *const Scope, key: []const u8) ?ScopeEntry {
+        if (self.isHashed()) return self.hashed_entries.get(key);
+
+        for (self.inline_entries[0..self.inline_count]) |*entry| {
+            if (std.mem.eql(u8, entry.key, key)) return entry.entry;
+        }
+        return null;
+    }
+
+    fn isHashed(self: *const Scope) bool {
+        return self.hashed_entries.count() > 0;
     }
 
     pub fn setEntry(self: *Scope, allocator: Allocator, key: []const u8, thunk: *const Thunk, thunk_scope: *const Scope, unit_slots: []ResolvedSlot) Allocator.Error!void {
@@ -218,6 +227,8 @@ pub const Scope = struct {
     }
 
     fn put(self: *Scope, allocator: Allocator, key: []const u8, entry: ScopeEntry) Allocator.Error!void {
+        if (self.isHashed()) return self.hashed_entries.put(allocator, key, entry);
+
         for (self.inline_entries[0..self.inline_count]) |*existing| {
             if (std.mem.eql(u8, existing.key, key)) {
                 existing.entry = entry;
@@ -231,11 +242,21 @@ pub const Scope = struct {
             return;
         }
 
-        try self.overflow.put(allocator, key, entry);
+        try self.switchToHashed(allocator, key, entry);
+    }
+
+    fn switchToHashed(self: *Scope, allocator: Allocator, key: []const u8, entry: ScopeEntry) Allocator.Error!void {
+        try self.hashed_entries.ensureTotalCapacity(allocator, @intCast(self.inline_count + 1));
+
+        for (self.inline_entries[0..self.inline_count]) |*existing| {
+            self.hashed_entries.putAssumeCapacityNoClobber(existing.key, existing.entry);
+        }
+        self.hashed_entries.putAssumeCapacityNoClobber(key, entry);
+        self.inline_count = 0;
     }
 
     pub fn deinit(self: *Scope, allocator: Allocator) void {
-        self.overflow.deinit(allocator);
+        self.hashed_entries.deinit(allocator);
     }
 
     pub const EMPTY: Scope = .{};
@@ -945,27 +966,74 @@ test "scope: setting an existing name replaces a closure with a value" {
     try std.testing.expectEqual(@as(i64, 2), scope.get("x").?.value.?.int);
 }
 
-test "scope: names past the inline capacity are stored once and can be replaced" {
+const test_scope_names = [_][]const u8{ "a", "b", "c", "d", "e", "f", "g", "h", "i", "j" };
+
+test "scope: stays inline up to the inline capacity" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    const names = [_][]const u8{ "a", "b", "c", "d", "e", "f", "g", "h", "i", "j" };
-    try std.testing.expect(names.len > INLINE_CAP);
-
+    const names = test_scope_names[0..INLINE_CAP];
     var scope = Scope{};
     for (names, 0..) |name, i| try scope.setValue(alloc, name, .{ .int = @intCast(i) });
-    try std.testing.expect(scope.overflow.count() == names.len - INLINE_CAP);
 
-    const inline_name   = names[0];
-    const overflow_name = names[names.len - 1];
-    try scope.setValue(alloc, inline_name, .{ .int = 100 });
-    try scope.setValue(alloc, overflow_name, .{ .int = 200 });
+    try std.testing.expectEqual(@as(usize, INLINE_CAP), scope.inline_count);
+    try std.testing.expect(!scope.isHashed());
+    for (names, 0..) |name, i| try std.testing.expectEqual(@as(i64, @intCast(i)), scope.get(name).?.value.?.int);
+}
 
-    try std.testing.expectEqual(@as(i64, 100), scope.get(inline_name).?.value.?.int);
-    try std.testing.expectEqual(@as(i64, 200), scope.get(overflow_name).?.value.?.int);
-    try std.testing.expectEqual(@as(i64, 4), scope.get("e").?.value.?.int);
-    try std.testing.expect(scope.overflow.count() == names.len - INLINE_CAP);
+test "scope: rebinding a name at the inline capacity does not switch to hashing" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const names = test_scope_names[0..INLINE_CAP];
+    var scope = Scope{};
+    for (names, 0..) |name, i| try scope.setValue(alloc, name, .{ .int = @intCast(i) });
+    try scope.setValue(alloc, names[0], .{ .int = 100 });
+
+    try std.testing.expectEqual(@as(usize, INLINE_CAP), scope.inline_count);
+    try std.testing.expect(!scope.isHashed());
+    try std.testing.expectEqual(@as(i64, 100), scope.get(names[0]).?.value.?.int);
+}
+
+test "scope: one name past the inline capacity moves every name to the hash map" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const names = test_scope_names[0 .. INLINE_CAP + 1];
+    const value_thunk = try makeValueLiteral(alloc, Position.synthetic, .{ .int = 1 });
+    var scope = Scope{};
+    try scope.setEntry(alloc, names[0], value_thunk, &Scope.EMPTY, &.{});
+    for (names[1..], 1..) |name, i| try scope.setValue(alloc, name, .{ .int = @intCast(i) });
+
+    try std.testing.expectEqual(@as(usize, 0), scope.inline_count);
+    try std.testing.expectEqual(@as(u32, INLINE_CAP + 1), scope.hashed_entries.count());
+    try std.testing.expect(scope.get(names[0]).? == .closure);
+    for (names[1..], 1..) |name, i| try std.testing.expectEqual(@as(i64, @intCast(i)), scope.get(name).?.value.?.int);
+}
+
+test "scope: a hashed scope replaces names and falls back to its parent" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var parent = Scope{};
+    try parent.setValue(alloc, "outer", .{ .int = 7 });
+
+    const names = test_scope_names[0..];
+    var scope = Scope{ .parent = &parent };
+    for (names, 0..) |name, i| try scope.setValue(alloc, name, .{ .int = @intCast(i) });
+    try scope.setValue(alloc, names[0], .{ .int = 100 });
+    try scope.setValue(alloc, names[names.len - 1], .{ .int = 200 });
+
+    try std.testing.expect(scope.isHashed());
+    try std.testing.expectEqual(@as(u32, names.len), scope.hashed_entries.count());
+    try std.testing.expectEqual(@as(i64, 100), scope.get(names[0]).?.value.?.int);
+    try std.testing.expectEqual(@as(i64, 200), scope.get(names[names.len - 1]).?.value.?.int);
+    try std.testing.expectEqual(@as(i64, 7), scope.get("outer").?.value.?.int);
+    try std.testing.expect(scope.get("missing") == null);
 }
 
 test "scope: a parent's name is shadowed, not replaced" {
