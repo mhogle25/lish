@@ -22,6 +22,14 @@ pub const Value = union(enum) {
         return self == .int or self == .float;
     }
 
+    pub fn asNumber(self: Value) ?Number {
+        return switch (self) {
+            .int           => |int_val| .{ .int = int_val },
+            .float         => |float_val| .{ .float = float_val },
+            .string, .list => null,
+        };
+    }
+
     pub fn typeName(self: Value) []const u8 {
         return @tagName(self);
     }
@@ -157,6 +165,42 @@ pub fn optionalEql(lhs: ?Value, rhs: ?Value, allocator: std.mem.Allocator) std.m
     const right = rhs orelse return false;
     return left.eql(right, allocator);
 }
+
+/// A value that can only be an int or a float, so turning it into a float can't fail.
+pub const Number = union(enum) {
+    int: i64,
+    float: f64,
+
+    pub fn toFloat(self: Number) f64 {
+        return switch (self) {
+            .int   => |int_val| @floatFromInt(int_val),
+            .float => |float_val| float_val,
+        };
+    }
+
+    pub fn toValue(self: Number) Value {
+        return switch (self) {
+            .int   => |int_val| .{ .int = int_val },
+            .float => |float_val| .{ .float = float_val },
+        };
+    }
+
+    /// The one rule for mixing numbers: two ints stay ints; a float on either side makes both floats.
+    pub fn pair(left: Number, right: Number) NumberPair {
+        return switch (left) {
+            .int => |left_int| switch (right) {
+                .int   => |right_int| .{ .ints = .{ .left = left_int, .right = right_int } },
+                .float => |right_float| .{ .floats = .{ .left = @floatFromInt(left_int), .right = right_float } },
+            },
+            .float => |left_float| .{ .floats = .{ .left = left_float, .right = right.toFloat() } },
+        };
+    }
+};
+
+pub const NumberPair = union(enum) {
+    ints:   struct { left: i64, right: i64 },
+    floats: struct { left: f64, right: f64 },
+};
 
 fn writeSource(comptime Mode: type, mode: *Mode, value: Value, writer: *std.Io.Writer) Mode.Error!void {
     try writeValue(Mode, mode, value, writer);
@@ -466,6 +510,36 @@ test "floatToInt saturates and never traps on non-finite or out-of-range input" 
     try std.testing.expectEqual(std.math.maxInt(i64), floatToInt(1e300));
     try std.testing.expectEqual(std.math.minInt(i64), floatToInt(-1e300));
     try std.testing.expectEqual(@as(i64, 0), floatToInt(std.math.nan(f64)));
+}
+
+test "value: asNumber accepts only ints and floats, and toValue gives the same value back" {
+    const items = [_]?Value{.{ .int = 1 }};
+    try std.testing.expectEqual(Number{ .int = 7 }, (Value{ .int = 7 }).asNumber().?);
+    try std.testing.expectEqual(Number{ .float = 2.5 }, (Value{ .float = 2.5 }).asNumber().?);
+    try std.testing.expect((Value{ .string = "7" }).asNumber() == null);
+    try std.testing.expect((Value{ .list = &items }).asNumber() == null);
+
+    try std.testing.expectEqual(Value{ .int = 7 }, (Number{ .int = 7 }).toValue());
+    try std.testing.expectEqual(Value{ .float = 2.5 }, (Number{ .float = 2.5 }).toValue());
+}
+
+test "value: Number.pair keeps two ints as ints and makes both floats when either is a float" {
+    const one: Number = .{ .int = 1 };
+    const two: Number = .{ .int = 2 };
+    const one_and_a_half: Number = .{ .float = 1.5 };
+    const two_and_a_half: Number = .{ .float = 2.5 };
+
+    try std.testing.expectEqual(NumberPair{ .ints = .{ .left = 1, .right = 2 } }, Number.pair(one, two));
+    try std.testing.expectEqual(NumberPair{ .floats = .{ .left = 1.0, .right = 2.5 } }, Number.pair(one, two_and_a_half));
+    try std.testing.expectEqual(NumberPair{ .floats = .{ .left = 1.5, .right = 2.0 } }, Number.pair(one_and_a_half, two));
+    try std.testing.expectEqual(NumberPair{ .floats = .{ .left = 1.5, .right = 2.5 } }, Number.pair(one_and_a_half, two_and_a_half));
+}
+
+test "value: Number.pair keeps ints past 2^53 exact, where floats would make them equal" {
+    const larger: Number = .{ .int = 9007199254740993 };
+    const smaller: Number = .{ .int = 9007199254740992 };
+    try std.testing.expectEqual(larger.toFloat(), smaller.toFloat());
+    try std.testing.expectEqual(NumberPair{ .ints = .{ .left = 9007199254740993, .right = 9007199254740992 } }, Number.pair(larger, smaller));
 }
 
 test "value dupe survives its source arena" {
