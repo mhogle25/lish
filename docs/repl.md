@@ -43,6 +43,7 @@ The line editor supports:
 - **Indent control.** Tab inserts two spaces at the cursor; Shift+Tab removes up to two leading spaces from the current line.
 - **Bracketed paste.** Pasted text is inserted verbatim (no autopairing, no submit-on-newline), so multi-line pastes round-trip cleanly.
 - **Standard readline shortcuts:** Ctrl+A/E/K/U/W/L.
+- **Line length.** A line grows as you type, up to 1 MB. A key whose edit doesn't fit (or can't get memory) does nothing and rings the terminal bell, once per key, and once per paste that runs past the limit.
 
 **Piped input** (`cat cmds.lish | lish`) has no keys, only newlines. A newline ends a command once every bracket and quote in it is closed; while one is still open, the next line joins the same command, as in bash or a Lisp REPL. Each command runs as soon as it's complete and its result prints as `=> value`. A command longer than 1 MB is reported with the line it started on and skipped.
 

@@ -3,7 +3,7 @@ const buffer_mod = @import("buffer.zig");
 
 const Allocator = std.mem.Allocator;
 const LineBuffer = buffer_mod.LineBuffer;
-const BUFFER_SIZE = buffer_mod.BUFFER_SIZE;
+const EditError = buffer_mod.EditError;
 
 /// Physical ring capacity. The active `limit` (how many lines are actually
 /// retained) is configurable up to this; the rest of the array stays unused.
@@ -24,10 +24,9 @@ pub const History = struct {
     /// Null means not browsing.
     browse_index: ?usize = null,
 
-    /// Backup of the in-progress buffer captured when browsing starts so that
+    /// Backup of the in-progress line captured when browsing starts so that
     /// stepping past the newest entry restores what the user was typing.
-    saved_buffer: [BUFFER_SIZE]u8 = undefined,
-    saved_length: usize = 0,
+    saved_line: std.ArrayList(u8) = .empty,
 
     allocator: Allocator,
 
@@ -48,6 +47,7 @@ pub const History = struct {
         }
         self.count = 0;
         self.write_index = 0;
+        self.saved_line.deinit(self.allocator);
     }
 
     /// Records `line`. If the copy can't be made, history is left exactly as it was.
@@ -68,21 +68,22 @@ pub const History = struct {
         if (self.count < self.limit) self.count += 1;
     }
 
-    pub fn up(self: *History, buffer: *LineBuffer) void {
+    /// Shows the next older entry. If it can't, the line and browse state stay as they were.
+    pub fn up(self: *History, buffer: *LineBuffer) EditError!void {
         if (self.count == 0) return;
 
         const next_index = if (self.browse_index) |current|
             self.olderIndex(current) orelse return
         else
-            self.startBrowsing(buffer);
+            try self.startBrowsing(buffer);
 
+        try self.loadEntry(next_index, buffer, .end);
         self.browse_index = next_index;
-        self.loadEntry(next_index, buffer, .end);
     }
 
-    fn startBrowsing(self: *History, buffer: *const LineBuffer) usize {
-        @memcpy(self.saved_buffer[0..buffer.length], buffer.data[0..buffer.length]);
-        self.saved_length = buffer.length;
+    fn startBrowsing(self: *History, buffer: *const LineBuffer) Allocator.Error!usize {
+        self.saved_line.clearRetainingCapacity();
+        try self.saved_line.appendSlice(self.allocator, buffer.slice());
 
         return if (self.write_index == 0) self.limit - 1 else self.write_index - 1;
     }
@@ -94,22 +95,22 @@ pub const History = struct {
         return if (current == 0) self.limit - 1 else current - 1;
     }
 
-    pub fn down(self: *History, buffer: *LineBuffer) void {
+    /// Shows the next newer entry, or past the newest, the line being typed.
+    /// If it can't, the line and browse state stay as they were.
+    pub fn down(self: *History, buffer: *LineBuffer) EditError!void {
         const current = self.browse_index orelse return;
 
         const newest_index = if (self.write_index == 0) self.limit - 1 else self.write_index - 1;
 
         if (current == newest_index) {
+            try buffer.setContent(self.saved_line.items);
             self.browse_index = null;
-            @memcpy(buffer.data[0..self.saved_length], self.saved_buffer[0..self.saved_length]);
-            buffer.length = self.saved_length;
-            buffer.cursor = buffer.length;
             return;
         }
 
         const next_index = (current + 1) % self.limit;
+        try self.loadEntry(next_index, buffer, .start);
         self.browse_index = next_index;
-        self.loadEntry(next_index, buffer, .start);
     }
 
     pub fn endBrowse(self: *History) void {
@@ -121,27 +122,23 @@ pub const History = struct {
     /// direction the user was already moving.
     const CursorAt = enum { start, end };
 
-    fn loadEntry(self: *History, index: usize, buffer: *LineBuffer, cursor_at: CursorAt) void {
-        if (self.entries[index]) |entry| {
-            const copy_len = @min(entry.len, BUFFER_SIZE);
-            @memcpy(buffer.data[0..copy_len], entry[0..copy_len]);
-            buffer.length = copy_len;
-            buffer.cursor = switch (cursor_at) {
-                .start => 0,
-                .end => copy_len,
-            };
-        }
+    fn loadEntry(self: *History, index: usize, buffer: *LineBuffer, cursor_at: CursorAt) EditError!void {
+        const entry = self.entries[index] orelse return;
+        try buffer.setContent(entry);
+        buffer.cursor = switch (cursor_at) {
+            .start => 0,
+            .end   => buffer.length,
+        };
     }
 };
 
-fn testInsertString(buffer: *LineBuffer, string: []const u8) void {
-    for (string) |byte| {
-        _ = buffer.insertChar(byte);
-    }
+fn testInsertString(buffer: *LineBuffer, string: []const u8) EditError!void {
+    for (string) |byte| try buffer.insertChar(byte);
 }
 
 test "history: add and navigate" {
-    var buffer = LineBuffer{};
+    var buffer = LineBuffer.init(std.testing.allocator);
+    defer buffer.deinit();
     var history = History.init(std.testing.allocator);
     defer history.deinit();
 
@@ -151,43 +148,44 @@ test "history: add and navigate" {
 
     try std.testing.expectEqual(@as(usize, 3), history.count);
 
-    history.up(&buffer);
+    try history.up(&buffer);
     try std.testing.expectEqualStrings("third", buffer.slice());
 
-    history.up(&buffer);
+    try history.up(&buffer);
     try std.testing.expectEqualStrings("second", buffer.slice());
 
-    history.up(&buffer);
+    try history.up(&buffer);
     try std.testing.expectEqualStrings("first", buffer.slice());
 
-    history.down(&buffer);
+    try history.down(&buffer);
     try std.testing.expectEqualStrings("second", buffer.slice());
 
-    history.down(&buffer);
+    try history.down(&buffer);
     try std.testing.expectEqualStrings("third", buffer.slice());
 
-    history.down(&buffer);
+    try history.down(&buffer);
     try std.testing.expectEqualStrings("", buffer.slice());
     try std.testing.expect(history.browse_index == null);
 }
 
 test "history: up lands cursor at end, down lands cursor at start" {
-    var buffer = LineBuffer{};
+    var buffer = LineBuffer.init(std.testing.allocator);
+    defer buffer.deinit();
     var history = History.init(std.testing.allocator);
     defer history.deinit();
 
     try history.add("a\nbb");
     try history.add("ccc\ndddd");
 
-    history.up(&buffer);
+    try history.up(&buffer);
     try std.testing.expectEqualStrings("ccc\ndddd", buffer.slice());
     try std.testing.expectEqual(buffer.length, buffer.cursor);
 
-    history.up(&buffer);
+    try history.up(&buffer);
     try std.testing.expectEqualStrings("a\nbb", buffer.slice());
     try std.testing.expectEqual(buffer.length, buffer.cursor);
 
-    history.down(&buffer);
+    try history.down(&buffer);
     try std.testing.expectEqualStrings("ccc\ndddd", buffer.slice());
     try std.testing.expectEqual(@as(usize, 0), buffer.cursor);
 }
@@ -204,22 +202,24 @@ test "history: skip duplicates" {
 }
 
 test "history: saves current line when browsing" {
-    var buffer = LineBuffer{};
+    var buffer = LineBuffer.init(std.testing.allocator);
+    defer buffer.deinit();
     var history = History.init(std.testing.allocator);
     defer history.deinit();
 
     try history.add("old command");
-    testInsertString(&buffer, "in progress");
+    try testInsertString(&buffer, "in progress");
 
-    history.up(&buffer);
+    try history.up(&buffer);
     try std.testing.expectEqualStrings("old command", buffer.slice());
 
-    history.down(&buffer);
+    try history.down(&buffer);
     try std.testing.expectEqualStrings("in progress", buffer.slice());
 }
 
 test "history: ring buffer wrapping" {
-    var buffer = LineBuffer{};
+    var buffer = LineBuffer.init(std.testing.allocator);
+    defer buffer.deinit();
     var history = History.init(std.testing.allocator);
     defer history.deinit();
 
@@ -231,33 +231,36 @@ test "history: ring buffer wrapping" {
 
     try std.testing.expectEqual(@as(usize, DEFAULT_HISTORY_SIZE), history.count);
 
-    history.up(&buffer);
+    try history.up(&buffer);
     try std.testing.expectEqualStrings("cmd 265", buffer.slice());
 }
 
 test "history: up on empty history does nothing" {
-    var buffer = LineBuffer{};
+    var buffer = LineBuffer.init(std.testing.allocator);
+    defer buffer.deinit();
     var history = History.init(std.testing.allocator);
     defer history.deinit();
 
-    history.up(&buffer);
+    try history.up(&buffer);
     try std.testing.expectEqualStrings("", buffer.slice());
     try std.testing.expect(history.browse_index == null);
 }
 
 test "history: down without browsing does nothing" {
-    var buffer = LineBuffer{};
+    var buffer = LineBuffer.init(std.testing.allocator);
+    defer buffer.deinit();
     var history = History.init(std.testing.allocator);
     defer history.deinit();
 
     try history.add("something");
-    history.down(&buffer);
+    try history.down(&buffer);
     try std.testing.expectEqualStrings("", buffer.slice());
     try std.testing.expect(history.browse_index == null);
 }
 
 test "history: a failed copy leaves history exactly as it was" {
-    var buffer = LineBuffer{};
+    var buffer = LineBuffer.init(std.testing.allocator);
+    defer buffer.deinit();
     var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 2 });
     var history = History.init(failing.allocator());
     defer history.deinit();
@@ -269,8 +272,23 @@ test "history: a failed copy leaves history exactly as it was" {
     try std.testing.expectError(error.OutOfMemory, history.add("four"));
     try std.testing.expectEqual(@as(usize, 2), history.count);
 
-    history.up(&buffer);
+    try history.up(&buffer);
     try std.testing.expectEqualStrings("two", buffer.slice());
-    history.up(&buffer);
+    try history.up(&buffer);
     try std.testing.expectEqualStrings("one", buffer.slice());
+}
+
+test "history: an entry longer than 4096 bytes is recalled whole" {
+    var buffer = LineBuffer.init(std.testing.allocator);
+    defer buffer.deinit();
+    var history = History.init(std.testing.allocator);
+    defer history.deinit();
+
+    const long_entry = try std.testing.allocator.alloc(u8, 5000);
+    defer std.testing.allocator.free(long_entry);
+    @memset(long_entry, 'x');
+
+    try history.add(long_entry);
+    try history.up(&buffer);
+    try std.testing.expectEqualStrings(long_entry, buffer.slice());
 }

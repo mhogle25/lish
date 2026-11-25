@@ -12,7 +12,7 @@ const Allocator = std.mem.Allocator;
 const Lexer = lexer_mod.Lexer;
 const LineBuffer = buffer_mod.LineBuffer;
 const Renderer = renderer_mod.Renderer;
-const BUFFER_SIZE = buffer_mod.BUFFER_SIZE;
+const EditError = buffer_mod.EditError;
 const rowOf = buffer_mod.rowOf;
 const colOf = buffer_mod.colOf;
 const offsetAt = buffer_mod.offsetAt;
@@ -96,6 +96,11 @@ const StdinBytes = struct {
 
 const PipedLineEnd = enum { newline, end_of_input, too_long };
 
+/// Where a bracketed paste stands. A paste arrives one byte per key event, so the
+/// editor remembers it; once the line is full, the rest of the paste is dropped
+/// after a single bell.
+const PasteState = enum { not_pasting, pasting, pasting_but_full };
+
 fn structuralIndentLevel(content: []const u8) usize {
     var depth: usize = 0;
     var head: ?highlight.Category = null;
@@ -126,7 +131,7 @@ fn sigintHandler(_: posix.SIG) callconv(.c) void {
 }
 
 pub const LineEditor = struct {
-    buffer: LineBuffer = .{},
+    buffer: LineBuffer,
 
     original_termios: ?posix.termios = null,
     raw_mode_active: bool = false,
@@ -148,9 +153,8 @@ pub const LineEditor = struct {
     bracket_expand: bool = true,
     /// Spaces inserted per Tab and per indent level.
     indent_width: usize = INDENT_WIDTH,
-    /// True while a bracketed paste is in progress (between ESC[200~ and ESC[201~).
-    /// Bytes received during paste are inserted literally and autopair is disabled.
-    paste_mode: bool = false,
+    /// Between ESC[200~ and ESC[201~ bytes are inserted literally, with no autopair.
+    paste: PasteState = .not_pasting,
 
     /// The command being read from piped input. Kept between commands so its memory is reused.
     piped_command: std.ArrayList(u8) = .empty,
@@ -163,6 +167,7 @@ pub const LineEditor = struct {
     pub fn init(allocator: Allocator, stdout: *std.Io.Writer) LineEditor {
         return .{
             .allocator = allocator,
+            .buffer = LineBuffer.init(allocator),
             .renderer = Renderer.init(stdout),
             .history = History.init(allocator),
         };
@@ -170,6 +175,7 @@ pub const LineEditor = struct {
 
     pub fn deinit(self: *LineEditor) void {
         self.disableRawMode();
+        self.buffer.deinit();
         self.history.deinit();
         self.piped_command.deinit(self.allocator);
     }
@@ -271,7 +277,7 @@ pub const LineEditor = struct {
                     self.renderer.reset();
                     self.buffer.reset();
                     self.history.endBrowse();
-                    self.paste_mode = false;
+                    self.paste = .not_pasting;
                     self.renderer.render(self.buffer.slice(), self.buffer.cursor);
                 },
                 .eof_signal => {
@@ -292,7 +298,7 @@ pub const LineEditor = struct {
     fn recordInHistory(self: *LineEditor, line: []const u8) void {
         const trimmed = std.mem.trim(u8, line, " \t\r");
         if (trimmed.len == 0) return;
-        self.history.add(trimmed) catch self.renderer.writeRaw(&TERMINAL_BELL);
+        self.history.add(trimmed) catch self.ringBell();
     }
 
     /// Reads one command from piped input. Lines are joined while a bracket or
@@ -352,7 +358,7 @@ pub const LineEditor = struct {
         const initial_length = self.buffer.length;
         const initial_cursor = self.buffer.cursor;
 
-        const result = self.dispatchByte(byte);
+        const result = self.dispatchByte(byte) catch self.rejectKey();
 
         if (result == .continue_reading and
             (self.buffer.length != initial_length or self.buffer.cursor != initial_cursor))
@@ -362,19 +368,41 @@ pub const LineEditor = struct {
         return result;
     }
 
-    fn dispatchByte(self: *LineEditor, byte: u8) InputResult {
+    /// A key whose edit couldn't be made rings the bell: once per key, and once
+    /// per paste.
+    fn rejectKey(self: *LineEditor) InputResult {
+        switch (self.paste) {
+            .not_pasting => self.ringBell(),
+            .pasting => {
+                self.ringBell();
+                self.paste = .pasting_but_full;
+            },
+            .pasting_but_full => {},
+        }
+        return .continue_reading;
+    }
+
+    fn ringBell(self: *LineEditor) void {
+        self.renderer.writeRaw(&TERMINAL_BELL);
+    }
+
+    fn dispatchByte(self: *LineEditor, byte: u8) EditError!InputResult {
         switch (self.escape.process(byte)) {
             .not_escape => {},
             .consumed => return .continue_reading,
             .action => |action| {
-                self.handleEscapeAction(action);
+                try self.handleEscapeAction(action);
                 return .continue_reading;
             },
         }
 
-        if (self.paste_mode) {
-            _ = self.buffer.insertChar(byte);
-            return .continue_reading;
+        switch (self.paste) {
+            .not_pasting => {},
+            .pasting => {
+                try self.buffer.insertChar(byte);
+                return .continue_reading;
+            },
+            .pasting_but_full => return .continue_reading,
         }
 
         switch (byte) {
@@ -388,32 +416,32 @@ pub const LineEditor = struct {
             0x17 => self.buffer.deleteWordBefore(),  // Ctrl+W
             0x0c => self.handleClearScreen(),        // Ctrl+L
             0x7f, 0x08 => self.handleDeleteBackward(),
-            0x09 => self.insertTab(),                // Tab
-            0x10 => self.history.up(&self.buffer),                // Ctrl+P
-            0x0e => self.history.down(&self.buffer),              // Ctrl+N
+            0x09 => try self.insertTab(),                // Tab
+            0x10 => try self.history.up(&self.buffer),   // Ctrl+P
+            0x0e => try self.history.down(&self.buffer), // Ctrl+N
 
-            tok.EXPRESSION_OPEN  => self.handleOpenBracket(tok.EXPRESSION_OPEN, tok.EXPRESSION_CLOSE),
-            tok.EXPRESSION_CLOSE => self.handleCloseBracket(tok.EXPRESSION_CLOSE),
-            tok.LIST_OPEN        => self.handleOpenBracket(tok.LIST_OPEN, tok.LIST_CLOSE),
-            tok.LIST_CLOSE       => self.handleCloseBracket(tok.LIST_CLOSE),
-            tok.BLOCK_OPEN       => self.handleOpenBracket(tok.BLOCK_OPEN, tok.BLOCK_CLOSE),
-            tok.BLOCK_CLOSE      => self.handleCloseBracket(tok.BLOCK_CLOSE),
-            tok.QUOTE_DOUBLE     => self.handleQuote(tok.QUOTE_DOUBLE),
-            tok.QUOTE_SINGLE     => self.handleQuote(tok.QUOTE_SINGLE),
+            tok.EXPRESSION_OPEN  => try self.handleOpenBracket(tok.EXPRESSION_OPEN, tok.EXPRESSION_CLOSE),
+            tok.EXPRESSION_CLOSE => try self.handleCloseBracket(tok.EXPRESSION_CLOSE),
+            tok.LIST_OPEN        => try self.handleOpenBracket(tok.LIST_OPEN, tok.LIST_CLOSE),
+            tok.LIST_CLOSE       => try self.handleCloseBracket(tok.LIST_CLOSE),
+            tok.BLOCK_OPEN       => try self.handleOpenBracket(tok.BLOCK_OPEN, tok.BLOCK_CLOSE),
+            tok.BLOCK_CLOSE      => try self.handleCloseBracket(tok.BLOCK_CLOSE),
+            tok.QUOTE_DOUBLE     => try self.handleQuote(tok.QUOTE_DOUBLE),
+            tok.QUOTE_SINGLE     => try self.handleQuote(tok.QUOTE_SINGLE),
 
             else => {
                 if (byte >= 0x20 and byte < 0x7f) {
-                    _ = self.buffer.insertChar(byte);
+                    try self.buffer.insertChar(byte);
                 }
             },
         }
         return .continue_reading;
     }
 
-    fn handleEscapeAction(self: *LineEditor, action: EscapeAction) void {
+    fn handleEscapeAction(self: *LineEditor, action: EscapeAction) EditError!void {
         switch (action) {
-            .move_up         => self.handleUpKey(),
-            .move_down       => self.handleDownKey(),
+            .move_up         => try self.handleUpKey(),
+            .move_down       => try self.handleDownKey(),
             .move_right      => self.buffer.cursorRight(),
             .move_left       => self.buffer.cursorLeft(),
             .move_word_right => self.buffer.cursorWordRight(),
@@ -421,26 +449,21 @@ pub const LineEditor = struct {
             .home            => self.buffer.cursorToBeginning(),
             .end             => self.buffer.cursorToEnd(),
             .delete_forward  => self.buffer.deleteCharAt(),
-            .insert_newline  => self.insertNewlineWithIndent(),
+            .insert_newline  => try self.insertNewlineWithIndent(),
             .dedent          => self.dedentCurrentLine(),
-            .paste_start     => self.paste_mode = true,
-            .paste_end       => self.paste_mode = false,
+            .paste_start     => self.paste = .pasting,
+            .paste_end       => self.paste = .not_pasting,
         }
     }
 
     // Policy helpers
 
-    fn handleOpenBracket(self: *LineEditor, open: u8, close: u8) void {
-        if (self.autopair_insert) {
-            if (!self.buffer.insertPair(open, close)) {
-                _ = self.buffer.insertChar(open);
-            }
-        } else {
-            _ = self.buffer.insertChar(open);
-        }
+    fn handleOpenBracket(self: *LineEditor, open: u8, close: u8) EditError!void {
+        if (self.autopair_insert) return self.buffer.insertPair(open, close);
+        try self.buffer.insertChar(open);
     }
 
-    fn handleCloseBracket(self: *LineEditor, close: u8) void {
+    fn handleCloseBracket(self: *LineEditor, close: u8) EditError!void {
         if (self.autopair_insert) {
             if (self.buffer.peek(self.buffer.cursor)) |c| {
                 if (c == close) {
@@ -449,23 +472,18 @@ pub const LineEditor = struct {
                 }
             }
         }
-        _ = self.buffer.insertChar(close);
+        try self.buffer.insertChar(close);
     }
 
-    fn handleQuote(self: *LineEditor, quote: u8) void {
-        if (!self.autopair_insert) {
-            _ = self.buffer.insertChar(quote);
-            return;
-        }
+    fn handleQuote(self: *LineEditor, quote: u8) EditError!void {
+        if (!self.autopair_insert) return self.buffer.insertChar(quote);
         if (self.buffer.peek(self.buffer.cursor)) |c| {
             if (c == quote) {
                 self.buffer.cursorRight();
                 return;
             }
         }
-        if (!self.buffer.insertPair(quote, quote)) {
-            _ = self.buffer.insertChar(quote);
-        }
+        try self.buffer.insertPair(quote, quote);
     }
 
     fn handleDeleteBackward(self: *LineEditor) void {
@@ -527,34 +545,25 @@ pub const LineEditor = struct {
         self.renderer.render(self.buffer.slice(), self.buffer.cursor);
     }
 
-    fn handleUpKey(self: *LineEditor) void {
+    fn handleUpKey(self: *LineEditor) EditError!void {
         const content = self.buffer.slice();
         const cur_row = rowOf(content, self.buffer.cursor);
-        if (cur_row == 0) {
-            self.history.up(&self.buffer);
-            return;
-        }
+        if (cur_row == 0) return self.history.up(&self.buffer);
         const cur_col = colOf(content, self.buffer.cursor);
         self.buffer.cursor = offsetAt(content, cur_row - 1, cur_col);
     }
 
-    fn handleDownKey(self: *LineEditor) void {
+    fn handleDownKey(self: *LineEditor) EditError!void {
         const content = self.buffer.slice();
         const cur_row = rowOf(content, self.buffer.cursor);
         const last_row = rowOf(content, content.len);
-        if (cur_row >= last_row) {
-            self.history.down(&self.buffer);
-            return;
-        }
+        if (cur_row >= last_row) return self.history.down(&self.buffer);
         const cur_col = colOf(content, self.buffer.cursor);
         self.buffer.cursor = offsetAt(content, cur_row + 1, cur_col);
     }
 
-    fn insertTab(self: *LineEditor) void {
-        var i: usize = 0;
-        while (i < self.indent_width) : (i += 1) {
-            if (!self.buffer.insertChar(' ')) break;
-        }
+    fn insertTab(self: *LineEditor) EditError!void {
+        return self.buffer.insertRepeated(' ', self.indent_width);
     }
 
     fn dedentCurrentLine(self: *LineEditor) void {
@@ -568,23 +577,22 @@ pub const LineEditor = struct {
         self.buffer.removeRange(line_start, line_start + leading_spaces);
     }
 
-    fn insertNewlineWithIndent(self: *LineEditor) void {
+    fn insertNewlineWithIndent(self: *LineEditor) EditError!void {
         const level = structuralIndentLevel(self.buffer.data[0..self.buffer.cursor]);
 
-        if (self.bracket_expand and self.cursorInsideMatchedPair()) {
-            self.expandPairAcrossLines(level);
-            return;
-        }
+        if (self.bracket_expand and self.cursorInsideMatchedPair()) return self.expandPairAcrossLines(level);
 
-        if (!self.buffer.insertChar('\n')) return;
-        self.insertIndent(level);
+        try self.buffer.reserve(1 + self.indentLength(level));
+        try self.buffer.insertChar('\n');
+        try self.insertIndent(level);
     }
 
-    fn insertIndent(self: *LineEditor, level: usize) void {
-        var i: usize = 0;
-        while (i < level * self.indent_width) : (i += 1) {
-            if (!self.buffer.insertChar(' ')) return;
-        }
+    fn indentLength(self: *const LineEditor, level: usize) usize {
+        return level * self.indent_width;
+    }
+
+    fn insertIndent(self: *LineEditor, level: usize) EditError!void {
+        return self.buffer.insertRepeated(' ', self.indentLength(level));
     }
 
     fn cursorInsideMatchedPair(self: *LineEditor) bool {
@@ -600,14 +608,16 @@ pub const LineEditor = struct {
         };
     }
 
-    fn expandPairAcrossLines(self: *LineEditor, level: usize) void {
-        if (!self.buffer.insertChar('\n')) return;
-        self.insertIndent(level);
+    fn expandPairAcrossLines(self: *LineEditor, level: usize) EditError!void {
+        try self.buffer.reserve(2 + self.indentLength(level) + self.indentLength(level -| 1));
+
+        try self.buffer.insertChar('\n');
+        try self.insertIndent(level);
 
         const cursor_after_middle = self.buffer.cursor;
 
-        if (!self.buffer.insertChar('\n')) return;
-        self.insertIndent(level -| 1);
+        try self.buffer.insertChar('\n');
+        try self.insertIndent(level -| 1);
 
         self.buffer.cursor = cursor_after_middle;
     }
@@ -620,16 +630,15 @@ pub const LineEditor = struct {
     fn testInit() LineEditor {
         return .{
             .allocator = std.testing.allocator,
+            .buffer = LineBuffer.init(std.testing.allocator),
             .renderer = Renderer.init(&test_discarding.writer),
             .history = History.init(std.testing.allocator),
             .is_terminal = false,
         };
     }
 
-    fn testInsertString(self: *LineEditor, string: []const u8) void {
-        for (string) |byte| {
-            _ = self.buffer.insertChar(byte);
-        }
+    fn testInsertString(self: *LineEditor, string: []const u8) EditError!void {
+        for (string) |byte| try self.buffer.insertChar(byte);
     }
 
     fn getLineSlice(self: *const LineEditor) []const u8 {
@@ -732,8 +741,8 @@ test "Alt+Enter indents a bare top-level call one level" {
     var editor = LineEditor.testInit();
     defer editor.deinit();
 
-    editor.testInsertString("foo");
-    editor.insertNewlineWithIndent();
+    try editor.testInsertString("foo");
+    try editor.insertNewlineWithIndent();
     try std.testing.expectEqualStrings("foo\n    ", editor.buffer.slice());
     try std.testing.expectEqual(@as(usize, 8), editor.buffer.cursor);
 }
@@ -742,8 +751,8 @@ test "Alt+Enter on a bare proc keeps body steps at one level" {
     var editor = LineEditor.testInit();
     defer editor.deinit();
 
-    editor.testInsertString("proc (step1)");
-    editor.insertNewlineWithIndent();
+    try editor.testInsertString("proc (step1)");
+    try editor.insertNewlineWithIndent();
     try std.testing.expectEqualStrings("proc (step1)\n    ", editor.buffer.slice());
 }
 
@@ -751,8 +760,8 @@ test "Alt+Enter adds a level for each unclosed bracket" {
     var editor = LineEditor.testInit();
     defer editor.deinit();
 
-    editor.testInsertString("proc (let");
-    editor.insertNewlineWithIndent();
+    try editor.testInsertString("proc (let");
+    try editor.insertNewlineWithIndent();
     try std.testing.expectEqualStrings("proc (let\n        ", editor.buffer.slice());
 }
 
@@ -760,9 +769,9 @@ test "Alt+Enter at line start inserts just newline (no indent)" {
     var editor = LineEditor.testInit();
     defer editor.deinit();
 
-    editor.testInsertString("    foo");
+    try editor.testInsertString("    foo");
     editor.buffer.cursor = 0;
-    editor.insertNewlineWithIndent();
+    try editor.insertNewlineWithIndent();
     try std.testing.expectEqualStrings("\n    foo", editor.buffer.slice());
     try std.testing.expectEqual(@as(usize, 1), editor.buffer.cursor);
 }
@@ -771,9 +780,9 @@ test "Alt+Enter with only whitespace before the cursor adds no indent" {
     var editor = LineEditor.testInit();
     defer editor.deinit();
 
-    editor.testInsertString("    foo");
+    try editor.testInsertString("    foo");
     editor.buffer.cursor = 2;
-    editor.insertNewlineWithIndent();
+    try editor.insertNewlineWithIndent();
     try std.testing.expectEqualStrings("  \n  foo", editor.buffer.slice());
 }
 
@@ -791,8 +800,8 @@ test "Tab inserts INDENT_WIDTH spaces at cursor" {
     var editor = LineEditor.testInit();
     defer editor.deinit();
 
-    editor.testInsertString("foo");
-    editor.insertTab();
+    try editor.testInsertString("foo");
+    try editor.insertTab();
     var expected_buf: [16]u8 = undefined;
     var len: usize = 3;
     @memcpy(expected_buf[0..3], "foo");
@@ -815,7 +824,7 @@ test "Shift+Tab removes leading spaces from current line" {
         leading_buf[total] = ' ';
     }
     @memcpy(leading_buf[total..][0..3], "foo");
-    editor.testInsertString(leading_buf[0 .. total + 3]);
+    try editor.testInsertString(leading_buf[0 .. total + 3]);
     editor.dedentCurrentLine();
 
     var expected: [32]u8 = undefined;
@@ -831,7 +840,7 @@ test "Shift+Tab on line with no leading spaces is a no-op" {
     var editor = LineEditor.testInit();
     defer editor.deinit();
 
-    editor.testInsertString("foo");
+    try editor.testInsertString("foo");
     editor.dedentCurrentLine();
     try std.testing.expectEqualStrings("foo", editor.buffer.slice());
 }
@@ -849,7 +858,7 @@ test "Shift+Tab dedents the current line in a multi-line buffer" {
         pos += 1;
     }
     @memcpy(head[pos..][0..3], "bar");
-    editor.testInsertString(head[0 .. pos + 3]);
+    try editor.testInsertString(head[0 .. pos + 3]);
 
     editor.dedentCurrentLine();
 
@@ -869,9 +878,9 @@ test "Alt+Enter inside `(|)` expands the pair across two lines" {
     var editor = LineEditor.testInit();
     defer editor.deinit();
 
-    editor.testInsertString("()");
+    try editor.testInsertString("()");
     editor.buffer.cursor = 1;
-    editor.insertNewlineWithIndent();
+    try editor.insertNewlineWithIndent();
 
     var expected: [16]u8 = undefined;
     var len: usize = 0;
@@ -891,9 +900,9 @@ test "Alt+Enter inside `[|]` also expands" {
     var editor = LineEditor.testInit();
     defer editor.deinit();
 
-    editor.testInsertString("[]");
+    try editor.testInsertString("[]");
     editor.buffer.cursor = 1;
-    editor.insertNewlineWithIndent();
+    try editor.insertNewlineWithIndent();
 
     try std.testing.expect(std.mem.findScalar(u8, editor.buffer.slice(), tok.LIST_OPEN) == 0);
     try std.testing.expect(std.mem.findScalar(u8, editor.buffer.slice(), tok.LIST_CLOSE) != null);
@@ -905,8 +914,8 @@ test "Alt+Enter outside paired brackets indents structurally, not by copying" {
     var editor = LineEditor.testInit();
     defer editor.deinit();
 
-    editor.testInsertString("  foo");
-    editor.insertNewlineWithIndent();
+    try editor.testInsertString("  foo");
+    try editor.insertNewlineWithIndent();
     try std.testing.expectEqualStrings("  foo\n    ", editor.buffer.slice());
 }
 
@@ -914,9 +923,9 @@ test "Alt+Enter inside `\"|\"` does NOT expand (strings are single-line)" {
     var editor = LineEditor.testInit();
     defer editor.deinit();
 
-    editor.testInsertString("\"\"");
+    try editor.testInsertString("\"\"");
     editor.buffer.cursor = 1;
-    editor.insertNewlineWithIndent();
+    try editor.insertNewlineWithIndent();
     try std.testing.expectEqualStrings("\"\n\"", editor.buffer.slice());
 }
 
@@ -924,9 +933,9 @@ test "Backspace on indented middle line of expanded pair collapses it" {
     var editor = LineEditor.testInit();
     defer editor.deinit();
 
-    editor.testInsertString("()");
+    try editor.testInsertString("()");
     editor.buffer.cursor = 1;
-    editor.insertNewlineWithIndent();
+    try editor.insertNewlineWithIndent();
     editor.handleDeleteBackward();
     try std.testing.expectEqualStrings("()", editor.buffer.slice());
     try std.testing.expectEqual(@as(usize, 1), editor.buffer.cursor);
@@ -936,10 +945,10 @@ test "Backspace collapses expanded pair in the middle of larger content" {
     var editor = LineEditor.testInit();
     defer editor.deinit();
 
-    editor.testInsertString("say (");
-    editor.testInsertString(")");
+    try editor.testInsertString("say (");
+    try editor.testInsertString(")");
     editor.buffer.cursor = 5;
-    editor.insertNewlineWithIndent();
+    try editor.insertNewlineWithIndent();
     editor.handleDeleteBackward();
     try std.testing.expectEqualStrings("say ()", editor.buffer.slice());
     try std.testing.expectEqual(@as(usize, 5), editor.buffer.cursor);
@@ -949,12 +958,12 @@ test "Backspace collapses a nested (indented) expanded pair" {
     var editor = LineEditor.testInit();
     defer editor.deinit();
 
-    editor.testInsertString("()");
+    try editor.testInsertString("()");
     editor.buffer.cursor = 1;
-    editor.insertNewlineWithIndent();
-    editor.testInsertString("()");
+    try editor.insertNewlineWithIndent();
+    try editor.testInsertString("()");
     editor.buffer.cursor -= 1;
-    editor.insertNewlineWithIndent();
+    try editor.insertNewlineWithIndent();
 
     editor.handleDeleteBackward();
 
@@ -978,10 +987,10 @@ test "Backspace does NOT collapse if the indented line has content" {
     var editor = LineEditor.testInit();
     defer editor.deinit();
 
-    editor.testInsertString("()");
+    try editor.testInsertString("()");
     editor.buffer.cursor = 1;
-    editor.insertNewlineWithIndent();
-    editor.testInsertString("x");
+    try editor.insertNewlineWithIndent();
+    try editor.testInsertString("x");
     editor.handleDeleteBackward();
     var expected: [16]u8 = undefined;
     var len: usize = 0;
@@ -999,9 +1008,9 @@ test "Backspace collapse disabled when bracket_expand is off" {
     defer editor.deinit();
     editor.bracket_expand = true;
 
-    editor.testInsertString("()");
+    try editor.testInsertString("()");
     editor.buffer.cursor = 1;
-    editor.insertNewlineWithIndent();
+    try editor.insertNewlineWithIndent();
     editor.bracket_expand = false;
     editor.handleDeleteBackward();
     var expected: [16]u8 = undefined;
@@ -1020,9 +1029,9 @@ test "Alt+Enter inside `(|)` with bracket_expand disabled still indents" {
     defer editor.deinit();
     editor.bracket_expand = false;
 
-    editor.testInsertString("()");
+    try editor.testInsertString("()");
     editor.buffer.cursor = 1;
-    editor.insertNewlineWithIndent();
+    try editor.insertNewlineWithIndent();
     try std.testing.expectEqualStrings("(\n    )", editor.buffer.slice());
 }
 
@@ -1031,8 +1040,8 @@ test "Up arrow on row 0 falls through to history" {
     defer editor.deinit();
 
     try editor.history.add("prev cmd");
-    editor.testInsertString("current");
-    editor.handleUpKey();
+    try editor.testInsertString("current");
+    try editor.handleUpKey();
     try std.testing.expectEqualStrings("prev cmd", editor.buffer.slice());
 }
 
@@ -1040,8 +1049,8 @@ test "Up arrow on row > 0 moves cursor up within buffer" {
     var editor = LineEditor.testInit();
     defer editor.deinit();
 
-    editor.testInsertString("abc\ndefgh");
-    editor.handleUpKey();
+    try editor.testInsertString("abc\ndefgh");
+    try editor.handleUpKey();
     try std.testing.expectEqual(@as(usize, 3), editor.buffer.cursor);
 }
 
@@ -1051,9 +1060,9 @@ test "Down arrow on last row falls through to history" {
 
     try editor.history.add("first");
     try editor.history.add("second");
-    editor.testInsertString("current");
-    editor.handleUpKey();
-    editor.handleDownKey();
+    try editor.testInsertString("current");
+    try editor.handleUpKey();
+    try editor.handleDownKey();
     try std.testing.expectEqualStrings("current", editor.buffer.slice());
 }
 
@@ -1061,9 +1070,9 @@ test "Down arrow on row < last_row moves cursor down within buffer" {
     var editor = LineEditor.testInit();
     defer editor.deinit();
 
-    editor.testInsertString("abcde\nfg");
+    try editor.testInsertString("abcde\nfg");
     editor.buffer.cursor = 3;
-    editor.handleDownKey();
+    try editor.handleDownKey();
     try std.testing.expectEqual(@as(usize, 8), editor.buffer.cursor);
 }
 
@@ -1096,7 +1105,7 @@ test "bracketed paste: literal newlines, no autopair, no submit" {
     _ = editor.processInput('0');
     _ = editor.processInput('0');
     _ = editor.processInput('~');
-    try std.testing.expect(editor.paste_mode);
+    try std.testing.expectEqual(PasteState.pasting, editor.paste);
 
     for ("(foo\nbar)") |byte| {
         const result = editor.processInput(byte);
@@ -1110,7 +1119,7 @@ test "bracketed paste: literal newlines, no autopair, no submit" {
     _ = editor.processInput('0');
     _ = editor.processInput('1');
     _ = editor.processInput('~');
-    try std.testing.expect(!editor.paste_mode);
+    try std.testing.expectEqual(PasteState.not_pasting, editor.paste);
 }
 
 test "Ctrl+P always navigates history regardless of cursor position" {
@@ -1118,7 +1127,7 @@ test "Ctrl+P always navigates history regardless of cursor position" {
     defer editor.deinit();
 
     try editor.history.add("prev");
-    editor.testInsertString("abc\ndef");
+    try editor.testInsertString("abc\ndef");
     _ = editor.processInput(0x10);
     try std.testing.expectEqualStrings("prev", editor.buffer.slice());
 }
@@ -1190,7 +1199,7 @@ test "processInput: submit on enter" {
     var editor = LineEditor.testInit();
     defer editor.deinit();
 
-    editor.testInsertString("hello");
+    try editor.testInsertString("hello");
     try std.testing.expectEqual(LineEditor.InputResult.submit_line, editor.processInput('\r'));
 }
 
@@ -1198,7 +1207,7 @@ test "processInput: ctrl+c cancels line" {
     var editor = LineEditor.testInit();
     defer editor.deinit();
 
-    editor.testInsertString("hello");
+    try editor.testInsertString("hello");
     try std.testing.expectEqual(LineEditor.InputResult.cancel_line, editor.processInput(0x03));
 }
 
@@ -1213,7 +1222,7 @@ test "processInput: backspace deletes backward" {
     var editor = LineEditor.testInit();
     defer editor.deinit();
 
-    editor.testInsertString("abc");
+    try editor.testInsertString("abc");
     try std.testing.expectEqual(LineEditor.InputResult.continue_reading, editor.processInput(0x7f));
     try std.testing.expectEqualStrings("ab", editor.getLineSlice());
 }
@@ -1285,11 +1294,11 @@ test "piped input: lines are joined until every bracket and string closes" {
     try std.testing.expect(try editor.readPipedCommand(&bytes) == .eof);
 }
 
-test "piped input: a line longer than the keyboard's buffer stays one command" {
+test "piped input: a line past the old 4096-byte cut stays one command" {
     var editor = LineEditor.testInit();
     defer editor.deinit();
 
-    const line = try std.testing.allocator.alloc(u8, BUFFER_SIZE + 1000);
+    const line = try std.testing.allocator.alloc(u8, 5000);
     defer std.testing.allocator.free(line);
     @memset(line, 'x');
 
@@ -1345,6 +1354,75 @@ test "recordInHistory: a line history can't copy rings the bell, once" {
     editor.recordInHistory("say 2");
     try std.testing.expectEqual(before_failure + 1, LineEditor.test_discarding.fullCount());
     try std.testing.expectEqual(@as(usize, 1), editor.history.count);
+
+    editor.history.allocator = std.testing.allocator;
+}
+
+fn bellsIn(output: []const u8) usize {
+    return std.mem.count(u8, output, &TERMINAL_BELL);
+}
+
+test "a key whose edit can't be made rings the bell once and changes nothing" {
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    var editor = LineEditor.testInit();
+    defer editor.deinit();
+    editor.renderer = Renderer.init(&output.writer);
+
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    editor.buffer.allocator = failing.allocator();
+
+    _ = editor.processInput('a');
+    try std.testing.expectEqual(@as(usize, 1), bellsIn(output.written()));
+    _ = editor.processInput(0x09);
+    try std.testing.expectEqual(@as(usize, 2), bellsIn(output.written()));
+    try std.testing.expectEqualStrings("", editor.buffer.slice());
+
+    editor.buffer.allocator = std.testing.allocator;
+}
+
+test "a paste that runs out of room rings once, drops the rest, and typing rings again" {
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    var editor = LineEditor.testInit();
+    defer editor.deinit();
+    editor.renderer = Renderer.init(&output.writer);
+
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 1 });
+    editor.buffer.allocator = failing.allocator();
+
+    for ("\x1b[200~") |byte| _ = editor.processInput(byte);
+    for (0..300) |_| _ = editor.processInput('p');
+    try std.testing.expectEqual(PasteState.pasting_but_full, editor.paste);
+    for ("\x1b[201~") |byte| _ = editor.processInput(byte);
+
+    try std.testing.expectEqual(PasteState.not_pasting, editor.paste);
+    try std.testing.expectEqual(@as(usize, 256), editor.buffer.length);
+    try std.testing.expectEqual(@as(usize, 1), bellsIn(output.written()));
+
+    _ = editor.processInput('t');
+    try std.testing.expectEqual(@as(usize, 2), bellsIn(output.written()));
+
+    editor.buffer.allocator = std.testing.allocator;
+}
+
+test "Up keeps the typed line and rings the bell when history can't save it" {
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    var editor = LineEditor.testInit();
+    defer editor.deinit();
+    editor.renderer = Renderer.init(&output.writer);
+
+    try editor.history.add("old command");
+    try editor.testInsertString("typed");
+
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    editor.history.allocator = failing.allocator();
+
+    for ("\x1b[A") |byte| _ = editor.processInput(byte);
+    try std.testing.expectEqualStrings("typed", editor.buffer.slice());
+    try std.testing.expect(editor.history.browse_index == null);
+    try std.testing.expectEqual(@as(usize, 1), bellsIn(output.written()));
 
     editor.history.allocator = std.testing.allocator;
 }

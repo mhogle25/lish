@@ -11,7 +11,7 @@ const renderer_mod = @import("line_editor/renderer.zig");
 const editor_mod = @import("line_editor/editor.zig");
 
 pub const LineBuffer = buffer_mod.LineBuffer;
-pub const BUFFER_SIZE = buffer_mod.BUFFER_SIZE;
+pub const LINE_MAX_LENGTH = buffer_mod.LINE_MAX_LENGTH;
 pub const rowOf = buffer_mod.rowOf;
 pub const colOf = buffer_mod.colOf;
 pub const offsetAt = buffer_mod.offsetAt;
