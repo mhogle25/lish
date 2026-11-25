@@ -50,7 +50,8 @@ pub const History = struct {
         self.write_index = 0;
     }
 
-    pub fn add(self: *History, line: []const u8) void {
+    /// Records `line`. If the copy can't be made, history is left exactly as it was.
+    pub fn add(self: *History, line: []const u8) Allocator.Error!void {
         if (self.count > 0) {
             const last_index = if (self.write_index == 0) self.limit - 1 else self.write_index - 1;
             if (self.entries[last_index]) |last_entry| {
@@ -58,11 +59,10 @@ pub const History = struct {
             }
         }
 
+        const copy = try self.allocator.dupe(u8, line);
         if (self.entries[self.write_index]) |old_entry| {
             self.allocator.free(old_entry);
         }
-
-        const copy = self.allocator.dupe(u8, line) catch return;
         self.entries[self.write_index] = copy;
         self.write_index = (self.write_index + 1) % self.limit;
         if (self.count < self.limit) self.count += 1;
@@ -145,9 +145,9 @@ test "history: add and navigate" {
     var history = History.init(std.testing.allocator);
     defer history.deinit();
 
-    history.add("first");
-    history.add("second");
-    history.add("third");
+    try history.add("first");
+    try history.add("second");
+    try history.add("third");
 
     try std.testing.expectEqual(@as(usize, 3), history.count);
 
@@ -176,8 +176,8 @@ test "history: up lands cursor at end, down lands cursor at start" {
     var history = History.init(std.testing.allocator);
     defer history.deinit();
 
-    history.add("a\nbb");
-    history.add("ccc\ndddd");
+    try history.add("a\nbb");
+    try history.add("ccc\ndddd");
 
     history.up(&buffer);
     try std.testing.expectEqualStrings("ccc\ndddd", buffer.slice());
@@ -196,9 +196,9 @@ test "history: skip duplicates" {
     var history = History.init(std.testing.allocator);
     defer history.deinit();
 
-    history.add("hello");
-    history.add("hello");
-    history.add("hello");
+    try history.add("hello");
+    try history.add("hello");
+    try history.add("hello");
 
     try std.testing.expectEqual(@as(usize, 1), history.count);
 }
@@ -208,7 +208,7 @@ test "history: saves current line when browsing" {
     var history = History.init(std.testing.allocator);
     defer history.deinit();
 
-    history.add("old command");
+    try history.add("old command");
     testInsertString(&buffer, "in progress");
 
     history.up(&buffer);
@@ -226,7 +226,7 @@ test "history: ring buffer wrapping" {
     for (0..DEFAULT_HISTORY_SIZE + 10) |idx| {
         var num_buf: [16]u8 = undefined;
         const num_str = std.mem.print(&num_buf, "cmd {d}", .{idx}) catch continue;
-        history.add(num_str);
+        try history.add(num_str);
     }
 
     try std.testing.expectEqual(@as(usize, DEFAULT_HISTORY_SIZE), history.count);
@@ -250,8 +250,27 @@ test "history: down without browsing does nothing" {
     var history = History.init(std.testing.allocator);
     defer history.deinit();
 
-    history.add("something");
+    try history.add("something");
     history.down(&buffer);
     try std.testing.expectEqualStrings("", buffer.slice());
     try std.testing.expect(history.browse_index == null);
+}
+
+test "history: a failed copy leaves history exactly as it was" {
+    var buffer = LineBuffer{};
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 2 });
+    var history = History.init(failing.allocator());
+    defer history.deinit();
+    history.setLimit(2);
+
+    try history.add("one");
+    try history.add("two");
+    try std.testing.expectError(error.OutOfMemory, history.add("three"));
+    try std.testing.expectError(error.OutOfMemory, history.add("four"));
+    try std.testing.expectEqual(@as(usize, 2), history.count);
+
+    history.up(&buffer);
+    try std.testing.expectEqualStrings("two", buffer.slice());
+    history.up(&buffer);
+    try std.testing.expectEqualStrings("one", buffer.slice());
 }

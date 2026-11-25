@@ -24,6 +24,9 @@ const History = history_mod.History;
 
 const INDENT_WIDTH = 4;
 
+/// Rung when the editor couldn't do what was asked, instead of failing silently.
+const TERMINAL_BELL = [_]u8{tok.BELL};
+
 /// The longest command piped input may hold: the same limit as a script file
 /// (`process.LISH_FILE_MAX_SIZE`; a test in `repl.zig` keeps the two equal).
 pub const PIPED_COMMAND_MAX_LENGTH = 1024 * 1024;
@@ -259,10 +262,7 @@ pub const LineEditor = struct {
                     self.renderer.writeRaw("\r\n");
                     self.renderer.reset();
                     const line = self.buffer.data[0..self.buffer.length];
-                    const trimmed = std.mem.trim(u8, line, " \t\r");
-                    if (trimmed.len > 0) {
-                        self.history.add(trimmed);
-                    }
+                    self.recordInHistory(line);
                     return .{ .line = line };
                 },
                 .cancel_line => {
@@ -285,6 +285,14 @@ pub const LineEditor = struct {
                 },
             }
         }
+    }
+
+    /// Saves a submitted line to history. A line history can't copy still runs;
+    /// the bell says it wasn't recorded.
+    fn recordInHistory(self: *LineEditor, line: []const u8) void {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len == 0) return;
+        self.history.add(trimmed) catch self.renderer.writeRaw(&TERMINAL_BELL);
     }
 
     /// Reads one command from piped input. Lines are joined while a bracket or
@@ -1022,7 +1030,7 @@ test "Up arrow on row 0 falls through to history" {
     var editor = LineEditor.testInit();
     defer editor.deinit();
 
-    editor.history.add("prev cmd");
+    try editor.history.add("prev cmd");
     editor.testInsertString("current");
     editor.handleUpKey();
     try std.testing.expectEqualStrings("prev cmd", editor.buffer.slice());
@@ -1041,8 +1049,8 @@ test "Down arrow on last row falls through to history" {
     var editor = LineEditor.testInit();
     defer editor.deinit();
 
-    editor.history.add("first");
-    editor.history.add("second");
+    try editor.history.add("first");
+    try editor.history.add("second");
     editor.testInsertString("current");
     editor.handleUpKey();
     editor.handleDownKey();
@@ -1109,7 +1117,7 @@ test "Ctrl+P always navigates history regardless of cursor position" {
     var editor = LineEditor.testInit();
     defer editor.deinit();
 
-    editor.history.add("prev");
+    try editor.history.add("prev");
     editor.testInsertString("abc\ndef");
     _ = editor.processInput(0x10);
     try std.testing.expectEqualStrings("prev", editor.buffer.slice());
@@ -1319,4 +1327,24 @@ test "piped input: a command over the limit is skipped and named by its first li
         .line, .eof  => return error.TestUnexpectedResult,
     }
     try expectPipedLine(&editor, &bytes, "say 2");
+}
+
+test "recordInHistory: a line history can't copy rings the bell, once" {
+    var editor = LineEditor.testInit();
+    defer editor.deinit();
+
+    const before_success = LineEditor.test_discarding.fullCount();
+    editor.recordInHistory("say 1");
+    try std.testing.expectEqual(before_success, LineEditor.test_discarding.fullCount());
+    try std.testing.expectEqual(@as(usize, 1), editor.history.count);
+
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    editor.history.allocator = failing.allocator();
+
+    const before_failure = LineEditor.test_discarding.fullCount();
+    editor.recordInHistory("say 2");
+    try std.testing.expectEqual(before_failure + 1, LineEditor.test_discarding.fullCount());
+    try std.testing.expectEqual(@as(usize, 1), editor.history.count);
+
+    editor.history.allocator = std.testing.allocator;
 }
