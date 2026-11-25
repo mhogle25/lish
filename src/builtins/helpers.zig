@@ -11,7 +11,7 @@ pub fn getString(env: *Env, op_name: []const u8, value: Value, buf: []u8) ExecEr
     if (value == .list) {
         return value.sourceText(env.allocator, env.bounds.max_string_length) catch |err| switch (err) {
             error.OutOfMemory => error.OutOfMemory,
-            error.StringTooLarge => env.failFmt(.string_too_large, "'{s}': list text longer than max_string_length ({d})", .{ op_name, env.bounds.max_string_length.? }),
+            error.StringTooLarge => env.failFmt(.string_too_large, "'{s}': list text longer than max_string_length ({?d})", .{ op_name, env.bounds.max_string_length }),
         };
     }
     return value.getS(buf) catch env.failFmt(.out_of_space, "'{s}': a {s} does not fit in the {d}-byte string buffer", .{ op_name, value.typeName(), buf.len });
@@ -116,12 +116,8 @@ pub fn numericComparison(
 }
 
 pub fn naturalLessThan(_: void, left: ?Value, right: ?Value) bool {
-    if (left == null and right == null) return false;
-    if (left == null) return true;
-    if (right == null) return false;
-
-    const lv = left.?;
-    const rv = right.?;
+    const lv = left orelse return right != null;
+    const rv = right orelse return false;
 
     if (lv.isNumber() and rv.isNumber()) {
         const lf = lv.getF() catch unreachable;

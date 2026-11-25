@@ -113,8 +113,9 @@ fn executeUnit(env: *Env, unit: Unit, scope: ?*const Scope) (Allocator.Error)!Pr
         error.RuntimeError => return .{ .runtime_err = env.runtime_error orelse .{ .category = .internal, .message = "Unknown runtime error" } },
         error.OutOfMemory => {
             if (env.memory_budget_tripped) {
-                env.runtime_error = .{ .category = .memory_exhausted, .message = "Memory budget exhausted", .source = env.current_source, .position = null };
-                return .{ .runtime_err = env.runtime_error.? };
+                const budget_error: RuntimeErr = .{ .category = .memory_exhausted, .message = "Memory budget exhausted", .source = env.current_source, .position = null };
+                env.runtime_error = budget_error;
+                return .{ .runtime_err = budget_error };
             }
             return error.OutOfMemory;
         },

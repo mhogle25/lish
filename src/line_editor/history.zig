@@ -71,27 +71,35 @@ pub const History = struct {
     pub fn up(self: *History, buffer: *LineBuffer) void {
         if (self.count == 0) return;
 
-        if (self.browse_index == null) {
-            @memcpy(self.saved_buffer[0..buffer.length], buffer.data[0..buffer.length]);
-            self.saved_length = buffer.length;
+        const next_index = if (self.browse_index) |current|
+            self.olderIndex(current) orelse return
+        else
+            self.startBrowsing(buffer);
 
-            self.browse_index = if (self.write_index == 0) self.limit - 1 else self.write_index - 1;
-        } else {
-            const oldest_index = if (self.count < self.limit) 0 else self.write_index;
-            if (self.browse_index.? == oldest_index) return;
+        self.browse_index = next_index;
+        self.loadEntry(next_index, buffer, .end);
+    }
 
-            self.browse_index = if (self.browse_index.? == 0) self.limit - 1 else self.browse_index.? - 1;
-        }
+    fn startBrowsing(self: *History, buffer: *const LineBuffer) usize {
+        @memcpy(self.saved_buffer[0..buffer.length], buffer.data[0..buffer.length]);
+        self.saved_length = buffer.length;
 
-        self.loadEntry(self.browse_index.?, buffer, .end);
+        return if (self.write_index == 0) self.limit - 1 else self.write_index - 1;
+    }
+
+    fn olderIndex(self: *const History, current: usize) ?usize {
+        const oldest_index = if (self.count < self.limit) 0 else self.write_index;
+        if (current == oldest_index) return null;
+
+        return if (current == 0) self.limit - 1 else current - 1;
     }
 
     pub fn down(self: *History, buffer: *LineBuffer) void {
-        if (self.browse_index == null) return;
+        const current = self.browse_index orelse return;
 
         const newest_index = if (self.write_index == 0) self.limit - 1 else self.write_index - 1;
 
-        if (self.browse_index.? == newest_index) {
+        if (current == newest_index) {
             self.browse_index = null;
             @memcpy(buffer.data[0..self.saved_length], self.saved_buffer[0..self.saved_length]);
             buffer.length = self.saved_length;
@@ -99,8 +107,9 @@ pub const History = struct {
             return;
         }
 
-        self.browse_index = (self.browse_index.? + 1) % self.limit;
-        self.loadEntry(self.browse_index.?, buffer, .start);
+        const next_index = (current + 1) % self.limit;
+        self.browse_index = next_index;
+        self.loadEntry(next_index, buffer, .start);
     }
 
     pub fn endBrowse(self: *History) void {

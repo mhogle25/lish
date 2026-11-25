@@ -43,17 +43,14 @@ pub fn validate(allocator: Allocator, ast_root: *const AstNode) Allocator.Error!
     var errors = ValidationErrors{};
     var site_counter: u32 = 0;
 
-    const maybe_thunk = try validateStep(allocator, ast_root, &errors, &site_counter);
-
-    if (maybe_thunk == null) {
+    const thunk = try validateStep(allocator, ast_root, &errors, &site_counter) orelse {
         if (ast_root.body != .expression) {
             try errors.add(allocator, .{ .message = "Expected the root of the AST to be an expression" });
         }
 
         return .{ .err = errors.slice() };
-    }
+    };
 
-    const thunk = maybe_thunk.?;
     if (thunk.body != .expression) {
         try errors.add(allocator, .{ .message = "Expected the root to produce an expression thunk" });
         return .{ .err = errors.slice() };
@@ -137,7 +134,7 @@ fn validateExpression(
         try addBracketError(allocator, errors, close_err);
     }
 
-    if (id_thunk == null) return null;
+    const name = id_thunk orelse return null;
 
     if (errors.count() > init_error_count) return null;
 
@@ -146,7 +143,7 @@ fn validateExpression(
 
     const thunk = try allocator.create(Thunk);
     thunk.* = .{ .position = position, .body = .{ .expression = .{
-        .name = id_thunk.?,
+        .name = name,
         .args = valid_args.items,
         .site = site,
     } } };

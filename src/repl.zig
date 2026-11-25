@@ -111,13 +111,12 @@ fn maxCallDepthOp(config: *ReplConfig, args: exec_mod.Args) exec_mod.ExecError!?
 }
 
 fn fuelOp(config: *ReplConfig, args: exec_mod.Args) exec_mod.ExecError!?value_mod.Value {
-    const value = try (try args.single()).get();
-    if (value == null) {
+    const value = try (try args.single()).get() orelse {
         config.bounds.fuel = null;
         return null;
-    }
+    };
 
-    const n = value.?.getI() catch return args.env.failFmt(.type_mismatch, "{s} expects an integer or $off, got {s}", .{ op_fuel, value.?.typeName() });
+    const n = value.getI() catch return args.env.failFmt(.type_mismatch, "{s} expects an integer or $off, got {s}", .{ op_fuel, value.typeName() });
 
     if (n < 1) return args.env.fail(.invalid_argument, op_fuel ++ " must be a positive integer");
 
@@ -127,13 +126,12 @@ fn fuelOp(config: *ReplConfig, args: exec_mod.Args) exec_mod.ExecError!?value_mo
 }
 
 fn maxListLengthOp(config: *ReplConfig, args: exec_mod.Args) exec_mod.ExecError!?value_mod.Value {
-    const value = try (try args.single()).get();
-    if (value == null) {
+    const value = try (try args.single()).get() orelse {
         config.bounds.max_list_length = null;
         return null;
-    }
+    };
 
-    const n = value.?.getI() catch return args.env.failFmt(.type_mismatch, "{s} expects an integer or $off, got {s}", .{ op_max_list_length, value.?.typeName() });
+    const n = value.getI() catch return args.env.failFmt(.type_mismatch, "{s} expects an integer or $off, got {s}", .{ op_max_list_length, value.typeName() });
 
     if (n < 1) return args.env.fail(.invalid_argument, op_max_list_length ++ " must be a positive integer");
 
@@ -143,13 +141,12 @@ fn maxListLengthOp(config: *ReplConfig, args: exec_mod.Args) exec_mod.ExecError!
 }
 
 fn maxStringLengthOp(config: *ReplConfig, args: exec_mod.Args) exec_mod.ExecError!?value_mod.Value {
-    const value = try (try args.single()).get();
-    if (value == null) {
+    const value = try (try args.single()).get() orelse {
         config.bounds.max_string_length = null;
         return null;
-    }
+    };
 
-    const n = value.?.getI() catch return args.env.failFmt(.type_mismatch, "{s} expects an integer or $off, got {s}", .{ op_max_string_length, value.?.typeName() });
+    const n = value.getI() catch return args.env.failFmt(.type_mismatch, "{s} expects an integer or $off, got {s}", .{ op_max_string_length, value.typeName() });
 
     if (n < 1) return args.env.fail(.invalid_argument, op_max_string_length ++ " must be a positive integer");
 
@@ -159,13 +156,12 @@ fn maxStringLengthOp(config: *ReplConfig, args: exec_mod.Args) exec_mod.ExecErro
 }
 
 fn maxEvalBytesOp(config: *ReplConfig, args: exec_mod.Args) exec_mod.ExecError!?value_mod.Value {
-    const value = try (try args.single()).get();
-    if (value == null) {
+    const value = try (try args.single()).get() orelse {
         config.bounds.max_eval_bytes = null;
         return null;
-    }
+    };
 
-    const n = value.?.getI() catch return args.env.failFmt(.type_mismatch, "{s} expects an integer or $off, got {s}", .{ op_max_eval_bytes, value.?.typeName() });
+    const n = value.getI() catch return args.env.failFmt(.type_mismatch, "{s} expects an integer or $off, got {s}", .{ op_max_eval_bytes, value.typeName() });
 
     if (n < 1) return args.env.fail(.invalid_argument, op_max_eval_bytes ++ " must be a positive integer");
 

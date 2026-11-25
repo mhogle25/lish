@@ -335,7 +335,7 @@ fn inOp(args: Args) ExecError!?Value {
         },
         .list => |items| {
             for (items) |item| {
-                if (item != null and try needle.eql(item.?, args.env.allocator)) return needle;
+                if (try val.optionalEql(needle, item, args.env.allocator)) return needle;
             }
             return null;
         },
@@ -356,7 +356,7 @@ fn findOp(args: Args) ExecError!?Value {
         },
         .list => |items| {
             for (items, 0..) |item, i| {
-                if (item != null and try needle.eql(item.?, args.env.allocator)) return .{ .int = @intCast(i) };
+                if (try val.optionalEql(needle, item, args.env.allocator)) return .{ .int = @intCast(i) };
             }
             return null;
         },

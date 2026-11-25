@@ -98,9 +98,7 @@ fn isOp(args: Args) ExecError!?Value {
     const values = try args.getAll();
     const first = values[0];
     for (values[1..]) |other| {
-        if (first == null and other == null) continue;
-        if (first == null or other == null) return null;
-        if (!(try first.?.eql(other.?, args.env.allocator))) return null;
+        if (!try val.optionalEql(first, other, args.env.allocator)) return null;
     }
     return first orelse val.some();
 }
@@ -110,8 +108,7 @@ fn isntOp(args: Args) ExecError!?Value {
     const left = try args.at(0).get();
     const right = try args.at(1).get();
 
-    if (left == null and right == null) return null;
-    if (left != null and right != null and try left.?.eql(right.?, args.env.allocator)) return null;
+    if (try val.optionalEql(left, right, args.env.allocator)) return null;
     return left orelse val.some();
 }
 

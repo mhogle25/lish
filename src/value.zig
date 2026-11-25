@@ -116,11 +116,14 @@ pub const Value = union(enum) {
             const item = frame.items[frame.index];
             frame.index += 1;
 
-            if (item != null and item.? == .list) {
-                writer.writeByte(tok.LIST_OPEN) catch return error.OutOfMemory;
-                try stack.append(allocator, .{ .items = item.?.list });
-            } else if (item) |inner| {
-                writeScalarSource(writer, inner) catch return error.OutOfMemory;
+            if (item) |inner| {
+                switch (inner) {
+                    .list => |items| {
+                        writer.writeByte(tok.LIST_OPEN) catch return error.OutOfMemory;
+                        try stack.append(allocator, .{ .items = items });
+                    },
+                    else => writeScalarSource(writer, inner) catch return error.OutOfMemory,
+                }
             } else {
                 writeNoneSource(writer) catch return error.OutOfMemory;
             }
@@ -143,13 +146,16 @@ pub const Value = union(enum) {
         var current: ListPair = .{ .lhs = lhs.list, .rhs = rhs.list };
         while (true) {
             for (current.lhs, current.rhs) |lhs_item, rhs_item| {
-                if ((lhs_item == null) != (rhs_item == null)) return false;
-                const lhs_inner = lhs_item orelse continue;
+                const lhs_inner = lhs_item orelse {
+                    if (rhs_item != null) return false;
+                    continue;
+                };
+                const rhs_inner = rhs_item orelse return false;
 
-                switch (shallowEql(lhs_inner, rhs_item.?)) {
+                switch (shallowEql(lhs_inner, rhs_inner)) {
                     .equal     => {},
                     .not_equal => return false,
-                    .descend   => try pending.append(allocator, .{ .lhs = lhs_inner.list, .rhs = rhs_item.?.list }),
+                    .descend   => try pending.append(allocator, .{ .lhs = lhs_inner.list, .rhs = rhs_inner.list }),
                 }
             }
 
@@ -197,6 +203,12 @@ pub const Value = union(enum) {
         return self.writeSourceDepth(writer, 0);
     }
 };
+
+pub fn optionalEql(lhs: ?Value, rhs: ?Value, allocator: std.mem.Allocator) std.mem.Allocator.Error!bool {
+    const left  = lhs orelse return rhs == null;
+    const right = rhs orelse return false;
+    return left.eql(right, allocator);
+}
 
 fn writeScalarSource(writer: *std.Io.Writer, value: Value) std.Io.Writer.Error!void {
     switch (value) {

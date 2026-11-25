@@ -78,14 +78,7 @@ fn matchOp(args: Args) ExecError!?Value {
     while (i < pairs_end) : (i += 2) {
         const pattern = try args.at(i).get();
 
-        const matches = if (target == null and pattern == null)
-            true
-        else if (target != null and pattern != null)
-            try target.?.eql(pattern.?, args.env.allocator)
-        else
-            false;
-
-        if (matches) {
+        if (try val.optionalEql(target, pattern, args.env.allocator)) {
             return args.at(i + 1).get();
         }
     }

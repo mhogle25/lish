@@ -94,7 +94,7 @@ fn inspectOp(args: Args) ExecError!?Value {
 
     const text = value.sourceText(args.env.allocator, args.env.bounds.max_string_length) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
-        error.StringTooLarge => return args.env.failFmt(.string_too_large, "'inspect': output longer than max_string_length ({d})", .{args.env.bounds.max_string_length.?}),
+        error.StringTooLarge => return args.env.failFmt(.string_too_large, "'inspect': output longer than max_string_length ({?d})", .{args.env.bounds.max_string_length}),
     };
     return .{ .string = text };
 }

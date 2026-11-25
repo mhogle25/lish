@@ -383,10 +383,14 @@ fn flattenInto(maybe_value: ?Value, result: *std.ArrayList(?Value), alloc: Alloc
         const item = frame.items[frame.index];
         frame.index += 1;
 
-        if (item != null and item.? == .list) {
-            try stack.append(alloc, .{ .items = item.?.list });
-        } else {
-            try result.append(alloc, item);
+        const inner = item orelse {
+            try result.append(alloc, null);
+            continue;
+        };
+
+        switch (inner) {
+            .list => |items| try stack.append(alloc, .{ .items = items }),
+            else  => try result.append(alloc, inner),
         }
     }
 }

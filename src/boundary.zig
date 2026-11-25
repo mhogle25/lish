@@ -35,7 +35,7 @@ pub fn findExpressionBoundary(source: []const u8, open: ?u8, terminator: u8) ?us
         if (c == terminator) {
             if (depth == 0) return idx;
             depth -= 1;
-        } else if (open != null and c == open.?) {
+        } else if (c == open) {
             depth += 1;
         }
         idx += 1;

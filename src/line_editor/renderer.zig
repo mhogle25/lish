@@ -39,9 +39,9 @@ const HighlightState = struct {
 
     fn init(content: []const u8, on: bool) HighlightState {
         if (!on) return .{};
-        var state: HighlightState = .{ .parser = highlight.Highlighter.init(content) };
-        state.current = state.parser.?.next();
-        return state;
+        var parser = highlight.Highlighter.init(content);
+        const first = parser.next();
+        return .{ .parser = parser, .current = first };
     }
 
     fn advance(self: *HighlightState) void {
@@ -52,6 +52,14 @@ const HighlightState = struct {
 
     fn enabled(self: HighlightState) bool {
         return self.parser != null;
+    }
+
+    fn firstSpanEndingAfter(self: *HighlightState, pos: usize) ?highlight.Span {
+        while (self.current) |span| {
+            if (span.end > pos) return span;
+            self.advance();
+        }
+        return null;
     }
 };
 
@@ -157,16 +165,9 @@ fn emitRange(
 
     var pos = from;
     while (pos < to) {
-        while (state.current != null and state.current.?.end <= pos) {
-            state.advance();
-        }
+        const span = state.firstSpanEndingAfter(pos) orelse break;
+        if (span.start >= to) break;
 
-        if (state.current == null or state.current.?.start >= to) {
-            writer.writeAll(content[pos..to]) catch return;
-            return;
-        }
-
-        const span = state.current.?;
         if (span.start > pos) {
             writer.writeAll(content[pos..span.start]) catch return;
         }
@@ -180,4 +181,6 @@ fn emitRange(
 
         pos = span_end;
     }
+
+    writer.writeAll(content[pos..to]) catch return;
 }

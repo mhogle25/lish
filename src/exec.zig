@@ -192,19 +192,17 @@ const InlineEntry = struct {
 };
 
 pub const Scope = struct {
-    parent:         ?*const Scope                           = null,
-    inline_entries: [INLINE_CAP]InlineEntry                 = undefined,
-    inline_count:   usize                                   = 0,
-    overflow:       ?std.StringHashMapUnmanaged(ScopeEntry) = null,
+    parent:         ?*const Scope                          = null,
+    inline_entries: [INLINE_CAP]InlineEntry                = undefined,
+    inline_count:   usize                                  = 0,
+    overflow:       std.StringHashMapUnmanaged(ScopeEntry) = .empty,
 
     pub fn get(self: *const Scope, key: []const u8) ?ScopeEntry {
         for (self.inline_entries[0..self.inline_count]) |*entry| {
             if (std.mem.eql(u8, entry.key, key)) return entry.entry;
         }
 
-        if (self.overflow) |map| {
-            if (map.get(key)) |entry| return entry;
-        }
+        if (self.overflow.get(key)) |entry| return entry;
 
         if (self.parent) |parent| return parent.get(key);
 
@@ -227,18 +225,17 @@ pub const Scope = struct {
         }
 
         try self.spillToOverflow(allocator);
-        try self.overflow.?.put(allocator, key, entry);
+        try self.overflow.put(allocator, key, entry);
     }
 
     pub fn deinit(self: *Scope, allocator: Allocator) void {
-        if (self.overflow) |*map| map.deinit(allocator);
+        self.overflow.deinit(allocator);
     }
 
     fn spillToOverflow(self: *Scope, allocator: Allocator) Allocator.Error!void {
-        if (self.overflow != null) return;
-        self.overflow = std.StringHashMapUnmanaged(ScopeEntry){};
+        if (self.overflow.count() > 0) return;
         for (self.inline_entries[0..self.inline_count]) |*entry| {
-            try self.overflow.?.put(allocator, entry.key, entry.entry);
+            try self.overflow.put(allocator, entry.key, entry.entry);
         }
     }
 
