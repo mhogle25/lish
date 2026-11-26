@@ -520,6 +520,7 @@ pub const MacroParameter = struct {
 
 pub const Macro = struct {
     id: []const u8,
+    id_position: Position,
     /// The whole file or string the macro was loaded from; positions are offsets into it.
     text: []const u8,
     parameters: []const MacroParameter,
@@ -621,7 +622,19 @@ pub const GroupRegistrar = struct {
 /// evaluation pins at once (root + macros on the stack), so steady state evicts nothing.
 pub const DEFAULT_RESOLUTION_CAPACITY: usize = 256;
 
-pub const RegisterMacroError = Allocator.Error || error{DuplicateParameterName};
+pub const RegisterMacroError = Allocator.Error || error{ DuplicateParameterName, NameIsOperation, MacroAlreadyDefined };
+
+pub const MacroRefusal = struct {
+    macro: *const Macro,
+    reason: Reason,
+
+    pub const Reason = enum { repeated_parameter, name_is_operation, name_already_defined };
+};
+
+pub const MacroGroupResult = union(enum) {
+    registered,
+    refused: []const MacroRefusal,
+};
 
 pub const Registry = struct {
     operations: std.StringHashMapUnmanaged(Operation) = .{},
@@ -672,8 +685,45 @@ pub const Registry = struct {
 
     pub fn registerMacro(self: *Registry, id: []const u8, macro: *const Macro) RegisterMacroError!void {
         if (macro.hasRepeatedParameter()) return error.DuplicateParameterName;
+        if (self.operations.contains(id)) return error.NameIsOperation;
 
-        try self.macros.put(self.macroAllocator(), id, macro);
+        const entry = try self.macros.getOrPut(self.macroAllocator(), id);
+        if (entry.found_existing) return error.MacroAlreadyDefined;
+        entry.value_ptr.* = macro;
+        self.clearResolution();
+    }
+
+    /// All of `macros` are registered, or none are.
+    pub fn registerMacros(self: *Registry, allocator: Allocator, macros: []const Macro) Allocator.Error!MacroGroupResult {
+        var refusals: std.ArrayList(MacroRefusal) = .empty;
+        errdefer {
+            refusals.deinit(allocator);
+            self.unregisterGroup(macros);
+        }
+
+        for (macros) |*macro| {
+            self.registerMacro(macro.id, macro) catch |err| {
+                const reason: MacroRefusal.Reason = switch (err) {
+                    error.OutOfMemory            => return error.OutOfMemory,
+                    error.DuplicateParameterName => .repeated_parameter,
+                    error.NameIsOperation        => .name_is_operation,
+                    error.MacroAlreadyDefined    => .name_already_defined,
+                };
+                try refusals.append(allocator, .{ .macro = macro, .reason = reason });
+            };
+        }
+
+        if (refusals.items.len == 0) return .registered;
+        const refused = try refusals.toOwnedSlice(allocator);
+        self.unregisterGroup(macros);
+        return .{ .refused = refused };
+    }
+
+    fn unregisterGroup(self: *Registry, macros: []const Macro) void {
+        for (macros) |*macro| {
+            const stored = self.macros.get(macro.id) orelse continue;
+            if (stored == macro) _ = self.macros.remove(macro.id);
+        }
         self.clearResolution();
     }
 
@@ -986,7 +1036,7 @@ test "Macro.writeSignature renders params, marking deferred with ~" {
         .{ .id = "hi", .param_type = .value },
         .{ .id = "body", .param_type = .deferred },
     };
-    const macro = Macro{ .id = "guard", .text = "guard lo hi ~body | :body ;", .parameters = &params, .body = undefined, .body_position = Position.synthetic };
+    const macro = Macro{ .id = "guard", .id_position = Position.synthetic, .text = "guard lo hi ~body | :body ;", .parameters = &params, .body = undefined, .body_position = Position.synthetic };
 
     var buf: [64]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buf);
@@ -1466,7 +1516,7 @@ test "a bound op gets its own host data, and ops bound to different data don't m
 fn makeTestMacro(allocator: Allocator, id: []const u8, parameters: []const MacroParameter) Allocator.Error!*Macro {
     const name = try makeValueLiteral(allocator, Position.synthetic, .{ .string = "add" });
     const macro = try allocator.create(Macro);
-    macro.* = .{ .id = id, .text = "", .parameters = parameters, .body = .{ .name = name, .args = &.{} }, .body_position = Position.synthetic };
+    macro.* = .{ .id = id, .id_position = Position.synthetic, .text = "", .parameters = parameters, .body = .{ .name = name, .args = &.{} }, .body_position = Position.synthetic };
 
     var text: std.Io.Writer.Allocating = .init(allocator);
     macro.writeSignature(&text.writer) catch return error.OutOfMemory;
@@ -1511,6 +1561,67 @@ test "registry: registerMacro accepts distinct parameter names" {
     try std.testing.expect(registry.macros.contains("pick"));
 }
 
+fn registryWithAddOp(alloc: Allocator) Allocator.Error!Registry {
+    var registry = Registry.init(alloc);
+    try registry.registerOperation(alloc, "add", Operation.fromFn(testAddOp, .{
+        .signature = .{ .params = comptime &.{ Param{ .name = "a" }, Param{ .name = "b" } }, .returns = .int },
+        .description = "Test op: add two integers.",
+    }));
+    return registry;
+}
+
+test "registry: a macro can't take an op's name or a name already in use" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var registry = try registryWithAddOp(alloc);
+
+    try std.testing.expectError(error.NameIsOperation, registry.registerMacro("add", try makeTestMacro(alloc, "add", &.{})));
+    try std.testing.expect(!registry.macros.contains("add"));
+
+    const first = try makeTestMacro(alloc, "twice", &.{});
+    try registry.registerMacro("twice", first);
+    try std.testing.expectError(error.MacroAlreadyDefined, registry.registerMacro("twice", try makeTestMacro(alloc, "twice", &.{})));
+    try std.testing.expectEqual(@as(?*const Macro, first), registry.getMacro("twice"));
+}
+
+test "registry: registerMacros registers a whole group, or none of it" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var registry = try registryWithAddOp(alloc);
+
+    const earlier = try makeTestMacro(alloc, "taken", &.{});
+    try registry.registerMacro("taken", earlier);
+
+    const fresh = (try makeTestMacro(alloc, "fresh", &.{})).*;
+    const taken = (try makeTestMacro(alloc, "taken", &.{})).*;
+    const add = (try makeTestMacro(alloc, "add", &.{})).*;
+    const repeat = (try makeTestMacro(alloc, "repeat", &.{})).*;
+    const group = [_]Macro{ fresh, taken, add, repeat, repeat };
+
+    switch (try registry.registerMacros(std.testing.allocator, &group)) {
+        .refused => |refusals| {
+            defer std.testing.allocator.free(refusals);
+            try std.testing.expectEqual(@as(usize, 3), refusals.len);
+            try std.testing.expectEqual(MacroRefusal.Reason.name_already_defined, refusals[0].reason);
+            try std.testing.expectEqualStrings("taken", refusals[0].macro.id);
+            try std.testing.expectEqual(MacroRefusal.Reason.name_is_operation, refusals[1].reason);
+            try std.testing.expectEqual(MacroRefusal.Reason.name_already_defined, refusals[2].reason);
+            try std.testing.expectEqual(&group[4], refusals[2].macro);
+        },
+        .registered => return error.TestUnexpectedResult,
+    }
+    try std.testing.expect(registry.getMacro("fresh") == null);
+    try std.testing.expect(registry.getMacro("repeat") == null);
+    try std.testing.expectEqual(@as(?*const Macro, earlier), registry.getMacro("taken"));
+
+    const fine = [_]Macro{ fresh, repeat };
+    try std.testing.expectEqual(MacroGroupResult.registered, try registry.registerMacros(std.testing.allocator, &fine));
+    try std.testing.expect(registry.getMacro("fresh") != null);
+    try std.testing.expect(registry.getMacro("repeat") != null);
+}
+
 test "macro with value parameters" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -1538,6 +1649,7 @@ test "macro with value parameters" {
         .parameters = &params,
         .body = .{ .name = add_id, .args = try alloc.dupe(*const Thunk, &.{ x_ref, one }) },
         .body_position = Position.synthetic,
+        .id_position = Position.synthetic,
     };
     try registry.registerMacro("add-one", macro);
 
@@ -1578,6 +1690,7 @@ test "macro with deferred parameter" {
         .parameters = &params,
         .body = .{ .name = identity_id, .args = try alloc.dupe(*const Thunk, &.{thunk_ref}) },
         .body_position = Position.synthetic,
+        .id_position = Position.synthetic,
     };
     try registry.registerMacro("run-deferred", macro);
 
@@ -1614,6 +1727,7 @@ test "macro arity mismatch" {
         .parameters = &params,
         .body = .{ .name = dummy_id, .args = &.{} },
         .body_position = Position.synthetic,
+        .id_position = Position.synthetic,
     };
     try registry.registerMacro("needs-two", macro);
 

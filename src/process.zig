@@ -15,6 +15,7 @@ const Registry = exec_mod.Registry;
 const Expression = exec_mod.Expression;
 const Unit = exec_mod.Unit;
 const RuntimeErr = exec_mod.RuntimeErr;
+const MacroRefusal = exec_mod.MacroRefusal;
 const ValidationError = validation_mod.ValidationError;
 const AstMacro = macro_parser_mod.AstMacro;
 pub const ExpressionCache = cache_mod.ExpressionCache;
@@ -143,17 +144,29 @@ pub fn loadMacroModule(
     const validation_result = try macro_parser_mod.validateMacroModule(alloc, module, text);
 
     switch (validation_result) {
-        .ok => |macros| {
-            for (macros) |*macro| {
-                registry.registerMacro(macro.id, macro) catch |err| switch (err) {
-                    error.OutOfMemory            => return error.OutOfMemory,
-                    error.DuplicateParameterName => std.debug.panic("macro '{s}' passed validation with a repeated parameter name; the macro parser should have rejected it", .{macro.id}),
-                };
-            }
-            return .{ .ok = macros.len };
-        },
         .err => |errors| return .{ .validation_err = errors },
+        .ok  => |macros| switch (try registry.registerMacros(alloc, macros)) {
+            .registered => return .{ .ok = macros.len },
+            .refused    => |refusals| return .{ .validation_err = try refusalErrors(alloc, refusals) },
+        },
     }
+}
+
+fn refusalErrors(allocator: Allocator, refusals: []const MacroRefusal) Allocator.Error![]const ValidationError {
+    const errors = try allocator.alloc(ValidationError, refusals.len);
+    for (refusals, errors) |refusal, *validation_error| {
+        const id = refusal.macro.id;
+        validation_error.* = .{
+            .message = switch (refusal.reason) {
+                .name_is_operation    => try std.fmt.allocPrint(allocator, "'{s}' is an operation, so this macro could never be called", .{id}),
+                .name_already_defined => try std.fmt.allocPrint(allocator, "'{s}' is already defined", .{id}),
+                .repeated_parameter   => try std.fmt.allocPrint(allocator, "'{s}' repeats a parameter name", .{id}),
+            },
+            .start = refusal.macro.id_position.start,
+            .end   = refusal.macro.id_position.end,
+        };
+    }
+    return errors;
 }
 
 pub const LoadBuiltError = Allocator.Error || serializer_mod.SerializeError;
@@ -237,20 +250,37 @@ fn loadPathInto(io: std.Io, allocator: Allocator, registry: *Registry, path: []c
     };
     defer dir.close(io);
 
-    var loaded_count: usize = 0;
+    var file_names: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (file_names.items) |name| allocator.free(name);
+        file_names.deinit(allocator);
+    }
+
     var entries = dir.iterate();
-    while (true) {
-        const entry = (entries.next(io) catch |err| {
-            try addUnreadable(allocator, problems, path, err);
-            return loaded_count;
-        }) orelse return loaded_count;
+    while (entries.next(io) catch |err| {
+        try addUnreadable(allocator, problems, path, err);
+        return 0;
+    }) |entry| {
         if (entry.kind != .file) continue;
         if (!std.mem.endsWith(u8, entry.name, MACRO_EXTENSION)) continue;
 
-        const file_path = try std.Io.Dir.path.join(allocator, &.{ path, entry.name });
+        const name = try allocator.dupe(u8, entry.name);
+        errdefer allocator.free(name);
+        try file_names.append(allocator, name);
+    }
+    std.mem.sort([]const u8, file_names.items, {}, nameLessThan);
+
+    var loaded_count: usize = 0;
+    for (file_names.items) |name| {
+        const file_path = try std.Io.Dir.path.join(allocator, &.{ path, name });
         defer allocator.free(file_path);
         loaded_count += try loadFileInto(io, allocator, registry, file_path, problems);
     }
+    return loaded_count;
+}
+
+fn nameLessThan(_: void, left: []const u8, right: []const u8) bool {
+    return std.mem.lessThan(u8, left, right);
 }
 
 fn loadFileInto(io: std.Io, allocator: Allocator, registry: *Registry, path: []const u8, problems: *std.ArrayList(MacroFileProblem)) Allocator.Error!usize {
@@ -1097,6 +1127,56 @@ test "loadMacroPath: a folder loads its macro files and keeps a broken one's tex
             try std.testing.expectEqualStrings("Missing closing parenthesis", invalid.errors[0].message);
             try std.testing.expectEqual(std.mem.indexOfScalar(u8, invalid.text, '('), invalid.errors[0].start);
         },
+        .unreadable => return error.TestUnexpectedResult,
+    }
+}
+
+test "loadMacroModule: a name that's taken refuses the whole file, reported at the name" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var registry = Registry.init(alloc);
+    try builtins.registerAll(&registry, alloc);
+
+    const text = "double x | * :x 2 ;\nlist x | :x ;\nclamp01 v | :v ;";
+    switch (try loadMacroModule(&registry, text)) {
+        .validation_err => |errors| {
+            try std.testing.expectEqual(@as(usize, 2), errors.len);
+            try std.testing.expectEqualStrings("'list' is an operation, so this macro could never be called", errors[0].message);
+            try std.testing.expectEqual(std.mem.indexOf(u8, text, "list"), errors[0].start);
+            try std.testing.expectEqualStrings("'clamp01' is already defined", errors[1].message);
+            try std.testing.expectEqual(std.mem.indexOf(u8, text, "clamp01"), errors[1].start);
+        },
+        .ok => return error.TestUnexpectedResult,
+    }
+    try std.testing.expect(registry.getMacro("double") == null);
+    try std.testing.expect(std.mem.indexOf(u8, registry.getMacro("clamp01").?.text, "## clamp01") != null);
+}
+
+test "loadMacroPath: a folder loads in name order, so the later file's repeat is refused" {
+    var io_instance: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer io_instance.deinit();
+    const io = io_instance.io();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "b.lishmacro", .data = "double x | * :x 3 ;" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.lishmacro", .data = "double x | * :x 2 ;" });
+    const folder = try std.Io.Dir.path.join(arena.allocator(), &.{ ".zig-cache", "tmp", tmp.sub_path[0..] });
+
+    var registry = Registry.init(arena.allocator());
+    const result = try loadMacroPath(io, std.testing.allocator, &registry, folder);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), result.loaded_count);
+    try std.testing.expectEqualStrings("double x | * :x 2 ;", registry.getMacro("double").?.text);
+    try std.testing.expectEqual(@as(usize, 1), result.problems.len);
+    try std.testing.expect(std.mem.endsWith(u8, result.problems[0].path, "b.lishmacro"));
+    switch (result.problems[0].kind) {
+        .invalid    => |invalid| try std.testing.expectEqualStrings("'double' is already defined", invalid.errors[0].message),
         .unreadable => return error.TestUnexpectedResult,
     }
 }

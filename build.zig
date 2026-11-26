@@ -2,8 +2,52 @@ const std = @import("std");
 
 const NO_CONFIG_HOME = "/nonexistent-lish-test-home";
 
-const BROKEN_MACRO_FILE = "double x | * :x 2 ;\nbad x | (+ :x 1 ;\n";
-const BROKEN_MACRO_FILE_REPORT = ":2:9: Missing closing parenthesis\n  bad x | (+ :x 1 ;\n          ^\n";
+const MacroFile = struct {
+    name: []const u8,
+    text: []const u8,
+};
+
+const MacroFileRun = struct {
+    name: []const u8,
+    files: []const MacroFile,
+    input: []const u8,
+    stdout: []const u8,
+    stderr_contains: []const u8,
+};
+
+const MACRO_FILE_RUNS = [_]MacroFileRun{
+    .{
+        .name            = "a broken macro file is reported and lish keeps going",
+        .files           = &.{.{ .name = "broken.lishmacro", .text = "double x | * :x 2 ;\nbad x | (+ :x 1 ;\n" }},
+        .input           = "+ 1 2\n",
+        .stdout          = "=> 3\n",
+        .stderr_contains = ":2:9: Missing closing parenthesis\n  bad x | (+ :x 1 ;\n          ^\n",
+    },
+    .{
+        .name            = "a name defined in two files keeps the first",
+        .files           = &.{
+            .{ .name = "first.lishmacro", .text = "double x | * :x 2 ;\n" },
+            .{ .name = "second.lishmacro", .text = "double x | * :x 3 ;\n" },
+        },
+        .input           = "double 10\n",
+        .stdout          = "=> 20\n",
+        .stderr_contains = "second.lishmacro:1:1: 'double' is already defined\n  double x | * :x 3 ;\n  ^^^^^^\n",
+    },
+    .{
+        .name            = "a stdlib macro's name is already defined",
+        .files           = &.{.{ .name = "clamp.lishmacro", .text = "clamp v lo hi | concat \"mine\" ;\n" }},
+        .input           = "clamp 5 0 1\n",
+        .stdout          = "=> 1\n",
+        .stderr_contains = "clamp.lishmacro:1:1: 'clamp' is already defined\n",
+    },
+    .{
+        .name            = "an op's name is refused",
+        .files           = &.{.{ .name = "flat.lishmacro", .text = "flat x | concat \"mine\" ;\n" }},
+        .input           = "+ 1 2\n",
+        .stdout          = "=> 3\n",
+        .stderr_contains = "flat.lishmacro:1:1: 'flat' is an operation, so this macro could never be called\n",
+    },
+};
 
 const PipedRun = struct {
     exit_code: u8,
@@ -250,14 +294,18 @@ fn addProgramRuns(b: *std.Build, test_step: *std.Build.Step, exe: *std.Build.Ste
         test_step.dependOn(&run.step);
     }
 
-    const broken_macros = programRun(b, exe, "a broken macro file is reported and lish keeps going");
-    broken_macros.addArg("-m");
-    broken_macros.addFileArg(scripts.add("broken.lishmacro", BROKEN_MACRO_FILE));
-    broken_macros.setStdIn(.{ .bytes = "+ 1 2\n" });
-    broken_macros.expectExitCode(0);
-    broken_macros.expectStdOutEqual("=> 3\n");
-    broken_macros.expectStdErrMatch(BROKEN_MACRO_FILE_REPORT);
-    test_step.dependOn(&broken_macros.step);
+    for (MACRO_FILE_RUNS) |macro_run| {
+        const run = programRun(b, exe, macro_run.name);
+        for (macro_run.files) |file| {
+            run.addArg("-m");
+            run.addFileArg(scripts.add(file.name, file.text));
+        }
+        run.setStdIn(.{ .bytes = macro_run.input });
+        run.expectExitCode(0);
+        run.expectStdOutEqual(macro_run.stdout);
+        run.expectStdErrMatch(macro_run.stderr_contains);
+        test_step.dependOn(&run.step);
+    }
 
     for (COMMAND_LINE_RUNS) |command_line| {
         const run = programRun(b, exe, command_line.arguments[0]);

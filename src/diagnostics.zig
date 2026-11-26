@@ -322,7 +322,7 @@ test "diagnostics: locate counts lines and characters from 1" {
 }
 
 fn testMacro(id: []const u8, text: []const u8) Macro {
-    return .{ .id = id, .text = text, .parameters = &.{}, .body = undefined, .body_position = .synthetic };
+    return .{ .id = id, .id_position = .synthetic, .text = text, .parameters = &.{}, .body = undefined, .body_position = .synthetic };
 }
 
 fn spanOf(text: []const u8, piece: []const u8) Position {

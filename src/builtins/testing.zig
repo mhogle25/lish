@@ -30,10 +30,8 @@ pub fn evalWithBuiltins(alloc: Allocator, source: []const u8) ExecError!?Value {
 }
 
 pub fn evalWithStdlib(alloc: Allocator, source: []const u8) ExecError!?Value {
-    const process_mod = @import("../process.zig");
     var registry = Registry.init(alloc);
     builtins.registerAll(&registry, alloc) catch return error.OutOfMemory;
-    process_mod.loadStdlib(&registry) catch return error.OutOfMemory;
 
     var env = makeTestEnv(alloc, &registry);
 

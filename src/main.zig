@@ -256,8 +256,6 @@ fn runLish(
         try loadMacros(&session, allocator, stderr, expanded, error_color);
     }
     for (command_line_macro_paths) |path| try loadMacros(&session, allocator, stderr, path, error_color);
-
-    try lish.loadStdlib(&session.registry);
     stderr.flush() catch {};
 
     switch (run) {

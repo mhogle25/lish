@@ -414,8 +414,8 @@ fn validateMacro(
 ) Allocator.Error!?exec.Macro {
     const init_error_count = errors.count();
 
-    const id = switch (macro.id) {
-        .valid => |id_data| id_data.name,
+    const id_data = switch (macro.id) {
+        .valid => |id_data| id_data,
         .err => |macro_error| {
             try errors.add(allocator, macroErrToValidationErr(macro_error));
             return null;
@@ -454,7 +454,8 @@ fn validateMacro(
     if (errors.count() > init_error_count) return null;
 
     return .{
-        .id = id,
+        .id = id_data.name,
+        .id_position = id_data.position,
         .text = text,
         .parameters = valid_params.items,
         .body = body,

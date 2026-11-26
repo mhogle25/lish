@@ -91,7 +91,7 @@ proc
 
 The config context includes two convenience macros, `$on` and `$off`, for toggling boolean settings. Calling a boolean setting with no argument also enables it. `macros` takes exactly one path argument.
 
-A problem in the config file or in a macro file is reported when lish starts, and lish starts anyway: settings before the problem apply, and a broken macro file's macros don't load.
+A problem in the config file or in a macro file is reported when lish starts, and lish starts anyway: settings before the problem apply, and a broken macro file's macros don't load. A macro name can be defined once: a macro named like an operation or an already-loaded macro is a problem, and the files in a folder load in name order.
 
 Note: `say` and `error` are not available in the config context; they are excluded to prevent accidental terminal output on every REPL startup.
 
