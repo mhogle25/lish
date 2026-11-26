@@ -238,16 +238,12 @@ pub const Scope = struct {
         return self.hashed_entries.count() > 0;
     }
 
-    pub fn setEntry(self: *Scope, allocator: Allocator, key: []const u8, thunk: *const Thunk, thunk_scope: *const Scope, caller: *const Caller) Allocator.Error!void {
-        const entry = try self.getOrPut(allocator, key);
-        entry.* = .{ .closure = .{ .thunk = thunk, .scope = thunk_scope, .caller = caller } };
-    }
-
     pub fn setValue(self: *Scope, allocator: Allocator, key: []const u8, value: ?Value) Allocator.Error!void {
         const entry = try self.getOrPut(allocator, key);
         entry.* = .{ .value = value };
     }
 
+    /// The pointer is good until the scope gains another name: growing can move every entry.
     pub fn getOrPut(self: *Scope, allocator: Allocator, key: []const u8) Allocator.Error!*ScopeEntry {
         if (self.isHashed()) {
             const slot = try self.hashed_entries.getOrPut(allocator, key);
@@ -262,7 +258,7 @@ pub const Scope = struct {
         return self.addNewName(allocator, key);
     }
 
-    pub fn putNoClobber(self: *Scope, allocator: Allocator, key: []const u8, entry: ScopeEntry) Allocator.Error!void {
+    fn putNoClobber(self: *Scope, allocator: Allocator, key: []const u8, entry: ScopeEntry) Allocator.Error!void {
         const new_entry = try self.addNewName(allocator, key);
         new_entry.* = entry;
     }
@@ -1092,7 +1088,7 @@ test "scope: setting an existing name replaces a closure with a value" {
 
     const value_thunk = try makeValueLiteral(alloc, Position.synthetic, .{ .int = 1 });
     var scope = Scope{};
-    try scope.setEntry(alloc, "x", value_thunk, &Scope.EMPTY, &Caller.top_level);
+    (try scope.getOrPut(alloc, "x")).* = .{ .closure = .{ .thunk = value_thunk, .scope = &Scope.EMPTY, .caller = &Caller.top_level } };
     try scope.setValue(alloc, "x", .{ .int = 2 });
 
     try std.testing.expectEqual(@as(i64, 2), scope.get("x").?.value.?.int);
@@ -1137,7 +1133,7 @@ test "scope: one name past the inline capacity moves every name to the hash map"
     const names = test_scope_names[0 .. INLINE_CAP + 1];
     const value_thunk = try makeValueLiteral(alloc, Position.synthetic, .{ .int = 1 });
     var scope = Scope{};
-    try scope.setEntry(alloc, names[0], value_thunk, &Scope.EMPTY, &Caller.top_level);
+    (try scope.getOrPut(alloc, names[0])).* = .{ .closure = .{ .thunk = value_thunk, .scope = &Scope.EMPTY, .caller = &Caller.top_level } };
     for (names[1..], 1..) |name, i| try scope.setValue(alloc, name, .{ .int = @intCast(i) });
 
     try std.testing.expectEqual(@as(usize, 0), scope.inline_count);
@@ -1301,7 +1297,7 @@ test "scope thunk resolves entry from scope" {
     const empty_scope = try alloc.create(Scope);
     empty_scope.* = Scope.EMPTY;
     var scope = Scope{};
-    try scope.setEntry(alloc, "x", value_thunk, empty_scope, &Caller.top_level);
+    (try scope.getOrPut(alloc, "x")).* = .{ .closure = .{ .thunk = value_thunk, .scope = empty_scope, .caller = &Caller.top_level } };
 
     const id_thunk = try makeValueLiteral(alloc, Position.synthetic, .{ .string = "x" });
     const lookup_thunk = try makeScopeThunk(alloc, Position.synthetic, id_thunk);
@@ -1784,13 +1780,13 @@ test "scope entry closure captures scope" {
     inner_scope.* = .{};
     const empty_scope = try alloc.create(Scope);
     empty_scope.* = Scope.EMPTY;
-    try inner_scope.setEntry(alloc, "y", y_value, empty_scope, &Caller.top_level);
+    (try inner_scope.getOrPut(alloc, "y")).* = .{ .closure = .{ .thunk = y_value, .scope = empty_scope, .caller = &Caller.top_level } };
 
     const y_id = try makeValueLiteral(alloc, Position.synthetic, .{ .string = "y" });
     const y_ref = try makeScopeThunk(alloc, Position.synthetic, y_id);
 
     var outer_scope = Scope{};
-    try outer_scope.setEntry(alloc, "my-val", y_ref, inner_scope, &Caller.top_level);
+    (try outer_scope.getOrPut(alloc, "my-val")).* = .{ .closure = .{ .thunk = y_ref, .scope = inner_scope, .caller = &Caller.top_level } };
 
     const entry = outer_scope.get("my-val").?;
     const result = try entry.run(&env);
