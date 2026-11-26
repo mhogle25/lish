@@ -9,8 +9,7 @@ const Env = exec_mod.Env;
 const Scope = exec_mod.Scope;
 const ExpressionCache = process_mod.ExpressionCache;
 const ProcessResult = process_mod.ProcessResult;
-const MacroFileResult = process_mod.MacroFileResult;
-const MacroDirResult = process_mod.MacroDirResult;
+const MacroPathResult = process_mod.MacroPathResult;
 const RegistryFragment = process_mod.RegistryFragment;
 const ValidationError = validation_mod.ValidationError;
 
@@ -34,7 +33,6 @@ pub const EvalReset = enum {
 pub const SessionConfig = struct {
     io: std.Io,
     fragments: []const RegistryFragment = &.{},
-    macro_paths: []const []const u8 = &.{},
     /// Parsed inputs kept for reuse; 0 disables the cache.
     expression_cache_capacity: usize = 256,
     /// Capacity (in units) of the registry's resolution cache. Size it above the
@@ -70,7 +68,7 @@ pub const Session = struct {
         var expression_cache = try ExpressionCache.init(allocator, config.expression_cache_capacity);
         errdefer expression_cache.deinit();
 
-        var session = Session{
+        return .{
             .io = config.io,
             .registry = registry,
             .env = .{
@@ -90,19 +88,6 @@ pub const Session = struct {
             .session_allocator = allocator,
             .running = false,
         };
-
-        for (config.macro_paths) |macro_path| {
-            var maybe_dir = std.Io.Dir.cwd().openDir(config.io, macro_path, .{}) catch null;
-            if (maybe_dir) |*dir| {
-                dir.close(config.io);
-                const result = try process_mod.loadMacroDir(config.io, allocator, &session.registry, macro_path);
-                result.deinit(allocator);
-            } else {
-                _ = try process_mod.loadMacroFile(config.io, allocator, &session.registry, macro_path);
-            }
-        }
-
-        return session;
     }
 
     pub fn deinit(self: *Session) void {
@@ -144,12 +129,8 @@ pub const Session = struct {
         self.env.memory_budget_tripped = false;
     }
 
-    pub fn loadMacroDir(self: *Session, dir_path: []const u8) !MacroDirResult {
-        return process_mod.loadMacroDir(self.io, self.session_allocator, &self.registry, dir_path);
-    }
-
-    pub fn loadMacroFile(self: *Session, file_path: []const u8) !MacroFileResult {
-        return process_mod.loadMacroFile(self.io, self.session_allocator, &self.registry, file_path);
+    pub fn loadMacroPath(self: *Session, path: []const u8) Allocator.Error!MacroPathResult {
+        return process_mod.loadMacroPath(self.io, self.session_allocator, &self.registry, path);
     }
 
     pub fn clearCache(self: *Session) void {

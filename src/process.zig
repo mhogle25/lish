@@ -43,28 +43,30 @@ pub const MacroLoadResult = union(enum) {
     validation_err: []const ValidationError,
 };
 
-pub const MacroFileResult = union(enum) {
-    ok: usize,
-    io_error: anyerror,
-    validation_err: []const ValidationError,
+pub const MacroPathReadError = std.Io.Dir.OpenError || std.Io.Dir.ReadFileAllocError || std.Io.Dir.Iterator.Error;
+
+pub const InvalidMacroFile = struct {
+    text: []const u8,
+    errors: []const ValidationError,
 };
 
-/// Result of loading a directory of macro files.
-pub const MacroDirResult = struct {
-    loaded_count: usize,
-    file_errors: []const FileError,
+pub const MacroFileProblem = struct {
+    path: []const u8,
+    kind: Kind,
 
-    pub const FileError = struct {
-        path: []const u8,
-        io_error: ?anyerror = null,
-        errors: []const ValidationError = &.{},
+    pub const Kind = union(enum) {
+        unreadable: MacroPathReadError,
+        invalid: InvalidMacroFile,
     };
+};
 
-    pub fn deinit(self: MacroDirResult, allocator: Allocator) void {
-        for (self.file_errors) |file_error| {
-            allocator.free(file_error.path);
-        }
-        if (self.file_errors.len > 0) allocator.free(@constCast(self.file_errors));
+pub const MacroPathResult = struct {
+    loaded_count: usize,
+    problems: []const MacroFileProblem,
+
+    pub fn deinit(self: MacroPathResult, allocator: Allocator) void {
+        freeProblemContents(allocator, self.problems);
+        allocator.free(self.problems);
     }
 };
 
@@ -203,23 +205,6 @@ pub fn loadFragments(
     }
 }
 
-pub fn loadMacroFile(
-    io: std.Io,
-    allocator: Allocator,
-    registry: *Registry,
-    file_path: []const u8,
-) Allocator.Error!MacroFileResult {
-    const source = std.Io.Dir.cwd().readFileAlloc(io, file_path, allocator, .limited(MACRO_FILE_MAX_SIZE)) catch |err| {
-        return .{ .io_error = err };
-    };
-    defer allocator.free(source);
-
-    return switch (try loadMacroModule(registry, source)) {
-        .ok             => |count| .{ .ok = count },
-        .validation_err => |errors| .{ .validation_err = errors },
-    };
-}
-
 pub fn loadLishFile(
     io: std.Io,
     env: *Env,
@@ -231,48 +216,81 @@ pub fn loadLishFile(
     return processRaw(env, source, scope);
 }
 
-pub fn loadMacroDir(
-    io: std.Io,
-    allocator: Allocator,
-    registry: *Registry,
-    dir_path: []const u8,
-) !MacroDirResult {
-    var dir = std.Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch |err| {
-        const file_errors = try allocator.alloc(MacroDirResult.FileError, 1);
-        file_errors[0] = .{ .path = try allocator.dupe(u8, dir_path), .io_error = err };
-        return .{ .loaded_count = 0, .file_errors = file_errors };
+pub fn loadMacroPath(io: std.Io, allocator: Allocator, registry: *Registry, path: []const u8) Allocator.Error!MacroPathResult {
+    var problems: std.ArrayList(MacroFileProblem) = .empty;
+    errdefer {
+        freeProblemContents(allocator, problems.items);
+        problems.deinit(allocator);
+    }
+
+    const loaded_count = try loadPathInto(io, allocator, registry, path, &problems);
+    return .{ .loaded_count = loaded_count, .problems = try problems.toOwnedSlice(allocator) };
+}
+
+fn loadPathInto(io: std.Io, allocator: Allocator, registry: *Registry, path: []const u8, problems: *std.ArrayList(MacroFileProblem)) Allocator.Error!usize {
+    var dir = std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch |err| switch (err) {
+        error.NotDir => return loadFileInto(io, allocator, registry, path, problems),
+        else => {
+            try addUnreadable(allocator, problems, path, err);
+            return 0;
+        },
     };
     defer dir.close(io);
 
     var loaded_count: usize = 0;
-    var file_errors: std.ArrayList(MacroDirResult.FileError) = .empty;
-
-    var iter = dir.iterate();
-    while (try iter.next(io)) |entry| {
+    var entries = dir.iterate();
+    while (true) {
+        const entry = (entries.next(io) catch |err| {
+            try addUnreadable(allocator, problems, path, err);
+            return loaded_count;
+        }) orelse return loaded_count;
         if (entry.kind != .file) continue;
         if (!std.mem.endsWith(u8, entry.name, MACRO_EXTENSION)) continue;
 
-        const full_path = try std.Io.Dir.path.join(allocator, &.{ dir_path, entry.name });
+        const file_path = try std.Io.Dir.path.join(allocator, &.{ path, entry.name });
+        defer allocator.free(file_path);
+        loaded_count += try loadFileInto(io, allocator, registry, file_path, problems);
+    }
+}
 
-        const result = try loadMacroFile(io, allocator, registry, full_path);
-        switch (result) {
-            .ok => |count| {
-                allocator.free(full_path);
-                loaded_count += count;
-            },
-            .io_error => |err| {
-                try file_errors.append(allocator, .{ .path = full_path, .io_error = err });
-            },
-            .validation_err => |errors| {
-                try file_errors.append(allocator, .{ .path = full_path, .errors = errors });
-            },
+fn loadFileInto(io: std.Io, allocator: Allocator, registry: *Registry, path: []const u8, problems: *std.ArrayList(MacroFileProblem)) Allocator.Error!usize {
+    const text = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(MACRO_FILE_MAX_SIZE)) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => |reason| {
+            try addUnreadable(allocator, problems, path, reason);
+            return 0;
+        },
+    };
+    errdefer allocator.free(text);
+
+    switch (try loadMacroModule(registry, text)) {
+        .ok => |count| {
+            allocator.free(text);
+            return count;
+        },
+        .validation_err => |errors| {
+            const owned_path = try allocator.dupe(u8, path);
+            errdefer allocator.free(owned_path);
+            try problems.append(allocator, .{ .path = owned_path, .kind = .{ .invalid = .{ .text = text, .errors = errors } } });
+            return 0;
+        },
+    }
+}
+
+fn addUnreadable(allocator: Allocator, problems: *std.ArrayList(MacroFileProblem), path: []const u8, reason: MacroPathReadError) Allocator.Error!void {
+    const owned_path = try allocator.dupe(u8, path);
+    errdefer allocator.free(owned_path);
+    try problems.append(allocator, .{ .path = owned_path, .kind = .{ .unreadable = reason } });
+}
+
+fn freeProblemContents(allocator: Allocator, problems: []const MacroFileProblem) void {
+    for (problems) |problem| {
+        allocator.free(problem.path);
+        switch (problem.kind) {
+            .unreadable => {},
+            .invalid    => |invalid| allocator.free(invalid.text),
         }
     }
-
-    return .{
-        .loaded_count = loaded_count,
-        .file_errors = try file_errors.toOwnedSlice(allocator),
-    };
 }
 
 const builtins = @import("builtins.zig");
@@ -971,7 +989,7 @@ test "loadMacroModule: each macro keeps the text it was loaded from" {
     try std.testing.expectEqualStrings(source, registry.getMacro("triple").?.text);
 }
 
-test "loadMacroFile: a macro keeps its text after the file's buffer is freed" {
+test "loadMacroPath: a macro keeps its text after the file's buffer is freed" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
@@ -985,7 +1003,9 @@ test "loadMacroFile: a macro keeps its text after the file's buffer is freed" {
     const path = try std.Io.Dir.path.join(arena.allocator(), &.{ ".zig-cache", "tmp", tmp.sub_path[0..], "double.lishmacro" });
 
     var registry = Registry.init(arena.allocator());
-    try std.testing.expectEqual(MacroFileResult{ .ok = 1 }, try loadMacroFile(io, std.testing.allocator, &registry, path));
+    const result = try loadMacroPath(io, std.testing.allocator, &registry, path);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 1), result.loaded_count);
     try std.testing.expectEqualStrings("double x | * :x 2 ;", registry.getMacro("double").?.text);
 }
 
@@ -1044,36 +1064,81 @@ test "loadBuiltMacros: a macro with a part the parser marked broken is refused" 
     try std.testing.expectError(error.InvalidNode, loadBuiltMacros(&registry, &.{broken}));
 }
 
-test "loadMacroFile: loads a file, returns its problems, or says it can't be read" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
+fn macroFolderForTest(io: std.Io, tmp: *std.testing.TmpDir, allocator: Allocator) ![]const u8 {
+    try tmp.dir.writeFile(io, .{ .sub_path = "good.lishmacro", .data = "double x | * :x 2 ;" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "broken.lishmacro", .data = "bad x | (+ :x 1 ;" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "notes.txt", .data = "not macros" });
+    return std.Io.Dir.path.join(allocator, &.{ ".zig-cache", "tmp", tmp.sub_path[0..] });
+}
 
+test "loadMacroPath: a folder loads its macro files and keeps a broken one's text and errors" {
     var io_instance: std.Io.Threaded = .init(std.testing.allocator, .{});
     defer io_instance.deinit();
     const io = io_instance.io();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.writeFile(io, .{ .sub_path = "good.lishmacro", .data = "double x | * :x 2 ;" });
-    try tmp.dir.writeFile(io, .{ .sub_path = "broken.lishmacro", .data = "bad x | (+ :x 1 ;" });
-    const folder = try std.Io.Dir.path.join(alloc, &.{ ".zig-cache", "tmp", tmp.sub_path[0..] });
+    const folder = try macroFolderForTest(io, &tmp, arena.allocator());
 
-    var registry = Registry.init(alloc);
+    var registry = Registry.init(arena.allocator());
+    const result = try loadMacroPath(io, std.testing.allocator, &registry, folder);
+    defer result.deinit(std.testing.allocator);
 
-    const good_path = try std.Io.Dir.path.join(alloc, &.{ folder, "good.lishmacro" });
-    try std.testing.expectEqual(MacroFileResult{ .ok = 1 }, try loadMacroFile(io, alloc, &registry, good_path));
-
-    const broken_path = try std.Io.Dir.path.join(alloc, &.{ folder, "broken.lishmacro" });
-    switch (try loadMacroFile(io, alloc, &registry, broken_path)) {
-        .validation_err => |errors| try std.testing.expectEqualStrings("Missing closing parenthesis", errors[0].message),
-        .ok, .io_error  => return error.TestUnexpectedResult,
+    try std.testing.expectEqual(@as(usize, 1), result.loaded_count);
+    try std.testing.expect(registry.getMacro("double") != null);
+    try std.testing.expectEqual(@as(usize, 1), result.problems.len);
+    const problem = result.problems[0];
+    try std.testing.expect(std.mem.endsWith(u8, problem.path, "broken.lishmacro"));
+    switch (problem.kind) {
+        .invalid => |invalid| {
+            try std.testing.expectEqualStrings("bad x | (+ :x 1 ;", invalid.text);
+            try std.testing.expectEqualStrings("Missing closing parenthesis", invalid.errors[0].message);
+            try std.testing.expectEqual(std.mem.indexOfScalar(u8, invalid.text, '('), invalid.errors[0].start);
+        },
+        .unreadable => return error.TestUnexpectedResult,
     }
+}
 
-    const missing_path = try std.Io.Dir.path.join(alloc, &.{ folder, "missing.lishmacro" });
-    switch (try loadMacroFile(io, alloc, &registry, missing_path)) {
-        .io_error            => |err| try std.testing.expectEqual(error.FileNotFound, err),
-        .ok, .validation_err => return error.TestUnexpectedResult,
+test "loadMacroPath: a file path loads just that file" {
+    var io_instance: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer io_instance.deinit();
+    const io = io_instance.io();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const folder = try macroFolderForTest(io, &tmp, arena.allocator());
+    const good_path = try std.Io.Dir.path.join(arena.allocator(), &.{ folder, "good.lishmacro" });
+
+    var registry = Registry.init(arena.allocator());
+    const result = try loadMacroPath(io, std.testing.allocator, &registry, good_path);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), result.loaded_count);
+    try std.testing.expectEqual(@as(usize, 0), result.problems.len);
+    try std.testing.expect(registry.getMacro("bad") == null);
+}
+
+test "loadMacroPath: a path that doesn't exist is unreadable, named as given" {
+    var io_instance: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer io_instance.deinit();
+    const io = io_instance.io();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var registry = Registry.init(arena.allocator());
+    const result = try loadMacroPath(io, std.testing.allocator, &registry, "no-such-macros");
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), result.loaded_count);
+    try std.testing.expectEqual(@as(usize, 1), result.problems.len);
+    try std.testing.expectEqualStrings("no-such-macros", result.problems[0].path);
+    switch (result.problems[0].kind) {
+        .unreadable => |reason| try std.testing.expectEqual(error.FileNotFound, reason),
+        .invalid    => return error.TestUnexpectedResult,
     }
 }
 

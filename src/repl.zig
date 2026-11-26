@@ -12,6 +12,8 @@ const LineEditor = line_editor_mod.LineEditor;
 
 const PIPED_INPUT_NAME = "<stdin>";
 
+const HOME_SHORTHAND = "~";
+
 const RED = "\x1b[31m";
 const DIM = "\x1b[2m";
 const RESET = "\x1b[0m";
@@ -228,11 +230,10 @@ fn promptOp(config: *ReplConfig, args: exec_mod.Args) exec_mod.ExecError!?value_
 
 const CONFIG_FILE_NAME = "config" ++ process_mod.LISH_EXTENSION;
 
-fn configFilePath(environ: std.process.Environ, allocator: Allocator) ?[]const u8 {
-    return 
-        if (environ.getPosix("XDG_CONFIG_HOME")) |xdg| std.Io.Dir.path.join(allocator, &.{ xdg, "lish", CONFIG_FILE_NAME }) catch null else
-        if (environ.getPosix("HOME"))            |home| std.Io.Dir.path.join(allocator, &.{ home, ".config", "lish", CONFIG_FILE_NAME }) catch null else 
-        null;
+fn configFilePath(environ: std.process.Environ, allocator: Allocator) Allocator.Error!?[]const u8 {
+    if (environ.getPosix("XDG_CONFIG_HOME")) |xdg| return try std.Io.Dir.path.join(allocator, &.{ xdg, "lish", CONFIG_FILE_NAME });
+    if (environ.getPosix("HOME"))            |home| return try std.Io.Dir.path.join(allocator, &.{ home, ".config", "lish", CONFIG_FILE_NAME });
+    return null;
 }
 
 /// Commented starter written by `--init-config`.
@@ -258,7 +259,7 @@ pub const InitConfigResult = struct {
 };
 
 pub fn initConfig(io: std.Io, environ: std.process.Environ, allocator: Allocator) !?InitConfigResult {
-    const path = configFilePath(environ, allocator) orelse return null;
+    const path = (try configFilePath(environ, allocator)) orelse return null;
     errdefer allocator.free(path);
 
     const cwd = std.Io.Dir.cwd();
@@ -322,7 +323,7 @@ pub fn registerConfigOps(registry: *exec_mod.Registry, config: *ReplConfig, allo
 
     try g.register("macros", exec_mod.Operation.fromBoundFn(ReplConfig, macrosOp, config, .{
         .signature = .{ .params = comptime &.{Param{ .name = "path" }}, .returns = .none },
-        .description = "REPL config: add a directory to load macro modules from.",
+        .description = "REPL config: load macros from a .lishmacro file or a folder of them; a leading ~/ is your home folder.",
     }));
 
     try g.register(op_indent_width, exec_mod.Operation.fromBoundFn(ReplConfig, indentWidthOp, config, .{
@@ -346,30 +347,56 @@ pub fn registerConfigOps(registry: *exec_mod.Registry, config: *ReplConfig, allo
     );
 }
 
-pub fn loadConfig(io: std.Io, environ: std.process.Environ, config: *ReplConfig, allocator: Allocator) void {
-    const path = configFilePath(environ, allocator) orelse return;
-    defer allocator.free(path);
+pub const ConfigLoad = union(enum) {
+    absent,
+    unreadable: Unreadable,
+    ran: Ran,
 
-    const source = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(CONFIG_FILE_MAX_SIZE)) catch return;
-    defer allocator.free(source);
+    pub const Unreadable = struct {
+        path: []const u8,
+        reason: std.Io.Dir.ReadFileAllocError,
+    };
 
-    applyConfig(config, source, allocator);
+    pub const Ran = struct {
+        path: []const u8,
+        text: []const u8,
+        result: process_mod.ProcessResult,
+    };
+};
+
+/// `arena` owns everything returned.
+pub fn loadConfig(io: std.Io, environ: std.process.Environ, config: *ReplConfig, arena: Allocator) Allocator.Error!ConfigLoad {
+    const path = (try configFilePath(environ, arena)) orelse return .absent;
+    const text = std.Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(CONFIG_FILE_MAX_SIZE)) catch |err| switch (err) {
+        error.FileNotFound => return .absent,
+        error.OutOfMemory  => return error.OutOfMemory,
+        else               => |reason| return .{ .unreadable = .{ .path = path, .reason = reason } },
+    };
+    return .{ .ran = .{ .path = path, .text = text, .result = try applyConfig(config, text, arena) } };
 }
 
-fn applyConfig(config: *ReplConfig, source: []const u8, allocator: Allocator) void {
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-    const scratch = arena.allocator();
+fn applyConfig(config: *ReplConfig, text: []const u8, arena: Allocator) Allocator.Error!process_mod.ProcessResult {
+    var registry = exec_mod.Registry.init(arena);
+    try builtins_mod.registerCore(&registry, arena);
+    try registerConfigOps(&registry, config, arena);
 
-    var registry = exec_mod.Registry.init(scratch);
-    builtins_mod.registerCore(&registry, scratch) catch return;
-    registerConfigOps(&registry, config, scratch) catch return;
+    var env = exec_mod.Env{ .registry = &registry, .allocator = arena };
+    return process_mod.processRaw(&env, text, null);
+}
 
-    const trimmed = std.mem.trim(u8, source, " \t\r\n");
-    if (trimmed.len == 0) return;
+pub fn expandHome(allocator: Allocator, path: []const u8, home: ?[]const u8) Allocator.Error![]const u8 {
+    const home_folder = home orelse return allocator.dupe(u8, path);
+    if (std.mem.eql(u8, path, HOME_SHORTHAND)) return allocator.dupe(u8, home_folder);
+    if (!std.mem.startsWith(u8, path, HOME_SHORTHAND ++ "/")) return allocator.dupe(u8, path);
+    return std.Io.Dir.path.join(allocator, &.{ home_folder, path[HOME_SHORTHAND.len + 1 ..] });
+}
 
-    var env = exec_mod.Env{ .registry = &registry, .allocator = scratch };
-    _ = process_mod.processRaw(&env, trimmed, null) catch {};
+pub fn writeProblems(stderr: *std.Io.Writer, source: diagnostics.Source, result: process_mod.ProcessResult, color: bool) void {
+    switch (result) {
+        .ok => {},
+        .validation_err => |errors| for (errors) |problem| diagnostics.writeValidationReport(stderr, source, problem, color) catch {},
+        .runtime_err    => |problem| diagnostics.writeRuntimeReport(stderr, source, problem, color) catch {},
+    }
 }
 
 pub fn runRepl(
@@ -430,20 +457,15 @@ pub fn runCommand(
         return .runtime_error;
     };
 
+    writeProblems(stderr, source, result, color.errors);
     switch (result) {
         .ok => |maybe_value| {
             const value = maybe_value orelse return .ok;
             writeResultLine(stdout, value, color.results) catch {};
             return .ok;
         },
-        .validation_err => |errors| {
-            for (errors) |problem| diagnostics.writeValidationReport(stderr, source, problem, color.errors) catch {};
-            return .syntax_error;
-        },
-        .runtime_err => |problem| {
-            diagnostics.writeRuntimeReport(stderr, source, problem, color.errors) catch {};
-            return .runtime_error;
-        },
+        .validation_err => return .syntax_error,
+        .runtime_err    => return .runtime_error,
     }
 }
 
@@ -485,7 +507,7 @@ test "applyConfig sets indent-width, history-size, and prompt" {
     defer arena.deinit();
     var config = ReplConfig.init(arena.allocator());
 
-    applyConfig(&config, "proc (indent-width 2) (history-size 500) (prompt \"# \")", arena.allocator());
+    try expectApplied(try applyConfig(&config, "proc (indent-width 2) (history-size 500) (prompt \"# \")", arena.allocator()));
 
     try testing.expectEqual(@as(usize, 2), config.indent_width);
     try testing.expectEqual(@as(usize, 500), config.history_size);
@@ -497,19 +519,48 @@ test "applyConfig applies the shipped starter config (comments + multiline)" {
     defer arena.deinit();
     var config = ReplConfig.init(arena.allocator());
 
-    applyConfig(&config, STARTER_CONFIG, arena.allocator());
+    try expectApplied(try applyConfig(&config, STARTER_CONFIG, arena.allocator()));
 
     try testing.expectEqual(@as(usize, 4), config.indent_width);
     try testing.expectEqual(@as(usize, 1000), config.history_size);
     try testing.expectEqualStrings("> ", config.prompt.?);
 }
 
-test "applyConfig leaves defaults when a setting is invalid" {
+fn expectApplied(result: process_mod.ProcessResult) !void {
+    switch (result) {
+        .ok                             => {},
+        .validation_err, .runtime_err   => return error.TestUnexpectedResult,
+    }
+}
+
+test "applyConfig reports a failing setting with where it is, keeping the settings before it" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     var config = ReplConfig.init(arena.allocator());
 
-    applyConfig(&config, "indent-width 0", arena.allocator());
+    const text = "\n\nproc (prompt \"# \") (indent-width 0) (history-size 9)";
+    switch (try applyConfig(&config, text, arena.allocator())) {
+        .runtime_err => |problem| {
+            try testing.expectEqualStrings("indent-width must be a positive integer", problem.message);
+            const position = problem.position orelse return error.TestUnexpectedResult;
+            try testing.expectEqualStrings("(indent-width 0)", text[position.start..position.end]);
+        },
+        .ok, .validation_err => return error.TestUnexpectedResult,
+    }
+    try testing.expectEqualStrings("# ", config.prompt.?);
+    try testing.expectEqual(@as(usize, 4), config.indent_width);
+    try testing.expectEqual(@as(usize, 256), config.history_size);
+}
+
+test "applyConfig reports a syntax error" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var config = ReplConfig.init(arena.allocator());
+
+    switch (try applyConfig(&config, "proc (indent-width 2", arena.allocator())) {
+        .validation_err => |errors| try testing.expectEqualStrings("Missing closing parenthesis", errors[0].message),
+        .ok, .runtime_err => return error.TestUnexpectedResult,
+    }
     try testing.expectEqual(@as(usize, 4), config.indent_width);
 }
 
@@ -518,7 +569,7 @@ test "applyConfig turns settings off with $off and keeps applying the rest" {
     defer arena.deinit();
     var config = ReplConfig.init(arena.allocator());
 
-    applyConfig(&config, "proc (highlight $off) (autopair-insert $off) (fuel 500) (fuel $off) (indent-width 2)", arena.allocator());
+    try expectApplied(try applyConfig(&config, "proc (highlight $off) (autopair-insert $off) (fuel 500) (fuel $off) (indent-width 2)", arena.allocator()));
 
     try testing.expect(!config.highlight);
     try testing.expect(!config.autopair_insert);
@@ -531,7 +582,7 @@ test "applyConfig turns a setting back on with $on" {
     defer arena.deinit();
     var config = ReplConfig.init(arena.allocator());
 
-    applyConfig(&config, "proc (bracket-expand $off) (bracket-expand $on)", arena.allocator());
+    try expectApplied(try applyConfig(&config, "proc (bracket-expand $off) (bracket-expand $on)", arena.allocator()));
     try testing.expect(config.bracket_expand);
 }
 
@@ -540,7 +591,7 @@ test "applyConfig applies the docs/repl.md example" {
     defer arena.deinit();
     var config = ReplConfig.init(arena.allocator());
 
-    applyConfig(&config,
+    try expectApplied(try applyConfig(&config,
         \\proc
         \\    (autopair-insert $off)
         \\    (autopair-delete $off)
@@ -549,7 +600,7 @@ test "applyConfig applies the docs/repl.md example" {
         \\    (fuel 100000)
         \\    (max-list-length 100000)
         \\    (max-string-length 65536)
-    , arena.allocator());
+    , arena.allocator()));
 
     try testing.expect(!config.autopair_insert);
     try testing.expect(!config.autopair_delete);
@@ -560,15 +611,71 @@ test "applyConfig applies the docs/repl.md example" {
     try testing.expectEqual(@as(?usize, 65536), config.bounds.max_string_length);
 }
 
-test "applyConfig with an empty source keeps every default" {
+test "applyConfig: a config with no expression is a syntax error, like any lish file" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     var config = ReplConfig.init(arena.allocator());
 
-    applyConfig(&config, "   \n  ", arena.allocator());
+    for ([_][]const u8{ "", "   \n  ", "## only a comment\n" }) |text| {
+        switch (try applyConfig(&config, text, arena.allocator())) {
+            .validation_err  => {},
+            .ok, .runtime_err => return error.TestUnexpectedResult,
+        }
+    }
     try testing.expectEqual(@as(usize, 4), config.indent_width);
-    try testing.expectEqual(@as(usize, 256), config.history_size);
-    try testing.expect(config.prompt == null);
+}
+
+fn environForTest(allocator: Allocator, config_home: []const u8) !std.process.Environ {
+    const entries = try allocator.allocSentinel(?[*:0]const u8, 1, null);
+    entries[0] = try std.fmt.allocPrintSentinel(allocator, "XDG_CONFIG_HOME={s}", .{config_home}, 0);
+    return .{ .block = .{ .slice = entries } };
+}
+
+test "loadConfig: no file is absent, a folder in its place is unreadable, a file runs" {
+    var io_instance: std.Io.Threaded = .init(testing.allocator, .{});
+    defer io_instance.deinit();
+    const io = io_instance.io();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const memory = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const config_home = try std.Io.Dir.path.join(memory, &.{ ".zig-cache", "tmp", tmp.sub_path[0..] });
+    const environ = try environForTest(memory, config_home);
+    var config = ReplConfig.init(memory);
+
+    try testing.expectEqual(ConfigLoad.absent, try loadConfig(io, environ, &config, memory));
+
+    try tmp.dir.createDirPath(io, "lish/config.lish");
+    switch (try loadConfig(io, environ, &config, memory)) {
+        .unreadable => |unreadable| try testing.expectEqual(error.IsDir, unreadable.reason),
+        .absent, .ran => return error.TestUnexpectedResult,
+    }
+
+    try tmp.dir.deleteDir(io, "lish/config.lish");
+    try tmp.dir.writeFile(io, .{ .sub_path = "lish/config.lish", .data = "indent-width 2" });
+    switch (try loadConfig(io, environ, &config, memory)) {
+        .ran => |ran| {
+            try expectApplied(ran.result);
+            try testing.expectEqualStrings("indent-width 2", ran.text);
+        },
+        .absent, .unreadable => return error.TestUnexpectedResult,
+    }
+    try testing.expectEqual(@as(usize, 2), config.indent_width);
+}
+
+test "expandHome: only a leading ~ or ~/ becomes the home folder" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const memory = arena.allocator();
+
+    try testing.expectEqualStrings("/home/someone", try expandHome(memory, "~", "/home/someone"));
+    try testing.expectEqualStrings("/home/someone/macros", try expandHome(memory, "~/macros", "/home/someone"));
+    try testing.expectEqualStrings("a~b", try expandHome(memory, "a~b", "/home/someone"));
+    try testing.expectEqualStrings("macros/~old", try expandHome(memory, "macros/~old", "/home/someone"));
+    try testing.expectEqualStrings("~other/macros", try expandHome(memory, "~other/macros", "/home/someone"));
+    try testing.expectEqualStrings("~/macros", try expandHome(memory, "~/macros", null));
 }
 
 const CommandRun = struct {

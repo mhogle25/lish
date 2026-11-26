@@ -234,30 +234,34 @@ fn runLish(
 ) !u8 {
     const allocator = init.gpa;
     const io = init.io;
+    const error_color = useColor(init, std.Io.File.stderr());
 
     var repl_config = repl_mod.ReplConfig.init(allocator);
     defer repl_config.deinit();
-    repl_mod.loadConfig(io, init.minimal.environ, &repl_config, allocator);
-
-    var all_macro_paths = std.ArrayList([]const u8).empty;
-    defer all_macro_paths.deinit(allocator);
-    try all_macro_paths.appendSlice(allocator, repl_config.macro_dirs.items);
-    try all_macro_paths.appendSlice(allocator, command_line_macro_paths);
+    try loadReplConfig(init, stderr, &repl_config, error_color);
 
     var session = try lish.Session.init(allocator, .{
         .io = io,
         .fragments = &.{ &lish.builtins.registerAll, &lish.random.registerAll },
-        .macro_paths = all_macro_paths.items,
         .stdout = stdout,
         .stderr = stderr,
         .bounds = repl_config.bounds,
     });
     defer session.deinit();
 
+    const home = init.minimal.environ.getPosix("HOME");
+    for (repl_config.macro_dirs.items) |path| {
+        const expanded = try repl_mod.expandHome(allocator, path, home);
+        defer allocator.free(expanded);
+        try loadMacros(&session, allocator, stderr, expanded, error_color);
+    }
+    for (command_line_macro_paths) |path| try loadMacros(&session, allocator, stderr, path, error_color);
+
     try lish.loadStdlib(&session.registry);
+    stderr.flush() catch {};
 
     switch (run) {
-        .script => |path| return runScript(io, allocator, &session, stdout, stderr, useColor(init, std.Io.File.stderr()), path),
+        .script => |path| return runScript(io, allocator, &session, stdout, stderr, error_color, path),
         .repl => {
             var editor_output_buffer: [EDITOR_OUTPUT_BUFFER_SIZE]u8 = undefined;
             var editor_output = outputWriter(std.Io.File.stdout(), io, &editor_output_buffer);
@@ -273,12 +277,35 @@ fn runLish(
             defer editor.deinit();
 
             const status = repl_mod.runRepl(&session, &editor, stdout, stderr, .{
-                .errors = useColor(init, std.Io.File.stderr()),
+                .errors = error_color,
                 .results = useColor(init, std.Io.File.stdout()),
             });
             return @intFromEnum(status);
         },
     }
+}
+
+fn loadReplConfig(init: std.process.Init, stderr: *std.Io.Writer, config: *repl_mod.ReplConfig, color: bool) Allocator.Error!void {
+    var arena = std.heap.ArenaAllocator.init(init.gpa);
+    defer arena.deinit();
+
+    switch (try repl_mod.loadConfig(init.io, init.minimal.environ, config, arena.allocator())) {
+        .absent     => {},
+        .unreadable => |unreadable| stderr.print("lish: cannot read config '{s}': {s}\n", .{ unreadable.path, fileProblem(unreadable.reason) }) catch {},
+        .ran        => |ran| repl_mod.writeProblems(stderr, .{ .name = ran.path, .text = ran.text }, ran.result, color),
+    }
+}
+
+fn loadMacros(session: *lish.Session, allocator: Allocator, stderr: *std.Io.Writer, path: []const u8, color: bool) Allocator.Error!void {
+    const result = try session.loadMacroPath(path);
+    defer result.deinit(allocator);
+
+    for (result.problems) |problem| switch (problem.kind) {
+        .unreadable => |reason| stderr.print("lish: cannot read macros '{s}': {s}\n", .{ problem.path, fileProblem(reason) }) catch {},
+        .invalid    => |invalid| for (invalid.errors) |validation_error| {
+            lish.diagnostics.writeValidationReport(stderr, .{ .name = problem.path, .text = invalid.text }, validation_error, color) catch {};
+        },
+    };
 }
 
 fn outputWriter(file: std.Io.File, io: std.Io, buffer: []u8) std.Io.File.Writer {
@@ -328,6 +355,7 @@ fn runScript(
         return RUNTIME_EXIT_CODE;
     };
 
+    repl_mod.writeProblems(stderr, .{ .name = path, .text = source }, result, color);
     switch (result) {
         .ok => |maybe_value| {
             const value = maybe_value orelse return 0;
@@ -335,14 +363,8 @@ fn runScript(
             stdout.writeByte('\n') catch {};
             return 0;
         },
-        .validation_err => |errors| {
-            for (errors) |problem| lish.diagnostics.writeValidationReport(stderr, .{ .name = path, .text = source }, problem, color) catch {};
-            return SYNTAX_EXIT_CODE;
-        },
-        .runtime_err => |problem| {
-            lish.diagnostics.writeRuntimeReport(stderr, .{ .name = path, .text = source }, problem, color) catch {};
-            return RUNTIME_EXIT_CODE;
-        },
+        .validation_err => return SYNTAX_EXIT_CODE,
+        .runtime_err    => return RUNTIME_EXIT_CODE,
     }
 }
 

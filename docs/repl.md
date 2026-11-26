@@ -69,7 +69,7 @@ File extensions used by lish:
 | `indent-width`      | `4`     | Number of spaces inserted per indent level (Tab / auto-indent). |
 | `prompt`            | `> `    | The REPL prompt string. |
 | `history-size`      | `1024`  | Maximum number of entries retained in REPL history. |
-| `macros`            | n/a     | Load `.lishmacro` macros from the given path. Accepts a single `.lishmacro` file or a directory (all `.lishmacro` files in the directory are loaded). May be called multiple times. |
+| `macros`            | n/a     | Load `.lishmacro` macros from the given path. Accepts a single `.lishmacro` file or a directory (all `.lishmacro` files in the directory are loaded). A leading `~/` means your home folder. May be called multiple times. |
 | `max-call-depth`    | `1024`  | Maximum recursion depth (`processExpression` nesting). Prevents Zig stack overflow from runaway macros. Positive integer required. |
 | `fuel`              | `$off`  | Maximum total expression evaluations per top-level execute. Halts long-running scripts with a fuel-exhausted error. Positive integer to enable, `$off` for unlimited. |
 | `max-list-length`   | `$off`  | Maximum element count for any list constructed at runtime (`range`, `fill`, `map`, `filter`, etc.). Positive integer to enable, `$off` for unlimited. |
@@ -89,7 +89,9 @@ proc
     (max-string-length 65536)
 ```
 
-The config context includes two convenience macros, `$on` and `$off`, for toggling boolean settings. Calling a boolean setting with no argument also enables it. `macros` takes exactly one path argument. An empty file or a file containing only comments is a no-op.
+The config context includes two convenience macros, `$on` and `$off`, for toggling boolean settings. Calling a boolean setting with no argument also enables it. `macros` takes exactly one path argument.
+
+A problem in the config file or in a macro file is reported when lish starts, and lish starts anyway: settings before the problem apply, and a broken macro file's macros don't load.
 
 Note: `say` and `error` are not available in the config context; they are excluded to prevent accidental terminal output on every REPL startup.
 

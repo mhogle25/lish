@@ -64,8 +64,6 @@ const lish = @import("lish");
 
 var session = try lish.Session.init(allocator, .{
     .fragments = &.{&lish.builtins.registerAll},
-    // Load all .lishmacro files from these directories at init time
-    .macro_paths = &.{"macros/"},
     // LRU cache capacity for parsed expressions (default: 256, 0 disables it)
     .expression_cache_capacity = 512,
     .stdout = lish.session.fdWriter(std.posix.STDOUT_FILENO),
@@ -93,15 +91,21 @@ switch (load_result) {
 }
 ```
 
-From `.lishmacro` files:
+From a `.lishmacro` file, or a directory of them:
 
 ```zig
-// Load a single file
-_ = try session.loadMacroFile("macros/math.lishmacro");
+const result = try session.loadMacroPath("macros/");
+defer result.deinit(allocator);
 
-// Or scan a directory for all .lishmacro files
-_ = try session.loadMacroDir("macros/");
+for (result.problems) |problem| switch (problem.kind) {
+    .unreadable => |reason| std.debug.print("cannot read {s}: {s}\n", .{ problem.path, @errorName(reason) }),
+    .invalid => |invalid| for (invalid.errors) |err| {
+        std.debug.print("{s}: {s}\n", .{ problem.path, err.message });
+    },
+};
 ```
+
+A broken file's macros aren't loaded; the other files in the directory still are. An invalid file's errors are byte offsets into `invalid.text`; `lish.diagnostics.writeValidationReport` prints one as `path:line:column: message` with the line marked.
 
 Or pass macro files or directories at the CLI:
 
@@ -120,7 +124,7 @@ For consumers wiring up a custom registry that doesn't go through `registerCore`
 try lish.loadStdlib(&session.registry);
 ```
 
-The stdlib can only fail to load if lish itself is broken, so `loadStdlib` panics with the problems instead of returning them. Macro text compiled into your own program can be loaded the same way with `lish.loadMacroBundle(&registry, source)`. Its `source` must be known at compile time (a string literal, a constant, `@embedFile`), so a file read at runtime can't be passed; load those with `loadMacroModule` or `loadMacroFile`, which return their problems.
+The stdlib can only fail to load if lish itself is broken, so `loadStdlib` panics with the problems instead of returning them. Macro text compiled into your own program can be loaded the same way with `lish.loadMacroBundle(&registry, source)`. Its `source` must be known at compile time (a string literal, a constant, `@embedFile`), so a file read at runtime can't be passed; load those with `loadMacroModule` or `loadMacroPath`, which return their problems.
 
 The raw source is also exposed as `lish.STDLIB_SOURCE` for consumers that want to inspect or pre-process it.
 

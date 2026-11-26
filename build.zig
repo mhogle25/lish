@@ -2,9 +2,13 @@ const std = @import("std");
 
 const NO_CONFIG_HOME = "/nonexistent-lish-test-home";
 
+const BROKEN_MACRO_FILE = "double x | * :x 2 ;\nbad x | (+ :x 1 ;\n";
+const BROKEN_MACRO_FILE_REPORT = ":2:9: Missing closing parenthesis\n  bad x | (+ :x 1 ;\n          ^\n";
+
 const PipedRun = struct {
     exit_code: u8,
     name: []const u8,
+    arguments: []const []const u8 = &.{},
     input: []const u8,
     stdout: []const u8,
     stderr: []const u8,
@@ -80,6 +84,14 @@ const PIPED_RUNS = [_]PipedRun{
         .input     = "error \"oops\"\n",
         .stdout    = "",
         .stderr    = "oops\n",
+    },
+    .{
+        .exit_code = 0,
+        .name      = "a missing macro folder is reported and lish keeps going",
+        .arguments = &.{ "-m", "no-such-macros" },
+        .input     = "+ 1 2\n",
+        .stdout    = "=> 3\n",
+        .stderr    = "lish: cannot read macros 'no-such-macros': no such file\n",
     },
 };
 
@@ -221,6 +233,7 @@ pub fn build(b: *std.Build) void {
 fn addProgramRuns(b: *std.Build, test_step: *std.Build.Step, exe: *std.Build.Step.Compile) void {
     for (PIPED_RUNS) |piped| {
         const run = programRun(b, exe, piped.name);
+        run.addArgs(piped.arguments);
         run.setStdIn(.{ .bytes = piped.input });
         run.expectExitCode(piped.exit_code);
         run.expectStdOutEqual(piped.stdout);
@@ -236,6 +249,15 @@ fn addProgramRuns(b: *std.Build, test_step: *std.Build.Step, exe: *std.Build.Ste
         run.expectStdErrMatch(script.stderr_contains);
         test_step.dependOn(&run.step);
     }
+
+    const broken_macros = programRun(b, exe, "a broken macro file is reported and lish keeps going");
+    broken_macros.addArg("-m");
+    broken_macros.addFileArg(scripts.add("broken.lishmacro", BROKEN_MACRO_FILE));
+    broken_macros.setStdIn(.{ .bytes = "+ 1 2\n" });
+    broken_macros.expectExitCode(0);
+    broken_macros.expectStdOutEqual("=> 3\n");
+    broken_macros.expectStdErrMatch(BROKEN_MACRO_FILE_REPORT);
+    test_step.dependOn(&broken_macros.step);
 
     for (COMMAND_LINE_RUNS) |command_line| {
         const run = programRun(b, exe, command_line.arguments[0]);
