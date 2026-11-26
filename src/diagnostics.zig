@@ -4,8 +4,13 @@
 
 const std = @import("std");
 const exec = @import("exec.zig");
+const validation = @import("validation.zig");
 
 const Position = exec.Position;
+const RuntimeErr = exec.RuntimeErr;
+const ErrorStep = exec.ErrorStep;
+const Macro = exec.Macro;
+const ValidationError = validation.ValidationError;
 
 const RED = "\x1b[31m";
 const RESET = "\x1b[0m";
@@ -39,35 +44,87 @@ pub fn locate(source: []const u8, offset: usize) Location {
 }
 
 pub fn writeReport(writer: *std.Io.Writer, report: Report, color: bool) std.Io.Writer.Error!void {
-    const span = report.span orelse return writeHeadline(writer, report, null, color);
+    const location = if (report.span) |span| locate(report.source, span.start) else null;
 
-    const start = @min(span.start, report.source.len);
-    try writeHeadline(writer, report, locate(report.source, start), color);
-
-    // The line is shown without its own indentation; the column still counts it.
-    const line_start = lineStart(report.source, start);
-    const line_end = lineEnd(report.source, start);
-    const shown_start = @min(start, line_start + leadingWhitespace(report.source[line_start..line_end]));
-    const marked_end = @max(start, @min(span.end, line_end));
-
-    try writer.writeAll(SOURCE_INDENT);
-    try writer.writeAll(report.source[shown_start..line_end]);
-    try writer.writeByte('\n');
-
-    try writer.writeAll(SOURCE_INDENT);
-    try writePadding(writer, report.source[shown_start..start]);
     if (color) try writer.writeAll(RED);
-    try writer.splatByteAll(MARKER, @max(1, characterCount(report.source[start..marked_end])));
-    if (color) try writer.writeAll(RESET);
-    try writer.writeByte('\n');
-}
-
-fn writeHeadline(writer: *std.Io.Writer, report: Report, location: ?Location, color: bool) std.Io.Writer.Error!void {
-    if (color) try writer.writeAll(RED);
-    if (report.name) |name| try writer.print("{s}:", .{name});
-    if (location) |where| try writer.print("{d}:{d}:", .{ where.line, where.column });
+    try writeLocation(writer, report.name, location);
     if (report.name != null or location != null) try writer.writeByte(' ');
     try writer.writeAll(report.message);
+    if (color) try writer.writeAll(RESET);
+    try writer.writeByte('\n');
+
+    try writeMarkedLine(writer, report.source, report.span, color);
+}
+
+/// A runtime error: where it ended up in the text that was run, then each macro it
+/// passed through on the way out, from that call inward to where it failed.
+pub fn writeRuntimeReport(writer: *std.Io.Writer, name: ?[]const u8, run_text: []const u8, problem: RuntimeErr, color: bool) std.Io.Writer.Error!void {
+    try writeReport(writer, .{
+        .name = name,
+        .source = textOf(problem.macro, run_text),
+        .span = problem.position,
+        .message = problem.message,
+    }, color);
+
+    var remaining = problem.steps.len;
+    while (remaining > 0) : (remaining -= 1) {
+        try writeStep(writer, name, run_text, problem.steps[remaining - 1], color);
+    }
+    if (problem.steps_incomplete) try writer.writeAll("(some steps couldn't be recorded)\n");
+}
+
+/// A problem found before anything ran.
+pub fn writeValidationReport(writer: *std.Io.Writer, name: ?[]const u8, source: []const u8, problem: ValidationError, color: bool) std.Io.Writer.Error!void {
+    const span: ?Position = if (problem.start) |start|
+        .{ .start = @intCast(start), .end = @intCast(problem.end orelse start) }
+    else
+        null;
+    try writeReport(writer, .{ .name = name, .source = source, .span = span, .message = problem.message }, color);
+}
+
+fn writeStep(writer: *std.Io.Writer, name: ?[]const u8, run_text: []const u8, step: ErrorStep, color: bool) std.Io.Writer.Error!void {
+    if (step.macro) |macro| {
+        try writer.print("in macro {s}:\n", .{macro.id});
+    } else {
+        try writer.writeAll("back in ");
+        const location = if (step.position) |span| locate(run_text, span.start) else null;
+        try writeLocation(writer, name, location);
+        try writer.writeByte('\n');
+    }
+    try writeMarkedLine(writer, textOf(step.macro, run_text), step.position, color);
+    if (step.repeats > 0) try writer.print("[previous step repeated {d} more times]\n", .{step.repeats});
+}
+
+/// The text a position is in: its macro's, or the text that was run.
+fn textOf(macro: ?*const Macro, run_text: []const u8) []const u8 {
+    const owner = macro orelse return run_text;
+    return owner.text;
+}
+
+/// `name:line:column:`, leaving out whichever part isn't known.
+fn writeLocation(writer: *std.Io.Writer, name: ?[]const u8, location: ?Location) std.Io.Writer.Error!void {
+    if (name) |file| try writer.print("{s}:", .{file});
+    if (location) |where| try writer.print("{d}:{d}:", .{ where.line, where.column });
+}
+
+/// The line holding `span`, without its own indentation, with `^` under the span.
+fn writeMarkedLine(writer: *std.Io.Writer, source: []const u8, span: ?Position, color: bool) std.Io.Writer.Error!void {
+    const marked = span orelse return;
+    const start = @min(marked.start, source.len);
+
+    const line_start = lineStart(source, start);
+    const line_end = lineEnd(source, start);
+    const shown_start = @min(start, line_start + leadingWhitespace(source[line_start..line_end]));
+    const marked_end = @max(start, @min(marked.end, line_end));
+
+    try writer.writeAll(SOURCE_INDENT);
+    try writer.writeAll(source[shown_start..line_end]);
+    try writer.writeByte('\n');
+
+    try writer.writeAll(SOURCE_INDENT);
+    try writePadding(writer, source[shown_start..start]);
+    if (color) try writer.writeAll(RED);
+    try writer.splatByteAll(MARKER, @max(1, characterCount(source[start..marked_end])));
     if (color) try writer.writeAll(RESET);
     try writer.writeByte('\n');
 }
@@ -257,4 +314,94 @@ test "diagnostics: locate counts lines and characters from 1" {
     try std.testing.expectEqual(Location{ .line = 1, .column = 1 }, locate("abc", 0));
     try std.testing.expectEqual(Location{ .line = 2, .column = 3 }, locate("ab\ncde", 5));
     try std.testing.expectEqual(Location{ .line = 2, .column = 1 }, locate("ab\n", 99));
+}
+
+fn testMacro(id: []const u8, text: []const u8) Macro {
+    return .{ .id = id, .text = text, .parameters = &.{}, .body = undefined, .body_position = .synthetic };
+}
+
+fn spanOf(text: []const u8, piece: []const u8) Position {
+    const start: u32 = @intCast(std.mem.indexOf(u8, text, piece).?);
+    return .{ .start = start, .end = start + @as(u32, @intCast(piece.len)) };
+}
+
+fn expectRuntimeReport(name: ?[]const u8, run_text: []const u8, problem: RuntimeErr, expected: []const u8) !void {
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    try writeRuntimeReport(&output.writer, name, run_text, problem, false);
+    try std.testing.expectEqualStrings(expected, output.written());
+}
+
+test "diagnostics: a runtime error shows your call, then each macro inward to where it failed" {
+    const clamp01 = testMacro("clamp01", "clamp01 v | clamp :v 0 1 ;");
+    const clamp = testMacro("clamp", "clamp v lo hi |\n   min :hi (max :lo :v) ;");
+    const run_text = "list 1\n  (clamp01 \"a\")\n";
+
+    const steps = [_]ErrorStep{
+        .{ .macro = &clamp, .position = spanOf(clamp.text, "(max :lo :v)") },
+        .{ .macro = &clamp01, .position = spanOf(clamp01.text, "clamp :v 0 1") },
+    };
+    try expectRuntimeReport("backup.lish", run_text, .{
+        .category = .type_mismatch,
+        .message = "'max' expects numbers, got string",
+        .position = spanOf(run_text, "(clamp01 \"a\")"),
+        .steps = &steps,
+    },
+        \\backup.lish:2:3: 'max' expects numbers, got string
+        \\  (clamp01 "a")
+        \\  ^^^^^^^^^^^^^
+        \\in macro clamp01:
+        \\  clamp01 v | clamp :v 0 1 ;
+        \\              ^^^^^^^^^^^^
+        \\in macro clamp:
+        \\  min :hi (max :lo :v) ;
+        \\          ^^^^^^^^^^^^
+        \\
+    );
+}
+
+test "diagnostics: stepping back into your text, repeats, and lost steps are each one line" {
+    const twice = testMacro("twice", "twice ~x | list :x :x ;");
+    const run_text = "(twice (nosuchop))";
+
+    const steps = [_]ErrorStep{
+        .{ .macro = null, .position = spanOf(run_text, "(nosuchop)") },
+        .{ .macro = &twice, .position = spanOf(twice.text, ":x"), .repeats = 2 },
+    };
+    try expectRuntimeReport(null, run_text, .{
+        .category = .unknown_op,
+        .message = "Unknown operation or macro: 'nosuchop'",
+        .position = spanOf(run_text, run_text),
+        .steps = &steps,
+        .steps_incomplete = true,
+    },
+        \\1:1: Unknown operation or macro: 'nosuchop'
+        \\  (twice (nosuchop))
+        \\  ^^^^^^^^^^^^^^^^^^
+        \\in macro twice:
+        \\  twice ~x | list :x :x ;
+        \\                  ^^
+        \\[previous step repeated 2 more times]
+        \\back in 1:8:
+        \\  (twice (nosuchop))
+        \\         ^^^^^^^^^^
+        \\(some steps couldn't be recorded)
+        \\
+    );
+}
+
+test "diagnostics: a validation problem is reported at its span, or by name alone without one" {
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+
+    const source = "list 1\n  (say (+ 4 5)";
+    try writeValidationReport(&output.writer, "backup.lish", source, .{ .message = "Missing closing parenthesis", .start = 9, .end = 10 }, false);
+    try writeValidationReport(&output.writer, "backup.lish", source, .{ .message = "Macro body must be an expression" }, false);
+    try std.testing.expectEqualStrings(
+        \\backup.lish:2:3: Missing closing parenthesis
+        \\  (say (+ 4 5)
+        \\  ^
+        \\backup.lish: Macro body must be an expression
+        \\
+    , output.written());
 }

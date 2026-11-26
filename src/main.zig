@@ -21,8 +21,11 @@ const HELP =
     \\
 ;
 
-/// Exit code for a command line lish can't act on.
+/// Exit code for a command line lish can't act on, and for a script with a syntax error.
 const USAGE_EXIT_CODE = 2;
+
+/// Exit code for a script that failed while running.
+const RUNTIME_EXIT_CODE = 1;
 
 /// The line editor's own output buffer, big enough that a full redraw of a
 /// maximum-length line reaches the terminal in one piece.
@@ -194,7 +197,7 @@ fn dumpVocabulary(allocator: Allocator, stdout: *std.Io.Writer, vocabulary: Voca
 
 fn writeStarterConfig(init: std.process.Init, stdout: *std.Io.Writer, stderr: *std.Io.Writer) !void {
     const result = repl_mod.initConfig(init.io, init.minimal.environ, init.gpa) catch |err| {
-        try stderr.print("lish: could not write config: {s}\n", .{@errorName(err)});
+        try stderr.print("lish: could not write config: {s}\n", .{fileProblem(err)});
         return;
     };
     const written = result orelse {
@@ -241,7 +244,7 @@ fn runLish(
     try lish.loadStdlib(&session.registry);
 
     switch (run) {
-        .script => |path| runScript(io, allocator, &session, stdout, stderr, path),
+        .script => |path| runScript(io, allocator, &session, stdout, stderr, errorColor(init), path),
         .repl => {
             // Streaming like `stdout`, so the two writers share the file position
             // instead of overwriting each other when stdout is redirected to a file.
@@ -263,12 +266,33 @@ fn runLish(
     }
 }
 
+/// Errors are red only on a terminal, and never when `NO_COLOR` is set.
+fn errorColor(init: std.process.Init) bool {
+    if (init.minimal.environ.getPosix("NO_COLOR")) |value| {
+        if (value.len > 0) return false;
+    }
+    return std.Io.File.stderr().isTty(init.io) catch false;
+}
+
+/// Why a file couldn't be used, in words.
+fn fileProblem(err: anyerror) []const u8 {
+    return switch (err) {
+        error.FileNotFound  => "no such file",
+        error.AccessDenied  => "permission denied",
+        error.IsDir         => "is a directory",
+        error.StreamTooLong => "larger than the 1 MB limit",
+        error.OutOfMemory   => "out of memory",
+        else                => @errorName(err),
+    };
+}
+
 fn runScript(
     io: std.Io,
     allocator: std.mem.Allocator,
     session: *lish.Session,
     stdout: *std.Io.Writer,
     stderr: *std.Io.Writer,
+    color: bool,
     path: []const u8,
 ) void {
     if (std.mem.endsWith(u8, path, lish.MACRO_EXTENSION)) {
@@ -277,14 +301,14 @@ fn runScript(
     }
 
     const source = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(lish.LISH_FILE_MAX_SIZE)) catch |err| {
-        stderr.print("lish: cannot read '{s}': {s}\n", .{ path, @errorName(err) }) catch {};
-        std.process.exit(1);
+        stderr.print("lish: cannot read '{s}': {s}\n", .{ path, fileProblem(err) }) catch {};
+        std.process.exit(RUNTIME_EXIT_CODE);
     };
     defer allocator.free(source);
 
-    const result = session.execute(source) catch |err| {
-        stderr.print("lish: {s}\n", .{@errorName(err)}) catch {};
-        std.process.exit(1);
+    const result = session.execute(source) catch {
+        stderr.writeAll("lish: out of memory\n") catch {};
+        std.process.exit(RUNTIME_EXIT_CODE);
     };
 
     switch (result) {
@@ -293,14 +317,12 @@ fn runScript(
             stdout.writeByte('\n') catch {};
         },
         .validation_err => |errors| {
-            for (errors) |validation_error| {
-                stderr.print("Validation error: {s}\n", .{validation_error.message}) catch {};
-            }
-            std.process.exit(1);
+            for (errors) |problem| lish.diagnostics.writeValidationReport(stderr, path, source, problem, color) catch {};
+            std.process.exit(USAGE_EXIT_CODE);
         },
-        .runtime_err => |runtime_error| {
-            stderr.print("Runtime error: {s}\n", .{runtime_error.message}) catch {};
-            std.process.exit(1);
+        .runtime_err => |problem| {
+            lish.diagnostics.writeRuntimeReport(stderr, path, source, problem, color) catch {};
+            std.process.exit(RUNTIME_EXIT_CODE);
         },
     }
 }
@@ -368,4 +390,11 @@ test "command line: mistake messages name what was wrong" {
     try std.testing.expectEqualStrings("-m needs a path", try std.fmt.bufPrint(&buffer, "{f}", .{UsageMistake{ .missing_macro_path = "-m" }}));
     try std.testing.expectEqualStrings("unknown option '--bogus'", try std.fmt.bufPrint(&buffer, "{f}", .{UsageMistake{ .unknown_option = "--bogus" }}));
     try std.testing.expectEqualStrings("only one script can be run, so 'b.lish' is one too many", try std.fmt.bufPrint(&buffer, "{f}", .{UsageMistake{ .extra_script = "b.lish" }}));
+}
+
+test "file problems are given in words, with the error's name as the fallback" {
+    try std.testing.expectEqualStrings("no such file", fileProblem(error.FileNotFound));
+    try std.testing.expectEqualStrings("is a directory", fileProblem(error.IsDir));
+    try std.testing.expectEqualStrings("larger than the 1 MB limit", fileProblem(error.StreamTooLong));
+    try std.testing.expectEqualStrings("NotOpenForReading", fileProblem(error.NotOpenForReading));
 }

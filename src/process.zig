@@ -286,6 +286,7 @@ pub fn loadMacroDir(
 
 const builtins = @import("builtins.zig");
 const ast_builder = @import("ast_builder.zig");
+const diagnostics_mod = @import("diagnostics.zig");
 
 test "processRaw: simple expression" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -943,6 +944,32 @@ test "runaway recursion collapses into one repeated step" {
     try expectStep(command, problem.steps[0], registry.getMacro("runaway"), "(+ :n 1)", 0);
     try std.testing.expectEqualStrings("runaway (+ :n 1)", placeText(command, problem.steps[1].macro, problem.steps[1].position));
     try std.testing.expect(problem.steps[1].repeats > 1000);
+}
+
+test "a real error through macros prints as the full report" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var registry = try chainRegistry(arena.allocator());
+    var env = Env{ .registry = &registry, .allocator = arena.allocator() };
+
+    const script = "list 1\n  (my-clamp01 \"a\")\n";
+    const problem = try runtimeErrorOf(&env, script);
+
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    try diagnostics_mod.writeRuntimeReport(&output.writer, "backup.lish", script, problem, false);
+    try std.testing.expectEqualStrings(
+        \\backup.lish:2:3: 'max' expects numbers, got string
+        \\  (my-clamp01 "a")
+        \\  ^^^^^^^^^^^^^^^^
+        \\in macro my-clamp01:
+        \\  my-clamp01 v | my-clamp :v 0 1 ;
+        \\                 ^^^^^^^^^^^^^^^
+        \\in macro my-clamp:
+        \\  my-clamp v lo hi | min :hi (max :lo :v) ;
+        \\                             ^^^^^^^^^^^^
+        \\
+    , output.written());
 }
 
 test "loadMacroModule: each macro keeps the text it was loaded from" {
