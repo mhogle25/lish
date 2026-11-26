@@ -8,12 +8,29 @@ zig fetch --save git+https://github.com/mhogle25/lish.git
 
 Then in your `build.zig`:
 
-```zig
-const lish_dep = b.dependency("lish", .{
-    .target = target,
-    .optimize = optimize,
-});
-your_module.addImport("lish", lish_dep.module("lish"));
+```zig build.zig
+const std = @import("std");
+
+pub fn build(b: *std.Build) void {
+    const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
+
+    const exe = b.addExecutable(.{
+        .name = "my-app",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    const lish_dep = b.dependency("lish", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    exe.root_module.addImport("lish", lish_dep.module("lish"));
+    b.installArtifact(exe);
+}
 ```
 
 ## Basic Example
@@ -44,7 +61,7 @@ pub fn main() !void {
         .ok => |maybe_value| {
             if (maybe_value) |value| {
                 var buf: [256]u8 = undefined;
-                std.debug.print("Result: {s}\n", .{value.getS(&buf)});
+                std.debug.print("Result: {s}\n", .{try value.getS(&buf)});
             }
         },
         .validation_err => |errors| {
@@ -60,18 +77,26 @@ pub fn main() !void {
 The `Session` is the high-level integration point for interactive use. It owns the registry, cache, and arena, and processes one input at a time:
 
 ```zig
+const std = @import("std");
 const lish = @import("lish");
 
-var session = try lish.Session.init(allocator, .{
-    .fragments = &.{&lish.builtins.registerAll},
-    // LRU cache capacity for parsed expressions (default: 256, 0 disables it)
-    .expression_cache_capacity = 512,
-    .stdout = lish.session.fdWriter(std.posix.STDOUT_FILENO),
-    .stderr = lish.session.fdWriter(std.posix.STDERR_FILENO),
-});
-defer session.deinit();
+pub fn runSession(allocator: std.mem.Allocator, io: std.Io) !void {
+    var stdout_writer = std.Io.File.stdout().writerStreaming(io, &.{});
+    var stderr_writer = std.Io.File.stderr().writerStreaming(io, &.{});
 
-const result = try session.execute("+ 1 2");
+    var session = try lish.Session.init(allocator, .{
+        .io = io,
+        .fragments = &.{&lish.builtins.registerAll},
+        // LRU cache capacity for parsed expressions (default: 256, 0 disables it)
+        .expression_cache_capacity = 512,
+        .stdout = &stdout_writer.interface,
+        .stderr = &stderr_writer.interface,
+    });
+    defer session.deinit();
+
+    // The same result shape as `processRaw`
+    _ = try session.execute("+ 1 2");
+}
 ```
 
 ## Loading Macros
@@ -79,33 +104,43 @@ const result = try session.execute("+ 1 2");
 From source strings:
 
 ```zig
-const macro_source =
-    \\double x | * :x 2 ;
-    \\greet name | say (concat "Hello, " :name) ;
-;
+const std = @import("std");
+const lish = @import("lish");
 
-const load_result = try lish.loadMacroModule(&registry, macro_source);
-switch (load_result) {
-    .ok => |count| std.debug.print("Loaded {d} macros\n", .{count}),
-    .validation_err => |errors| { /* handle parse/validation errors */ },
+pub fn loadMyMacros(registry: *lish.Registry) !void {
+    const macro_source =
+        \\double x | * :x 2 ;
+        \\greet name | say (concat "Hello, " :name) ;
+    ;
+
+    switch (try lish.loadMacroModule(registry, macro_source)) {
+        .ok => |count| std.debug.print("Loaded {d} macros\n", .{count}),
+        .validation_err => |errors| for (errors) |err| std.debug.print("{s}\n", .{err.message}),
+    }
 }
 ```
 
 From a `.lishmacro` file, or a directory of them:
 
 ```zig
-const result = try session.loadMacroPath("macros/");
-defer result.deinit(allocator);
+const std = @import("std");
+const lish = @import("lish");
 
-for (result.problems) |problem| switch (problem.kind) {
-    .unreadable => |reason| std.debug.print("cannot read {s}: {s}\n", .{ problem.path, @errorName(reason) }),
-    .invalid => |invalid| for (invalid.errors) |err| {
-        std.debug.print("{s}: {s}\n", .{ problem.path, err.message });
-    },
-};
+/// `allocator` is the one the session was made with.
+pub fn loadMacroFolder(session: *lish.Session, allocator: std.mem.Allocator) !void {
+    const result = try session.loadMacroPath("macros/");
+    defer result.deinit(allocator);
+
+    for (result.problems) |problem| switch (problem.kind) {
+        .unreadable => |reason| std.debug.print("cannot read {s}: {s}\n", .{ problem.path, @errorName(reason) }),
+        .invalid => |invalid| for (invalid.errors) |err| {
+            std.debug.print("{s}: {s}\n", .{ problem.path, err.message });
+        },
+    };
+}
 ```
 
-A broken file's macros aren't loaded; the other files in the directory still are. An invalid file's errors are byte offsets into `invalid.text`; `lish.diagnostics.writeValidationReport` prints one as `path:line:column: message` with the line marked.
+A file with any problem loads none of its macros; the other files in the directory still load, in name order. A macro name can be defined once: a macro named like an operation or an already-loaded macro is a problem too. An invalid file's errors are byte offsets into `invalid.text`; `lish.diagnostics.writeValidationReport` prints one as `path:line:column: message` with the line marked.
 
 Or pass macro files or directories at the CLI:
 
@@ -118,13 +153,7 @@ zig build run -- -m macros/math.lishmacro
 
 lish ships a small standard-library macro file (`src/stdlib.lishmacro`) compiled into the binary via `@embedFile`. `builtins.registerCore` (and therefore `builtins.registerAll`) loads it automatically; consumers calling those functions get the stdlib macros without any extra setup.
 
-For consumers wiring up a custom registry that doesn't go through `registerCore`, load it explicitly:
-
-```zig
-try lish.loadStdlib(&session.registry);
-```
-
-The stdlib can only fail to load if lish itself is broken, so `loadStdlib` panics with the problems instead of returning them. Macro text compiled into your own program can be loaded the same way with `lish.loadMacroBundle(&registry, source)`. Its `source` must be known at compile time (a string literal, a constant, `@embedFile`), so a file read at runtime can't be passed; load those with `loadMacroModule` or `loadMacroPath`, which return their problems.
+`lish.loadStdlib(&registry)` loads it into a registry that doesn't have it yet. Loading it into one that does is refused like any repeated macro name. The stdlib is bundled text, so `loadStdlib` panics with any problem instead of returning it: a problem there means lish itself, or the way it's being set up, is broken. Macro text compiled into your own program can be loaded the same way with `lish.loadMacroBundle(&registry, source)`. Its `source` must be known at compile time (a string literal, a constant, `@embedFile`), so a file read at runtime can't be passed; load those with `loadMacroModule` or `loadMacroPath`, which return their problems.
 
 The raw source is also exposed as `lish.STDLIB_SOURCE` for consumers that want to inspect or pre-process it.
 
@@ -133,53 +162,52 @@ The raw source is also exposed as `lish.STDLIB_SOURCE` for consumers that want t
 `AstBuilder` provides a fluent API for constructing lish expressions and macro definitions from Zig code, without parsing source text.
 
 ```zig
-const b = lish.AstBuilder.init(allocator);
+const std = @import("std");
+const lish = @import("lish");
 
-// Leaf nodes
-try b.int(42)            // 42
-try b.float(3.14)        // 3.14
-try b.string("hello")    // hello
-try b.scope("x")         // :x  (scope reference)
-try b.call("none")       // $none  (zero-argument call)
+pub fn buildExamples(allocator: std.mem.Allocator, registry: *lish.Registry) !void {
+    const b = lish.AstBuilder.init(allocator);
 
-// Expressions: chain .arg(), finish with .build()
-var eb = b.expr("+");
-const node = try eb.arg(try b.int(1)).arg(try b.int(2)).build();
-// -> + 1 2
+    // Leaf nodes
+    _ = try b.int(42);         // 42
+    _ = try b.float(3.14);     // 3.14
+    _ = try b.string("hello"); // hello
+    _ = try b.scope("x");      // :x  (scope reference)
+    _ = try b.call("none");    // $none  (zero-argument call)
 
-// Nested sub-expressions
-var inner = b.expr("+");
-const inner_node = try inner.arg(try b.int(1)).arg(try b.int(2)).build();
-var outer = b.expr("+");
-const root = try outer.arg(inner_node).arg(try b.int(3)).build();
-// -> + (+ 1 2) 3
+    // Expressions: chain .arg(), finish with .build()
+    var sum_builder = b.expr("+");
+    const sum = try sum_builder.arg(try b.int(1)).arg(try b.int(2)).build(); // + 1 2
 
-// Sugar types: meta type locked at construction
-var lb = b.list();
-const list_node = try lb.arg(try b.int(1)).arg(try b.int(2)).build();  // .list_literal
+    // Nested sub-expressions
+    var outer_builder = b.expr("+");
+    _ = try outer_builder.arg(sum).arg(try b.int(3)).build(); // + (+ 1 2) 3
 
-var bb = b.block();
-const block_node = try bb.arg(stmt1).arg(stmt2).build();                // .block_literal
+    // Sugar types: meta type locked at construction
+    var list_builder = b.list();
+    _ = try list_builder.arg(try b.int(1)).arg(try b.int(2)).build(); // .list_literal
+    var block_builder = b.block();
+    _ = try block_builder.arg(sum).arg(sum).build();                  // .block_literal
 
-// Top-level metadata override (rare)
-var top_eb = b.expr("+");
-const top_node = try top_eb.arg(try b.int(1)).asTopLevel().build();     // .top_level
+    // Top-level metadata override (rare)
+    var top_builder = b.expr("+");
+    _ = try top_builder.arg(try b.int(1)).asTopLevel().build(); // .top_level
 
-// Macro definitions
-var concat_eb = b.expr("concat");
-const concat_node = try concat_eb
-    .arg(try b.string("hello "))
-    .arg(try b.scope("name"))
-    .build();
-var say_eb = b.expr("say");
-const body = try say_eb.arg(concat_node).build();
+    // Macro definitions
+    var concat_builder = b.expr("concat");
+    const concat_node = try concat_builder
+        .arg(try b.string("hello "))
+        .arg(try b.scope("name"))
+        .build();
+    var say_builder = b.expr("say");
+    const body = try say_builder.arg(concat_node).build();
 
-var mb = b.macro("greet");
-const macro_def = try mb.param("name").body(body);
-// -> greet name | say (concat "hello " :name) ;
+    var macro_builder = b.macro("greet");
+    const greet = try macro_builder.param("name").body(body); // greet name | say (concat "hello " :name) ;
 
-// Load built macros into a registry
-_ = try lish.loadBuiltMacros(&registry, &.{macro_def});
+    // Load built macros into a registry
+    _ = try lish.loadBuiltMacros(registry, &.{greet});
+}
 ```
 
 `loadBuiltMacros` writes the macros out as lish text and loads that text like any other macro source. They get the same checks (a repeated parameter name comes back as a validation error), and an error inside one shows that text.
@@ -189,14 +217,19 @@ _ = try lish.loadBuiltMacros(&registry, &.{macro_def});
 Any AST node or macro definition can be serialized back to lish source text:
 
 ```zig
-// Expression node -> source string
-try lish.serializeExpression(node, writer);
+const std = @import("std");
+const lish = @import("lish");
 
-// Single macro definition
-try lish.serializeMacro(macro_def, writer);
-
-// Slice of macro definitions (newline-separated, suitable for a .lishmacro file)
-try lish.serializeMacroModule(macros, writer);
+pub fn writeSource(
+    writer: *std.Io.Writer,
+    node: *const lish.AstNode,
+    macro: lish.macro_parser.AstMacro,
+    macros: []const lish.macro_parser.AstMacro,
+) !void {
+    try lish.serializeExpression(node, writer);    // one expression
+    try lish.serializeMacro(macro, writer);        // one macro definition
+    try lish.serializeMacroModule(macros, writer); // newline-separated, suitable for a .lishmacro file
+}
 ```
 
 Serialization always emits the canonical desugared form: `list` instead of `[...]`, `proc` instead of `{...}`. Comments are not preserved (they are discarded by the lexer during parsing).
@@ -206,23 +239,19 @@ Serialization always emits the canonical desugared form: `list` instead of `[...
 `Scope` lets you pass host state into lish expressions. Variables bound in a scope are accessible via `:varname` in any expression evaluated against that scope.
 
 ```zig
-var scope = lish.Scope{};
+const std = @import("std");
+const lish = @import("lish");
 
-// Bind a static value: accessed instantly, no re-evaluation
-try scope.setValue(allocator, "playerName", .{ .string = "Aiden" });
+pub fn greetPlayer(allocator: std.mem.Allocator, env: *lish.Env) !lish.ProcessResult {
+    var scope = lish.Scope{};
+    defer scope.deinit(allocator);
 
-// Bind a lazily-evaluated expression: re-evaluated each time :varName is accessed
-const expr: lish.exec.Expression = ...; // built or validated externally
-try scope.setExpression(allocator, "greeting", expr);
-
-// Low-level: bind any Thunk with an explicit entry scope
-try scope.setEntry(allocator, "key", thunk_ptr, entry_scope_ptr);
+    try scope.setValue(allocator, "playerName", .{ .string = "Aiden" });
+    return lish.processRaw(env, "concat \"Hello, \" :playerName", &scope);
+}
 ```
 
-In lish expressions, reference scope entries with `:name`:
-```
-concat "Hello, " :playerName
-```
+Expressions read a scope's names with `:name`. Setting a name that's already bound replaces its value.
 
 ## Custom Operations
 
@@ -232,21 +261,16 @@ return) and a one-line description. Both are surfaced by introspection
 from the structured signature.
 
 ```zig
+const std = @import("std");
+const lish = @import("lish");
+
 // Stateless operation (no context)
 fn myOperation(args: lish.Args) lish.exec.ExecError!?lish.Value {
-    const value = try args.at(0).resolve();
-    return value; // echo back the first argument
+    return try args.at(0).resolve(); // echo back the first argument
 }
 
-// The params slice escapes into the long-lived Operation, so it needs static
-// lifetime: write it as `comptime &.{...}` (or hoist it to a module-level const).
-try registry.registerOperation(allocator, "my-op", lish.Operation.fromFn(myOperation, .{
-    .signature = .{ .params = comptime &.{lish.Param.value("x")}, .returns = "any" },
-    .description = "Echo back the first argument.",
-}));
-
 // Bound operation (has access to a context struct)
-const MySystem = struct {
+pub const MySystem = struct {
     count: usize = 0,
 
     fn countOp(self: *MySystem, args: lish.Args) lish.exec.ExecError!?lish.Value {
@@ -256,19 +280,23 @@ const MySystem = struct {
     }
 };
 
-var system = MySystem{};
-try registry.registerOperation(
-    allocator,
-    "count",
-    lish.Operation.fromBoundFn(MySystem, MySystem.countOp, &system, .{
-        .signature = .{ .params = comptime &.{}, .returns = "$none" },
+/// `system` must outlive the registry: the "count" op keeps a pointer to it.
+pub fn registerMyOps(allocator: std.mem.Allocator, registry: *lish.Registry, system: *MySystem) !void {
+    // The params slice escapes into the long-lived Operation, so it needs static
+    // lifetime: write it as `comptime &.{...}` (or hoist it to a module-level const).
+    try registry.registerOperation(allocator, "my-op", lish.Operation.fromFn(myOperation, .{
+        .signature = .{ .params = comptime &.{lish.Param{ .name = "x" }}, .returns = .any },
+        .description = "Echo back the first argument.",
+    }));
+
+    try registry.registerOperation(allocator, "count", lish.Operation.fromBoundFn(MySystem, MySystem.countOp, system, .{
+        .signature = .{ .params = comptime &.{}, .returns = .none },
         .description = "Increment the system counter.",
-    }),
-);
+    }));
+}
 ```
 
-`lish.Param` has terse constructors for each role/arity: `Param.value`,
-`Param.optional`, `Param.variadic`, `Param.binding`, `Param.body`.
+A `lish.Param` is a `.name` plus three optional fields: `.role` (`.value`, `.binding` or `.body`), `.arity` (`.single`, `.optional` or `.variadic`) and `.type` (`.any` unless set).
 
 An operation name can be any bare term, including operator glyphs. The built-in
 bitwise ops are named `&`, `|`, `^`, `~`, `<<`, `>>`, and a host is free to
@@ -292,7 +320,10 @@ code should run in:
   sub-expression: it finishes before the op returns.
 
 ```zig
-fn loadSettingsOp(args: lish.Args) lish.exec.ExecError!?lish.Value {
+const std = @import("std");
+const lish = @import("lish");
+
+pub fn loadSettingsOp(args: lish.Args) lish.exec.ExecError!?lish.Value {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
 

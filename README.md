@@ -45,13 +45,16 @@ zig fetch --save git+https://github.com/mhogle25/lish.git
 ```
 
 ```zig
+const std = @import("std");
 const lish = @import("lish");
 
-var registry = lish.Registry.init(allocator);
-try lish.builtins.registerAll(&registry, allocator);
-var env = lish.Env{ .registry = &registry, .allocator = allocator };
+pub fn addOneAndTwo(allocator: std.mem.Allocator) !lish.ProcessResult {
+    var registry = lish.Registry.init(allocator);
+    try lish.builtins.registerAll(&registry, allocator);
+    var env = lish.Env{ .registry = &registry, .allocator = allocator };
 
-const result = try lish.processRaw(&env, "+ 1 2", null);   // => 3
+    return lish.processRaw(&env, "+ 1 2", null); // => 3
+}
 ```
 
 See [Embedding](docs/embedding.md) for sessions, macros, custom ops, and scopes.

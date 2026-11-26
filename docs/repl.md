@@ -109,16 +109,21 @@ lish enforces parse-time and runtime bounds to prevent malformed or malicious sc
 Embedded consumers set these directly:
 
 ```zig
-var session = try lish.Session.init(allocator, .{
-    .io = io,
-    .fragments = &.{&lish.builtins.registerAll},
-    .bounds = .{
-        .max_call_depth = 256,
-        .fuel = 100_000,
-        .max_list_length = 100_000,
-        .max_string_length = 64 * 1024,
-    },
-});
+const std = @import("std");
+const lish = @import("lish");
+
+pub fn boundedSession(allocator: std.mem.Allocator, io: std.Io) !lish.Session {
+    return lish.Session.init(allocator, .{
+        .io = io,
+        .fragments = &.{&lish.builtins.registerAll},
+        .bounds = .{
+            .max_call_depth = 256,
+            .fuel = 100_000,
+            .max_list_length = 100_000,
+            .max_string_length = 64 * 1024,
+        },
+    });
+}
 ```
 
 When a bound trips, the script returns a `RuntimeError` whose message identifies the bound (`"Recursion depth exceeded ..."`, `"Fuel exhausted"`, `"List length N exceeds limit M"`, `"String length N exceeds limit M"`). The host can distinguish resource exhaustion from other runtime errors via message inspection if needed.
