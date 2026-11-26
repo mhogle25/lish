@@ -2,6 +2,17 @@ const std = @import("std");
 
 const NO_CONFIG_HOME = "/nonexistent-lish-test-home";
 
+const DOCS = [_][]const u8{
+    "README.md",
+    "docs/README.md",
+    "docs/architecture.md",
+    "docs/embedding.md",
+    "docs/errors.md",
+    "docs/operations.md",
+    "docs/repl.md",
+    "docs/syntax.md",
+};
+
 const MacroFile = struct {
     name: []const u8,
     text: []const u8,
@@ -272,6 +283,33 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_exe_tests.step);
     test_step.dependOn(&run_corpus_tests.step);
     addProgramRuns(b, test_step, exe);
+    addDocExamples(b, test_step, mod, target, optimize);
+}
+
+fn addDocExamples(b: *std.Build, test_step: *std.Build.Step, lish: *std.Build.Module, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
+    const extractor = b.addExecutable(.{
+        .name = "doc_examples",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/doc_examples.zig"),
+            .target = b.graph.host,
+            .optimize = .debug,
+        }),
+    });
+
+    const extract = b.addRunArtifact(extractor);
+    const examples_folder = extract.addOutputDirectoryArg2("doc_examples", .{});
+    for (DOCS) |doc| extract.addFileArg(b.path(doc));
+
+    const examples = b.addTest(.{
+        .name = "doc_examples",
+        .root_module = b.createModule(.{
+            .root_source_file = examples_folder.path(b, "root.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "lish", .module = lish }},
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(examples).step);
 }
 
 fn addProgramRuns(b: *std.Build, test_step: *std.Build.Step, exe: *std.Build.Step.Compile) void {
