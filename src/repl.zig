@@ -27,7 +27,6 @@ pub const ReplColor = struct {
     results: bool,
 };
 
-/// The piped-input command limit in MB, for its error message.
 const PIPED_COMMAND_LIMIT_MB = @divExact(line_editor_mod.PIPED_COMMAND_MAX_LENGTH, 1024 * 1024);
 
 const op_autopair_insert   = "autopair-insert";

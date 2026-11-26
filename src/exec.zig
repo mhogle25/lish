@@ -59,23 +59,19 @@ pub const ErrorCategory = enum {
 pub const RuntimeErr = struct {
     category: ErrorCategory,
     message:  []const u8,
-    /// The macro whose text `position` is in, or null for the text that was run.
+    /// null when `position` is in the text that was run.
     macro:    ?*const Macro = null,
     position: ?Position     = null,
-    /// Where the error passed on its way out of macros, innermost first.
+    /// Innermost first.
     steps:    []const ErrorStep = &.{},
-    /// Memory ran out while recording `steps`, so some are missing.
     steps_incomplete: bool = false,
 };
 
-/// A place an error passed through on its way out: a spot in a macro's text (it
-/// left that macro's body), or in the text that was run (it left a deferred
-/// argument written there).
 pub const ErrorStep = struct {
-    /// Whose text `position` is in, or null for the text that was run.
+    /// null when `position` is in the text that was run.
     macro: ?*const Macro,
     position: ?Position,
-    /// How many more times this same step repeated right after itself.
+    /// 0 when the step happened once.
     repeats: usize = 0,
 
     fn isSamePlace(self: ErrorStep, other: ErrorStep) bool {
@@ -125,15 +121,12 @@ pub const ThunkBody = union(enum) {
 /// never lowered. Always dispatched dynamically, never memoized.
 pub const NO_SITE: u32 = std.math.maxInt(u32);
 
-/// What a name in the registry points to.
 pub const Callable = union(enum) {
     op:    Operation,
     macro: *const Macro,
 };
 
-/// What a call site's name turned out to be, remembered in a registry's resolution
-/// cache (never in the AST). `dynamic` marks a computed or unknown name, looked up
-/// again on every call. A site that hasn't been looked up yet holds null.
+/// `dynamic` is a computed or unknown name, looked up on every call; a site not yet looked up holds null.
 pub const Resolution = union(enum) {
     callable: Callable,
     dynamic,
@@ -153,7 +146,6 @@ pub const Expression = struct {
 /// slot array, indexed by local `site` ids. `unit_id` keys the resolution cache;
 /// `site_count` sizes the array.
 pub const Unit = struct {
-    /// The command's outermost expression, with its position.
     root: *const Thunk,
     unit_id: u32,
     site_count: u32,
@@ -169,9 +161,7 @@ pub fn nextUnitId() u32 {
 
 // Scope 
 
-/// Where a deferred argument was written: the caller's call-site slots and the
-/// macro whose text it is in (null for the text that was run). A macro call keeps
-/// one in its frame for all its deferred arguments, which never outlive the call.
+/// Lives in a macro call's frame; the deferred arguments pointing at it never outlive the call.
 pub const Caller = struct {
     unit_slots: []?Resolution,
     macro: ?*const Macro,
@@ -471,8 +461,6 @@ pub const Operation = struct {
         description: []const u8,
     };
 
-    /// A plain op is just its function; a bound op also carries the host data
-    /// its function needs (e.g. the REPL's config), always present.
     pub const Function = union(enum) {
         plain: *const fn (Args) ExecError!?Value,
         bound: struct {
@@ -532,13 +520,10 @@ pub const MacroParameter = struct {
 
 pub const Macro = struct {
     id: []const u8,
-    /// The text this macro was written in: the whole file or string it was loaded
-    /// from, or the lish text a Zig-built macro was written out as. Its positions
-    /// are offsets into this text.
+    /// The whole file or string the macro was loaded from; positions are offsets into it.
     text: []const u8,
     parameters: []const MacroParameter,
     body: Expression,
-    /// Where the body is written in `text`.
     body_position: Position,
     /// The body is its own unit: `unit_id` keys the resolution cache, `site_count`
     /// sizes its slots. Default 0 for test-built macros (un-cached, dynamic).
@@ -832,13 +817,9 @@ pub const Env = struct {
     /// the innermost position to runtime errors.
     current_position: ?Position = null,
 
-    /// The macro whose text the running code is written in, or null for the text
-    /// that was run. A macro body switches to its macro; a deferred argument
-    /// switches back to the text it was written in.
+    /// null while running the text that was run.
     current_macro: ?*const Macro = null,
 
-    /// The steps of the error now leaving macros, in the evaluation's memory like its
-    /// message. Each new error starts a fresh list.
     error_steps: std.ArrayList(ErrorStep) = .empty,
 
     /// Slot array of the unit currently executing; an expression's `site` indexes
@@ -933,8 +914,6 @@ pub const Env = struct {
         return self.fail(category, message);
     }
 
-    /// Called as an error leaves a macro body or a deferred argument: records where
-    /// it was in that text, then moves it to the place that text was entered from.
     fn leaveText(self: *Env, entered_from_macro: ?*const Macro, entered_from: ?Position) void {
         const problem = &(self.runtime_error orelse return);
         self.recordStep(problem, .{ .macro = problem.macro, .position = problem.position });
@@ -979,7 +958,6 @@ pub fn makeExpression(allocator: Allocator, position: Position, id: *const Thunk
 
 // Resolution
 
-/// The slot's remembered resolution, worked out and remembered the first time.
 fn slotResolution(slot: *?Resolution, registry: *const Registry, name: *const Thunk) Resolution {
     if (slot.*) |known| return known;
     const resolution = resolveSite(registry, name);

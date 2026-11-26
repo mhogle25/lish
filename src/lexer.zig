@@ -277,7 +277,6 @@ pub const Lexer = struct {
                 .line = @intCast(self.line),
                 .column = @intCast(self.column),
             };
-            // Move past the quote, or the next call would return this same token forever.
             self.idx = self.source.len;
             self.column += 1;
             return token;

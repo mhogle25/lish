@@ -4,10 +4,8 @@ const tok = @import("token.zig");
 /// Nesting depth at which format stops descending and emits `[ ... ]`.
 pub const MAX_DISPLAY_DEPTH: usize = 1000;
 
-/// What format writes in place of a list nested past MAX_DISPLAY_DEPTH.
 const TRUNCATED_LIST_SOURCE = std.fmt.comptimePrint("{c} ... {c}", .{ tok.LIST_OPEN, tok.LIST_CLOSE });
 
-/// The printer's choice of gap between list items; when reading, any whitespace works.
 const LIST_ITEM_SEPARATOR = ' ';
 
 /// The core value type for the shell language.
@@ -162,7 +160,6 @@ pub fn optionalEql(lhs: ?Value, rhs: ?Value, allocator: std.mem.Allocator) std.m
     return left.eql(right, allocator);
 }
 
-/// A value that can only be an int or a float, so turning it into a float can't fail.
 pub const Number = union(enum) {
     int: i64,
     float: f64,
@@ -181,7 +178,6 @@ pub const Number = union(enum) {
         };
     }
 
-    /// The one rule for mixing numbers: two ints stay ints; a float on either side makes both floats.
     pub fn pair(left: Number, right: Number) NumberPair {
         return switch (left) {
             .int => |left_int| switch (right) {
@@ -192,7 +188,6 @@ pub const Number = union(enum) {
         };
     }
 
-    /// Pairs two values when both are numbers; nothing otherwise.
     pub fn pairValues(left: Value, right: Value) ?NumberPair {
         const left_number  = left.asNumber() orelse return null;
         const right_number = right.asNumber() orelse return null;

@@ -3,12 +3,11 @@ const tok = @import("../token.zig");
 
 const Allocator = std.mem.Allocator;
 
-/// The longest line the editor holds. It starts small and doubles up to this.
 pub const LINE_MAX_LENGTH = 1024 * 1024;
 
 const INITIAL_CAPACITY = 256;
 
-/// Why an edit couldn't be made. Every edit is all or nothing.
+/// Every edit is all or nothing.
 pub const EditError = error{ LineFull, OutOfMemory };
 
 fn isWordChar(byte: u8) bool {
@@ -28,7 +27,7 @@ fn isMatchedPair(open: u8, close: u8) bool {
 /// separately by the editor's Renderer. Tests can construct a LineBuffer
 /// directly without any I/O attached.
 pub const LineBuffer = struct {
-    /// Room for the line; only `data[0..length]` is text.
+    /// Only `data[0..length]` is text.
     data:      []u8,
     length:    usize,
     cursor:    usize,
@@ -42,7 +41,6 @@ pub const LineBuffer = struct {
         self.allocator.free(self.data);
     }
 
-    /// Makes room for `extra` more bytes, so a several-byte edit is all or nothing.
     pub fn reserve(self: *LineBuffer, extra: usize) EditError!void {
         return self.ensureCapacity(self.length + extra);
     }
@@ -75,7 +73,6 @@ pub const LineBuffer = struct {
         return self.insertRepeated(byte, 1);
     }
 
-    /// Inserts `count` copies of `byte` at the cursor.
     pub fn insertRepeated(self: *LineBuffer, byte: u8, count: usize) EditError!void {
         try self.reserve(count);
 
@@ -91,7 +88,6 @@ pub const LineBuffer = struct {
         self.length += count;
     }
 
-    /// Inserts `open` and `close` with the cursor between them.
     pub fn insertPair(self: *LineBuffer, open: u8, close: u8) EditError!void {
         try self.reserve(2);
         try self.insertChar(open);
@@ -209,7 +205,6 @@ pub const LineBuffer = struct {
         self.cursor = target;
     }
 
-    /// Replaces the whole line, with the cursor at its end.
     pub fn setContent(self: *LineBuffer, content: []const u8) EditError!void {
         try self.ensureCapacity(content.len);
         @memcpy(self.data[0..content.len], content);

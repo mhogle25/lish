@@ -24,11 +24,9 @@ const History = history_mod.History;
 
 const INDENT_WIDTH = 4;
 
-/// Rung when the editor couldn't do what was asked, instead of failing silently.
 const TERMINAL_BELL = [_]u8{tok.BELL};
 
-/// The longest command piped input may hold: the same limit as a script file
-/// (`process.LISH_FILE_MAX_SIZE`; a test in `repl.zig` keeps the two equal).
+/// Kept equal to `process.LISH_FILE_MAX_SIZE` by a test in `repl.zig`.
 pub const PIPED_COMMAND_MAX_LENGTH = 1024 * 1024;
 
 pub const Line = struct {
@@ -39,26 +37,19 @@ pub const Line = struct {
 
 pub const ReadLineResult = union(enum) {
     line: Line,
-    /// Piped input only: a command longer than `PIPED_COMMAND_MAX_LENGTH`, skipped.
-    /// Holds the input line it started on.
+    /// Holds the input line the skipped command started on.
     too_long: usize,
     eof,
 };
 
-/// Tracks whether a command read from piped input still has a bracket or string
-/// open. Remembers where it stopped, so each line is read once.
 const OpenTracker = struct {
-    /// Brackets opened minus closed so far.
     depth: usize,
-    /// Where the next check starts reading.
     resume_at: usize,
 
     fn init() OpenTracker {
         return .{ .depth = 0, .resume_at = 0 };
     }
 
-    /// `command` is everything read so far for this command. A stray closer counts
-    /// as finished, so the parser reports it instead of lish waiting for more.
     fn isOpen(self: *OpenTracker, command: []const u8) bool {
         var lexer = Lexer{ .source = command[self.resume_at..] };
         while (true) {
@@ -69,7 +60,6 @@ const OpenTracker = struct {
                     self.resume_at = command.len;
                     return self.depth > 0;
                 },
-                // A string can't be resumed partway, so the next check restarts at its quote.
                 .unterminated_string => {
                     self.resume_at += before;
                     return true;
@@ -85,8 +75,7 @@ const OpenTracker = struct {
     }
 };
 
-/// Piped stdin, read one byte at a time so nothing past the current command is
-/// taken from stdin, as bash does.
+/// One byte per read, so nothing past the current command is taken from stdin, as bash does.
 const StdinBytes = struct {
     fn init() StdinBytes {
         return .{};
@@ -102,9 +91,6 @@ const StdinBytes = struct {
 
 const PipedLineEnd = enum { newline, end_of_input, too_long };
 
-/// Where a bracketed paste stands. A paste arrives one byte per key event, so the
-/// editor remembers it; once the line is full, the rest of the paste is dropped
-/// after a single bell.
 const PasteState = enum { not_pasting, pasting, pasting_but_full };
 
 fn structuralIndentLevel(content: []const u8) usize {
@@ -162,9 +148,7 @@ pub const LineEditor = struct {
     /// Between ESC[200~ and ESC[201~ bytes are inserted literally, with no autopair.
     paste: PasteState = .not_pasting,
 
-    /// The command being read from piped input. Kept between commands so its memory is reused.
     piped_command: std.ArrayList(u8) = .empty,
-    /// Lines of piped input read so far, for naming the line in an error.
     piped_lines_read: usize = 0,
 
     renderer: Renderer,
@@ -299,17 +283,13 @@ pub const LineEditor = struct {
         }
     }
 
-    /// Saves a submitted line to history. A line history can't copy still runs;
-    /// the bell says it wasn't recorded.
     fn recordInHistory(self: *LineEditor, line: []const u8) void {
         const trimmed = std.mem.trim(u8, line, " \t\r");
         if (trimmed.len == 0) return;
         self.history.add(trimmed) catch self.ringBell();
     }
 
-    /// Reads one command from piped input. Lines are joined while a bracket or
-    /// string is still open, the way shells and Lisp REPLs read piped text.
-    /// `source` hands out bytes with `readByte() ?u8`: stdin, or a string in tests.
+    /// `source` is anything with `readByte() ?u8`: stdin, or a string in tests.
     fn readPipedCommand(self: *LineEditor, source: anytype) Allocator.Error!ReadLineResult {
         self.piped_command.clearRetainingCapacity();
         var tracker = OpenTracker.init();
@@ -374,8 +354,6 @@ pub const LineEditor = struct {
         return result;
     }
 
-    /// A key whose edit couldn't be made rings the bell: once per key, and once
-    /// per paste.
     fn rejectKey(self: *LineEditor) InputResult {
         switch (self.paste) {
             .not_pasting => self.ringBell(),
@@ -1264,7 +1242,6 @@ test "OpenTracker: resumes where it stopped, or at the quote of an open string" 
     try std.testing.expect(!string_tracker.isOpen("(length \"two\nlines\")"));
 }
 
-/// Hands out a string's bytes the way `StdinBytes` hands out stdin's.
 const TestBytes = struct {
     remaining: []const u8,
 

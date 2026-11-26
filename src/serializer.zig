@@ -11,7 +11,6 @@ const Value = val_mod.Value;
 
 pub const SerializeError = error{InvalidNode};
 
-/// A part the parser marked broken can't be written out; otherwise only the writer can fail.
 pub const Error = SerializeError || std.Io.Writer.Error;
 
 pub fn serializeExpression(node: *const AstNode, writer: *std.Io.Writer) Error!void {

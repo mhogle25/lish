@@ -50,7 +50,6 @@ pub const History = struct {
         self.saved_line.deinit(self.allocator);
     }
 
-    /// Records `line`. If the copy can't be made, history is left exactly as it was.
     pub fn add(self: *History, line: []const u8) Allocator.Error!void {
         if (self.count > 0) {
             const last_index = if (self.write_index == 0) self.limit - 1 else self.write_index - 1;
@@ -68,7 +67,6 @@ pub const History = struct {
         if (self.count < self.limit) self.count += 1;
     }
 
-    /// Shows the next older entry. If it can't, the line and browse state stay as they were.
     pub fn up(self: *History, buffer: *LineBuffer) EditError!void {
         if (self.count == 0) return;
 
@@ -95,8 +93,6 @@ pub const History = struct {
         return if (current == 0) self.limit - 1 else current - 1;
     }
 
-    /// Shows the next newer entry, or past the newest, the line being typed.
-    /// If it can't, the line and browse state stay as they were.
     pub fn down(self: *History, buffer: *LineBuffer) EditError!void {
         const current = self.browse_index orelse return;
 

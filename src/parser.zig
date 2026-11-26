@@ -138,7 +138,6 @@ pub const Parser = struct {
             );
         }
 
-        // From the first piece to the last: a macro body doesn't start at the top of its file.
         const span: ast.Position = .{ .start = pieces[0].position.start, .end = pieces[pieces.len - 1].position.end };
         return ast.makeExpression(self.allocator, span, pieces[0], pieces[1..], null, null, .{ .meta_type = .top_level });
     }
@@ -217,7 +216,6 @@ pub const Parser = struct {
         return self.textLiteral(tok.escSymToChar);
     }
 
-    /// A literal's position as written: a quoted string includes its quotes.
     fn literalPosition(self: *const Parser) ast.Position {
         const quotes: u32 = if (self.token.quote != null) 1 else 0;
         return .{ .start = self.token.start - quotes, .end = self.token.end + quotes };

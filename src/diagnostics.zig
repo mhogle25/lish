@@ -18,11 +18,9 @@ const SOURCE_INDENT = "  ";
 const MARKER = '^';
 
 pub const Report = struct {
-    /// The file the text came from, or null for text typed at the REPL.
+    /// null for text typed at the REPL.
     name: ?[]const u8,
-    /// The text the error came from.
     source: []const u8,
-    /// Which bytes of `source` failed, if known.
     span: ?Position,
     message: []const u8,
     first_line: usize = 1,
@@ -35,8 +33,7 @@ pub const Source = struct {
     first_line: usize = 1,
 };
 
-/// Line and column of a byte offset, both counted from 1. The column counts
-/// characters, not bytes.
+/// Both counted from 1; the column counts characters, not bytes.
 pub const Location = struct {
     line: usize,
     column: usize,
@@ -64,8 +61,6 @@ pub fn writeReport(writer: *std.Io.Writer, report: Report, color: bool) std.Io.W
     try writeMarkedLine(writer, report.source, report.span, color);
 }
 
-/// A runtime error: where it ended up in the text that was run, then each macro it
-/// passed through on the way out, from that call inward to where it failed.
 pub fn writeRuntimeReport(writer: *std.Io.Writer, source: Source, problem: RuntimeErr, color: bool) std.Io.Writer.Error!void {
     const in_run_text = problem.macro == null;
     try writeReport(writer, .{
@@ -83,7 +78,6 @@ pub fn writeRuntimeReport(writer: *std.Io.Writer, source: Source, problem: Runti
     if (problem.steps_incomplete) try writer.writeAll("(some steps couldn't be recorded)\n");
 }
 
-/// A problem found before anything ran.
 pub fn writeValidationReport(writer: *std.Io.Writer, source: Source, problem: ValidationError, color: bool) std.Io.Writer.Error!void {
     const span: ?Position = if (problem.start) |start|
         .{ .start = @intCast(start), .end = @intCast(problem.end orelse start) }
@@ -116,19 +110,16 @@ fn locateFrom(text: []const u8, offset: usize, first_line: usize) Location {
     return .{ .line = within.line + first_line - 1, .column = within.column };
 }
 
-/// The text a position is in: its macro's, or the text that was run.
 fn textOf(macro: ?*const Macro, run_text: []const u8) []const u8 {
     const owner = macro orelse return run_text;
     return owner.text;
 }
 
-/// `name:line:column:`, leaving out whichever part isn't known.
 fn writeLocation(writer: *std.Io.Writer, name: ?[]const u8, location: ?Location) std.Io.Writer.Error!void {
     if (name) |file| try writer.print("{s}:", .{file});
     if (location) |where| try writer.print("{d}:{d}:", .{ where.line, where.column });
 }
 
-/// The line holding `span`, without its own indentation, with `^` under the span.
 fn writeMarkedLine(writer: *std.Io.Writer, source: []const u8, span: ?Position, color: bool) std.Io.Writer.Error!void {
     const marked = span orelse return;
     const start = @min(marked.start, source.len);
@@ -150,8 +141,6 @@ fn writeMarkedLine(writer: *std.Io.Writer, source: []const u8, span: ?Position, 
     try writer.writeByte('\n');
 }
 
-/// One space per character before the failing part, keeping tabs as tabs so the
-/// marker lines up however wide the terminal draws a tab.
 fn writePadding(writer: *std.Io.Writer, before: []const u8) std.Io.Writer.Error!void {
     for (before) |byte| {
         if (byte == '\t') {
@@ -174,15 +163,12 @@ fn lineStart(source: []const u8, offset: usize) usize {
     return newline + 1;
 }
 
-/// Where the line holding `offset` ends, not counting a `\r` before its `\n`.
 fn lineEnd(source: []const u8, offset: usize) usize {
     const end = std.mem.indexOfScalarPos(u8, source, offset, '\n') orelse source.len;
     if (end > offset and source[end - 1] == '\r') return end - 1;
     return end;
 }
 
-/// UTF-8 characters in `text`: every byte except the continuation bytes of a
-/// multi-byte character.
 fn characterCount(text: []const u8) usize {
     var count: usize = 0;
     for (text) |byte| {

@@ -382,7 +382,7 @@ pub const MacroValidationResult = union(enum) {
     err: []const validation_mod.ValidationError,
 };
 
-/// `text` is what `module` was parsed from; each macro keeps it.
+/// Each macro keeps a reference to `text`, so it must outlive them.
 pub fn validateMacroModule(allocator: Allocator, module: AstMacroModule, text: []const u8) Allocator.Error!MacroValidationResult {
     var errors = validation_mod.ValidationErrors{};
     var valid_macros = std.ArrayList(exec.Macro).empty;

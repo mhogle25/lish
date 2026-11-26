@@ -38,13 +38,11 @@ pub const ProcessResult = union(enum) {
     runtime_err: RuntimeErr,
 };
 
-/// Result of loading macros from text.
 pub const MacroLoadResult = union(enum) {
     ok: usize,
     validation_err: []const ValidationError,
 };
 
-/// Result of loading macros from a file, which can also fail to be read.
 pub const MacroFileResult = union(enum) {
     ok: usize,
     io_error: anyerror,
@@ -158,11 +156,6 @@ pub fn loadMacroModule(
 
 pub const LoadBuiltError = Allocator.Error || serializer_mod.SerializeError;
 
-/// Loads macros built in Zig with `ast_builder.MacroBuilder`. They're written out
-/// as lish text and loaded like any other, so they have real text and positions,
-/// and the parser checks them like any other. A macro with a part the parser
-/// marked broken can't be written out (`error.InvalidNode`); load parser output
-/// as text with `loadMacroModule` instead.
 pub fn loadBuiltMacros(registry: *Registry, macros: []const AstMacro) LoadBuiltError!MacroLoadResult {
     var text: std.Io.Writer.Allocating = .init(registry.macroAllocator());
     serializer_mod.serializeMacroModule(macros, &text.writer) catch |err| switch (err) {
@@ -179,9 +172,7 @@ pub fn loadStdlib(registry: *Registry) Allocator.Error!void {
     return loadMacroBundle(registry, STDLIB_SOURCE);
 }
 
-/// Loads macro text compiled into the program, such as the stdlib. Text fixed at
-/// build time can only be broken if the program is, so a problem panics; text
-/// read at runtime can't be passed here and goes through `loadMacroModule`.
+/// Panics on any problem: text fixed at build time is only broken if lish is.
 pub fn loadMacroBundle(registry: *Registry, comptime source: []const u8) Allocator.Error!void {
     switch (try loadMacroModule(registry, source)) {
         .ok => {},
@@ -835,7 +826,6 @@ fn runtimeErrorOf(env: *Env, source: []const u8) !RuntimeErr {
     };
 }
 
-/// The text a place points at: in its macro's text, or in the text that was run.
 fn placeText(run_text: []const u8, macro: ?*const exec_mod.Macro, position: ?exec_mod.Position) []const u8 {
     const text = if (macro) |owner| owner.text else run_text;
     const span = position orelse return "";
@@ -938,8 +928,6 @@ test "runaway recursion collapses into one repeated step" {
     const command = "runaway 0";
     const problem = try runtimeErrorOf(&env, command);
     try std.testing.expectEqualStrings("runaway 0", placeText(command, problem.macro, problem.position));
-    // The depth limit runs out while working out the argument, the deepest thing
-    // running; then every level of the recursion is the same step, counted once each.
     try std.testing.expectEqual(@as(usize, 2), problem.steps.len);
     try expectStep(command, problem.steps[0], registry.getMacro("runaway"), "(+ :n 1)", 0);
     try std.testing.expectEqualStrings("runaway (+ :n 1)", placeText(command, problem.steps[1].macro, problem.steps[1].position));

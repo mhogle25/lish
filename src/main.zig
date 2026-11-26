@@ -27,8 +27,6 @@ const USAGE_EXIT_CODE = 2;
 const SYNTAX_EXIT_CODE = @intFromEnum(repl_mod.ExitStatus.syntax_error);
 const RUNTIME_EXIT_CODE = @intFromEnum(repl_mod.ExitStatus.runtime_error);
 
-/// The line editor's own output buffer, big enough that a full redraw of a
-/// maximum-length line reaches the terminal in one piece.
 const EDITOR_OUTPUT_BUFFER_SIZE = 64 * 1024;
 
 const STDERR_BUFFER_SIZE = 4096;
@@ -45,7 +43,6 @@ const OPTIONS = std.StaticStringMap(Option).initComptime(.{
     .{ "--dump-macros", .dump_macros },
 });
 
-/// What the command line asked lish to do.
 const Action = union(enum) {
     help,
     dump: Vocabulary,
@@ -65,7 +62,6 @@ const CommandLine = struct {
     macro_paths: []const []const u8,
 };
 
-/// Something on the command line lish can't act on.
 const UsageMistake = union(enum) {
     missing_macro_path: []const u8,
     unknown_option: []const u8,
@@ -126,7 +122,7 @@ fn runCommandLine(init: std.process.Init, stdout: *std.Io.Writer, stderr: *std.I
     }
 }
 
-/// Reads the arguments after the program name. `arena` owns everything returned.
+/// `arena` owns everything returned.
 fn parseCommandLine(arena: Allocator, arguments: []const [:0]const u8) Allocator.Error!ParsedCommandLine {
     var macro_paths: std.ArrayList([]const u8) = .empty;
     var mistakes: std.ArrayList(UsageMistake) = .empty;
@@ -188,7 +184,6 @@ const ArgumentReader = struct {
         return argument;
     }
 
-    /// Takes the argument after an option, unless there is none or it's another option.
     fn nextValue(self: *ArgumentReader) ?[]const u8 {
         if (self.remaining.len == 0) return null;
         if (looksLikeOption(self.remaining[0])) return null;
@@ -297,7 +292,6 @@ fn useColor(init: std.process.Init, file: std.Io.File) bool {
     return file.isTty(init.io) catch false;
 }
 
-/// Why a file couldn't be used, in words.
 fn fileProblem(err: anyerror) []const u8 {
     return switch (err) {
         error.FileNotFound  => "no such file",

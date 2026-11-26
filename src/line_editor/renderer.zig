@@ -84,8 +84,6 @@ pub const Renderer = struct {
         self.stdout.flush() catch {};
     }
 
-    /// Writes the redraw straight to `stdout`. A buffered writer sends itself on
-    /// when full, so no line is too long to draw.
     fn draw(self: *Renderer, content: []const u8, cursor: usize) std.Io.Writer.Error!void {
         const writer = self.stdout;
 
