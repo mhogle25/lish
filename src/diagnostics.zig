@@ -263,17 +263,15 @@ test "diagnostics: a tab inside the line is kept in the marker so it lines up" {
 }
 
 test "diagnostics: the column counts characters, not bytes" {
+    const accented = "\u{e9}";
     try expectReport(.{
         .name = null,
-        .source = "say \"é\" (nosuchop 4)",
+        .source = "say \"" ++ accented ++ "\" (nosuchop 4)",
         .span = .{ .start = 9, .end = 21 },
         .message = "Unknown operation or macro: 'nosuchop'",
-    }, false,
-        \\1:9: Unknown operation or macro: 'nosuchop'
-        \\  say "é" (nosuchop 4)
-        \\          ^^^^^^^^^^^^
-        \\
-    );
+    }, false, "1:9: Unknown operation or macro: 'nosuchop'\n" ++
+        "  say \"" ++ accented ++ "\" (nosuchop 4)\n" ++
+        "          ^^^^^^^^^^^^\n");
 }
 
 test "diagnostics: a Windows line ending isn't shown as part of the line" {
