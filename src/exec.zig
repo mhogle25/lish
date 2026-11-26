@@ -62,6 +62,25 @@ pub const RuntimeErr = struct {
     /// The macro whose text `position` is in, or null for the text that was run.
     macro:    ?*const Macro = null,
     position: ?Position     = null,
+    /// Where the error passed on its way out of macros, innermost first.
+    steps:    []const ErrorStep = &.{},
+    /// Memory ran out while recording `steps`, so some are missing.
+    steps_incomplete: bool = false,
+};
+
+/// A place an error passed through on its way out: a spot in a macro's text (it
+/// left that macro's body), or in the text that was run (it left a deferred
+/// argument written there).
+pub const ErrorStep = struct {
+    /// Whose text `position` is in, or null for the text that was run.
+    macro: ?*const Macro,
+    position: ?Position,
+    /// How many more times this same step repeated right after itself.
+    repeats: usize = 0,
+
+    fn isSamePlace(self: ErrorStep, other: ErrorStep) bool {
+        return self.macro == other.macro and std.meta.eql(self.position, other.position);
+    }
 };
 
 // Thunk
@@ -181,11 +200,15 @@ pub const ScopeEntry = union(enum) {
             .closure => |c| {
                 const saved_slots = env.unit_slots;
                 const saved_macro = env.current_macro;
+                const used_at = env.current_position;
                 env.unit_slots = c.caller.unit_slots;
                 env.current_macro = c.caller.macro;
                 defer env.unit_slots = saved_slots;
                 defer env.current_macro = saved_macro;
-                return c.thunk.proc(env, c.scope);
+                return c.thunk.proc(env, c.scope) catch |err| {
+                    if (err == error.RuntimeError) env.leaveText(saved_macro, used_at);
+                    return err;
+                };
             },
         }
     }
@@ -584,7 +607,10 @@ pub const Macro = struct {
         env.current_position = self.body_position;
         defer env.current_position = saved_position;
 
-        return env.processExpression(self.body, &macro_scope);
+        return env.processExpression(self.body, &macro_scope) catch |err| {
+            if (err == error.RuntimeError) env.leaveText(saved_macro, saved_position);
+            return err;
+        };
     }
 };
 
@@ -811,6 +837,10 @@ pub const Env = struct {
     /// switches back to the text it was written in.
     current_macro: ?*const Macro = null,
 
+    /// The steps of the error now leaving macros, in the evaluation's memory like its
+    /// message. Each new error starts a fresh list.
+    error_steps: std.ArrayList(ErrorStep) = .empty,
+
     /// Slot array of the unit currently executing; an expression's `site` indexes
     /// it. Empty means dispatch dynamically (un-cached unit or runtime-built site).
     unit_slots: []?Resolution = &.{},
@@ -888,6 +918,7 @@ pub const Env = struct {
     }
 
     pub fn fail(self: *Env, category: ErrorCategory, message: []const u8) error{RuntimeError} {
+        self.error_steps = .empty;
         self.runtime_error = .{
             .category = category,
             .message  = message,
@@ -899,13 +930,29 @@ pub const Env = struct {
 
     pub fn failFmt(self: *Env, category: ErrorCategory, comptime fmt: []const u8, args: anytype) error{RuntimeError} {
         const message = self.allocator.print(fmt, args) catch "error (allocation failed)";
-        self.runtime_error = .{
-            .category = category,
-            .message  = message,
-            .macro    = self.current_macro,
-            .position = self.current_position,
+        return self.fail(category, message);
+    }
+
+    /// Called as an error leaves a macro body or a deferred argument: records where
+    /// it was in that text, then moves it to the place that text was entered from.
+    fn leaveText(self: *Env, entered_from_macro: ?*const Macro, entered_from: ?Position) void {
+        const problem = &(self.runtime_error orelse return);
+        self.recordStep(problem, .{ .macro = problem.macro, .position = problem.position });
+        problem.macro = entered_from_macro;
+        problem.position = entered_from;
+    }
+
+    fn recordStep(self: *Env, problem: *RuntimeErr, step: ErrorStep) void {
+        const recorded = self.error_steps.items;
+        if (recorded.len > 0 and recorded[recorded.len - 1].isSamePlace(step)) {
+            recorded[recorded.len - 1].repeats += 1;
+            return;
+        }
+        self.error_steps.append(self.allocator, step) catch {
+            problem.steps_incomplete = true;
+            return;
         };
-        return error.RuntimeError;
+        problem.steps = self.error_steps.items;
     }
 };
 
@@ -1656,4 +1703,18 @@ test "scope entry closure captures scope" {
     const entry = outer_scope.get("my-val").?;
     const result = try entry.run(&env);
     try std.testing.expectEqual(@as(i64, 10), result.?.int);
+}
+
+test "a step that can't be recorded marks the steps incomplete instead of vanishing" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var registry = Registry.init(arena.allocator());
+
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    var env = Env{ .registry = &registry, .allocator = failing.allocator() };
+
+    try std.testing.expectEqual(error.RuntimeError, env.fail(.internal, "boom"));
+    env.leaveText(null, null);
+    try std.testing.expect(env.runtime_error.?.steps_incomplete);
+    try std.testing.expectEqual(@as(usize, 0), env.runtime_error.?.steps.len);
 }

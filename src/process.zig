@@ -834,16 +834,20 @@ fn runtimeErrorOf(env: *Env, source: []const u8) !RuntimeErr {
     };
 }
 
-fn spanText(text: []const u8, problem: RuntimeErr) []const u8 {
-    const position = problem.position orelse return "";
-    return text[position.start..position.end];
+/// The text a place points at: in its macro's text, or in the text that was run.
+fn placeText(run_text: []const u8, macro: ?*const exec_mod.Macro, position: ?exec_mod.Position) []const u8 {
+    const text = if (macro) |owner| owner.text else run_text;
+    const span = position orelse return "";
+    return text[span.start..span.end];
 }
 
-test "a runtime error records whose text its position is in" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
+fn expectStep(run_text: []const u8, step: exec_mod.ErrorStep, macro: ?*const exec_mod.Macro, written: []const u8, repeats: usize) !void {
+    try std.testing.expectEqual(macro, step.macro);
+    try std.testing.expectEqualStrings(written, placeText(run_text, step.macro, step.position));
+    try std.testing.expectEqual(repeats, step.repeats);
+}
 
+fn chainRegistry(alloc: Allocator) !Registry {
     var registry = Registry.init(alloc);
     try builtins.registerAll(&registry, alloc);
     const macros =
@@ -851,47 +855,94 @@ test "a runtime error records whose text its position is in" {
         \\twice ~x | list :x :x ;
         \\pass-along | twice (nosuchop) ;
         \\outer-bad x | + :x "bad" ;
+        \\my-clamp v lo hi | min :hi (max :lo :v) ;
+        \\my-clamp01 v | my-clamp :v 0 1 ;
+        \\runaway n | runaway (+ :n 1) ;
     ;
-    try std.testing.expectEqual(MacroLoadResult{ .ok = 4 }, try loadMacroModule(&registry, macros));
-    var env = Env{ .registry = &registry, .allocator = alloc };
-
-    const in_run_text = "list 1 (+ 2 \"x\")";
-    const plain = try runtimeErrorOf(&env, in_run_text);
-    try std.testing.expect(plain.macro == null);
-    try std.testing.expectEqualStrings("(+ 2 \"x\")", spanText(in_run_text, plain));
-
-    const nested = try runtimeErrorOf(&env, "boom 2");
-    try std.testing.expectEqual(registry.getMacro("boom").?, nested.macro.?);
-    try std.testing.expectEqualStrings("(+ :x \"bad\")", spanText(nested.macro.?.text, nested));
-
-    const deferred_text = "twice (nosuchop)";
-    const deferred = try runtimeErrorOf(&env, deferred_text);
-    try std.testing.expect(deferred.macro == null);
-    try std.testing.expectEqualStrings("(nosuchop)", spanText(deferred_text, deferred));
-
-    const passed_along = try runtimeErrorOf(&env, "pass-along");
-    try std.testing.expectEqual(registry.getMacro("pass-along").?, passed_along.macro.?);
-    try std.testing.expectEqualStrings("(nosuchop)", spanText(passed_along.macro.?.text, passed_along));
+    try std.testing.expectEqual(MacroLoadResult{ .ok = 7 }, try loadMacroModule(&registry, macros));
+    return registry;
 }
 
-test "an error in an outermost expression records its own position" {
+test "an error in the text that was run has no steps and points at what failed" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const alloc = arena.allocator();
+    var registry = try chainRegistry(arena.allocator());
+    var env = Env{ .registry = &registry, .allocator = arena.allocator() };
 
-    var registry = Registry.init(alloc);
-    try builtins.registerAll(&registry, alloc);
-    try std.testing.expectEqual(MacroLoadResult{ .ok = 1 }, try loadMacroModule(&registry, "## a comment line first\nouter-bad x | + :x \"bad\" ;"));
-    var env = Env{ .registry = &registry, .allocator = alloc };
+    const nested = "list 1 (+ 2 \"x\")";
+    const nested_error = try runtimeErrorOf(&env, nested);
+    try std.testing.expect(nested_error.macro == null);
+    try std.testing.expectEqualStrings("(+ 2 \"x\")", placeText(nested, null, nested_error.position));
+    try std.testing.expectEqual(@as(usize, 0), nested_error.steps.len);
 
-    const command = "nosuchop 1";
-    const whole_command = try runtimeErrorOf(&env, command);
-    try std.testing.expect(whole_command.macro == null);
-    try std.testing.expectEqualStrings("nosuchop 1", spanText(command, whole_command));
+    const whole = "nosuchop 1";
+    const whole_error = try runtimeErrorOf(&env, whole);
+    try std.testing.expectEqualStrings("nosuchop 1", placeText(whole, null, whole_error.position));
+    try std.testing.expectEqual(@as(usize, 0), whole_error.steps.len);
+}
 
-    const macro_body = try runtimeErrorOf(&env, "list 1 (outer-bad 2)");
-    try std.testing.expectEqual(registry.getMacro("outer-bad").?, macro_body.macro.?);
-    try std.testing.expectEqualStrings("+ :x \"bad\"", spanText(macro_body.macro.?.text, macro_body));
+test "an error inside macros ends at your call, with each macro it left as a step, innermost first" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var registry = try chainRegistry(arena.allocator());
+    var env = Env{ .registry = &registry, .allocator = arena.allocator() };
+
+    const nested = "list 1 (boom 2)";
+    const nested_error = try runtimeErrorOf(&env, nested);
+    try std.testing.expectEqualStrings("(boom 2)", placeText(nested, nested_error.macro, nested_error.position));
+    try std.testing.expectEqual(@as(usize, 1), nested_error.steps.len);
+    try expectStep(nested, nested_error.steps[0], registry.getMacro("boom"), "(+ :x \"bad\")", 0);
+
+    const outermost = "list 1 (outer-bad 2)";
+    const outermost_error = try runtimeErrorOf(&env, outermost);
+    try std.testing.expectEqualStrings("(outer-bad 2)", placeText(outermost, outermost_error.macro, outermost_error.position));
+    try expectStep(outermost, outermost_error.steps[0], registry.getMacro("outer-bad"), "+ :x \"bad\"", 0);
+
+    const two_deep = "my-clamp01 \"a\"";
+    const two_deep_error = try runtimeErrorOf(&env, two_deep);
+    try std.testing.expectEqualStrings("my-clamp01 \"a\"", placeText(two_deep, two_deep_error.macro, two_deep_error.position));
+    try std.testing.expectEqual(@as(usize, 2), two_deep_error.steps.len);
+    try expectStep(two_deep, two_deep_error.steps[0], registry.getMacro("my-clamp"), "(max :lo :v)", 0);
+    try expectStep(two_deep, two_deep_error.steps[1], registry.getMacro("my-clamp01"), "my-clamp :v 0 1", 0);
+}
+
+test "an error in a deferred argument steps back into the text it was written in" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var registry = try chainRegistry(arena.allocator());
+    var env = Env{ .registry = &registry, .allocator = arena.allocator() };
+
+    const yours = "twice (nosuchop)";
+    const yours_error = try runtimeErrorOf(&env, yours);
+    try std.testing.expectEqualStrings("twice (nosuchop)", placeText(yours, yours_error.macro, yours_error.position));
+    try std.testing.expectEqual(@as(usize, 2), yours_error.steps.len);
+    try expectStep(yours, yours_error.steps[0], null, "(nosuchop)", 0);
+    try expectStep(yours, yours_error.steps[1], registry.getMacro("twice"), ":x", 0);
+
+    const passed = "pass-along";
+    const passed_error = try runtimeErrorOf(&env, passed);
+    try std.testing.expectEqualStrings("pass-along", placeText(passed, passed_error.macro, passed_error.position));
+    try std.testing.expectEqual(@as(usize, 3), passed_error.steps.len);
+    try expectStep(passed, passed_error.steps[0], registry.getMacro("pass-along"), "(nosuchop)", 0);
+    try expectStep(passed, passed_error.steps[1], registry.getMacro("twice"), ":x", 0);
+    try expectStep(passed, passed_error.steps[2], registry.getMacro("pass-along"), "twice (nosuchop)", 0);
+}
+
+test "runaway recursion collapses into one repeated step" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var registry = try chainRegistry(arena.allocator());
+    var env = Env{ .registry = &registry, .allocator = arena.allocator() };
+
+    const command = "runaway 0";
+    const problem = try runtimeErrorOf(&env, command);
+    try std.testing.expectEqualStrings("runaway 0", placeText(command, problem.macro, problem.position));
+    // The depth limit runs out while working out the argument, the deepest thing
+    // running; then every level of the recursion is the same step, counted once each.
+    try std.testing.expectEqual(@as(usize, 2), problem.steps.len);
+    try expectStep(command, problem.steps[0], registry.getMacro("runaway"), "(+ :n 1)", 0);
+    try std.testing.expectEqualStrings("runaway (+ :n 1)", placeText(command, problem.steps[1].macro, problem.steps[1].position));
+    try std.testing.expect(problem.steps[1].repeats > 1000);
 }
 
 test "loadMacroModule: each macro keeps the text it was loaded from" {
