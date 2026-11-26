@@ -25,6 +25,14 @@ pub const Report = struct {
     /// Which bytes of `source` failed, if known.
     span: ?Position,
     message: []const u8,
+    first_line: usize = 1,
+};
+
+pub const Source = struct {
+    /// null for text typed at the REPL.
+    name: ?[]const u8,
+    text: []const u8,
+    first_line: usize = 1,
 };
 
 /// Line and column of a byte offset, both counted from 1. The column counts
@@ -44,7 +52,7 @@ pub fn locate(source: []const u8, offset: usize) Location {
 }
 
 pub fn writeReport(writer: *std.Io.Writer, report: Report, color: bool) std.Io.Writer.Error!void {
-    const location = if (report.span) |span| locate(report.source, span.start) else null;
+    const location = if (report.span) |span| locateFrom(report.source, span.start, report.first_line) else null;
 
     if (color) try writer.writeAll(RED);
     try writeLocation(writer, report.name, location);
@@ -58,41 +66,54 @@ pub fn writeReport(writer: *std.Io.Writer, report: Report, color: bool) std.Io.W
 
 /// A runtime error: where it ended up in the text that was run, then each macro it
 /// passed through on the way out, from that call inward to where it failed.
-pub fn writeRuntimeReport(writer: *std.Io.Writer, name: ?[]const u8, run_text: []const u8, problem: RuntimeErr, color: bool) std.Io.Writer.Error!void {
+pub fn writeRuntimeReport(writer: *std.Io.Writer, source: Source, problem: RuntimeErr, color: bool) std.Io.Writer.Error!void {
+    const in_run_text = problem.macro == null;
     try writeReport(writer, .{
-        .name = name,
-        .source = textOf(problem.macro, run_text),
+        .name = if (in_run_text) source.name else null,
+        .source = textOf(problem.macro, source.text),
         .span = problem.position,
         .message = problem.message,
+        .first_line = if (in_run_text) source.first_line else 1,
     }, color);
 
     var remaining = problem.steps.len;
     while (remaining > 0) : (remaining -= 1) {
-        try writeStep(writer, name, run_text, problem.steps[remaining - 1], color);
+        try writeStep(writer, source, problem.steps[remaining - 1], color);
     }
     if (problem.steps_incomplete) try writer.writeAll("(some steps couldn't be recorded)\n");
 }
 
 /// A problem found before anything ran.
-pub fn writeValidationReport(writer: *std.Io.Writer, name: ?[]const u8, source: []const u8, problem: ValidationError, color: bool) std.Io.Writer.Error!void {
+pub fn writeValidationReport(writer: *std.Io.Writer, source: Source, problem: ValidationError, color: bool) std.Io.Writer.Error!void {
     const span: ?Position = if (problem.start) |start|
         .{ .start = @intCast(start), .end = @intCast(problem.end orelse start) }
     else
         null;
-    try writeReport(writer, .{ .name = name, .source = source, .span = span, .message = problem.message }, color);
+    try writeReport(writer, .{
+        .name = source.name,
+        .source = source.text,
+        .span = span,
+        .message = problem.message,
+        .first_line = source.first_line,
+    }, color);
 }
 
-fn writeStep(writer: *std.Io.Writer, name: ?[]const u8, run_text: []const u8, step: ErrorStep, color: bool) std.Io.Writer.Error!void {
+fn writeStep(writer: *std.Io.Writer, source: Source, step: ErrorStep, color: bool) std.Io.Writer.Error!void {
     if (step.macro) |macro| {
         try writer.print("in macro {s}:\n", .{macro.id});
     } else {
         try writer.writeAll("back in ");
-        const location = if (step.position) |span| locate(run_text, span.start) else null;
-        try writeLocation(writer, name, location);
+        const location = if (step.position) |span| locateFrom(source.text, span.start, source.first_line) else null;
+        try writeLocation(writer, source.name, location);
         try writer.writeByte('\n');
     }
-    try writeMarkedLine(writer, textOf(step.macro, run_text), step.position, color);
+    try writeMarkedLine(writer, textOf(step.macro, source.text), step.position, color);
     if (step.repeats > 0) try writer.print("[previous step repeated {d} more times]\n", .{step.repeats});
+}
+
+fn locateFrom(text: []const u8, offset: usize, first_line: usize) Location {
+    const within = locate(text, offset);
+    return .{ .line = within.line + first_line - 1, .column = within.column };
 }
 
 /// The text a position is in: its macro's, or the text that was run.
@@ -326,7 +347,7 @@ fn spanOf(text: []const u8, piece: []const u8) Position {
 fn expectRuntimeReport(name: ?[]const u8, run_text: []const u8, problem: RuntimeErr, expected: []const u8) !void {
     var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer output.deinit();
-    try writeRuntimeReport(&output.writer, name, run_text, problem, false);
+    try writeRuntimeReport(&output.writer, .{ .name = name, .text = run_text }, problem, false);
     try std.testing.expectEqualStrings(expected, output.written());
 }
 
@@ -393,13 +414,43 @@ test "diagnostics: a validation problem is reported at its span, or by name alon
     defer output.deinit();
 
     const source = "list 1\n  (say (+ 4 5)";
-    try writeValidationReport(&output.writer, "backup.lish", source, .{ .message = "Missing closing parenthesis", .start = 9, .end = 10 }, false);
-    try writeValidationReport(&output.writer, "backup.lish", source, .{ .message = "Macro body must be an expression" }, false);
+    try writeValidationReport(&output.writer, .{ .name = "backup.lish", .text = source }, .{ .message = "Missing closing parenthesis", .start = 9, .end = 10 }, false);
+    try writeValidationReport(&output.writer, .{ .name = "backup.lish", .text = source }, .{ .message = "Macro body must be an expression" }, false);
     try std.testing.expectEqualStrings(
         \\backup.lish:2:3: Missing closing parenthesis
         \\  (say (+ 4 5)
         \\  ^
         \\backup.lish: Macro body must be an expression
+        \\
+    , output.written());
+}
+
+test "diagnostics: text that starts partway through its input counts lines from there" {
+    const twice = testMacro("twice", "twice ~x | list :x :x ;");
+    const command = "list 1\n  (twice (nosuchop))";
+
+    const steps = [_]ErrorStep{
+        .{ .macro = null, .position = spanOf(command, "(nosuchop)") },
+        .{ .macro = &twice, .position = spanOf(twice.text, ":x") },
+    };
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    try writeRuntimeReport(&output.writer, .{ .name = "<stdin>", .text = command, .first_line = 1204 }, .{
+        .category = .unknown_op,
+        .message = "Unknown operation or macro: 'nosuchop'",
+        .position = spanOf(command, "(twice (nosuchop))"),
+        .steps = &steps,
+    }, false);
+    try std.testing.expectEqualStrings(
+        \\<stdin>:1205:3: Unknown operation or macro: 'nosuchop'
+        \\  (twice (nosuchop))
+        \\  ^^^^^^^^^^^^^^^^^^
+        \\in macro twice:
+        \\  twice ~x | list :x :x ;
+        \\                  ^^
+        \\back in <stdin>:1205:10:
+        \\  (twice (nosuchop))
+        \\         ^^^^^^^^^^
         \\
     , output.written());
 }

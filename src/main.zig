@@ -21,15 +21,17 @@ const HELP =
     \\
 ;
 
-/// Exit code for a command line lish can't act on, and for a script with a syntax error.
+/// Exit code for a command line lish can't act on.
 const USAGE_EXIT_CODE = 2;
 
-/// Exit code for a script that failed while running.
-const RUNTIME_EXIT_CODE = 1;
+const SYNTAX_EXIT_CODE = @intFromEnum(repl_mod.ExitStatus.syntax_error);
+const RUNTIME_EXIT_CODE = @intFromEnum(repl_mod.ExitStatus.runtime_error);
 
 /// The line editor's own output buffer, big enough that a full redraw of a
 /// maximum-length line reaches the terminal in one piece.
 const EDITOR_OUTPUT_BUFFER_SIZE = 64 * 1024;
+
+const STDERR_BUFFER_SIZE = 4096;
 
 const Option = enum { help, macros, init_config, dump_ops, dump_macros };
 
@@ -84,28 +86,43 @@ const ParsedCommandLine = union(enum) {
 };
 
 pub fn main(init: std.process.Init) !void {
-    const arena = init.arena.allocator();
-
-    var stdout_writer = std.Io.File.stdout().writerStreaming(init.io, &.{});
-    var stderr_writer = std.Io.File.stderr().writer(init.io, &.{});
+    var stdout_writer = outputWriter(std.Io.File.stdout(), init.io, &.{});
+    var stderr_buffer: [STDERR_BUFFER_SIZE]u8 = undefined;
+    var stderr_writer = outputWriter(std.Io.File.stderr(), init.io, &stderr_buffer);
     const stdout = &stdout_writer.interface;
     const stderr = &stderr_writer.interface;
 
+    const status = runCommandLine(init, stdout, stderr) catch |err| {
+        stderr.flush() catch {};
+        return err;
+    };
+    stderr.flush() catch {};
+    if (status != 0) std.process.exit(status);
+}
+
+fn runCommandLine(init: std.process.Init, stdout: *std.Io.Writer, stderr: *std.Io.Writer) !u8 {
+    const arena = init.arena.allocator();
     const arguments = try init.minimal.args.toSlice(arena);
     const command_line = switch (try parseCommandLine(arena, arguments[@min(1, arguments.len)..])) {
         .ok => |parsed| parsed,
         .mistakes => |mistakes| {
             for (mistakes) |mistake| try stderr.print("lish: {f}\n", .{mistake});
             try stderr.writeAll("Try 'lish --help'.\n");
-            std.process.exit(USAGE_EXIT_CODE);
+            return USAGE_EXIT_CODE;
         },
     };
 
     switch (command_line.action) {
-        .help        => try stdout.writeAll(HELP),
-        .dump        => |vocabulary| try dumpVocabulary(init.gpa, stdout, vocabulary),
-        .init_config => try writeStarterConfig(init, stdout, stderr),
-        .run         => |run| try runLish(init, stdout, stderr, command_line.macro_paths, run),
+        .help => {
+            try stdout.writeAll(HELP);
+            return 0;
+        },
+        .dump => |vocabulary| {
+            try dumpVocabulary(init.gpa, stdout, vocabulary);
+            return 0;
+        },
+        .init_config => return writeStarterConfig(init, stdout, stderr),
+        .run         => |run| return runLish(init, stdout, stderr, command_line.macro_paths, run),
     }
 }
 
@@ -195,14 +212,14 @@ fn dumpVocabulary(allocator: Allocator, stdout: *std.Io.Writer, vocabulary: Voca
     }
 }
 
-fn writeStarterConfig(init: std.process.Init, stdout: *std.Io.Writer, stderr: *std.Io.Writer) !void {
+fn writeStarterConfig(init: std.process.Init, stdout: *std.Io.Writer, stderr: *std.Io.Writer) !u8 {
     const result = repl_mod.initConfig(init.io, init.minimal.environ, init.gpa) catch |err| {
         try stderr.print("lish: could not write config: {s}\n", .{fileProblem(err)});
-        return;
+        return RUNTIME_EXIT_CODE;
     };
     const written = result orelse {
         try stderr.writeAll("lish: could not determine config path ($HOME unset)\n");
-        return;
+        return RUNTIME_EXIT_CODE;
     };
     defer init.gpa.free(written.path);
 
@@ -210,6 +227,7 @@ fn writeStarterConfig(init: std.process.Init, stdout: *std.Io.Writer, stderr: *s
         try stdout.print("Created {s}\n", .{written.path})
     else
         try stdout.print("Config already exists at {s}\n", .{written.path});
+    return 0;
 }
 
 fn runLish(
@@ -218,7 +236,7 @@ fn runLish(
     stderr: *std.Io.Writer,
     command_line_macro_paths: []const []const u8,
     run: Run,
-) !void {
+) !u8 {
     const allocator = init.gpa;
     const io = init.io;
 
@@ -244,12 +262,10 @@ fn runLish(
     try lish.loadStdlib(&session.registry);
 
     switch (run) {
-        .script => |path| runScript(io, allocator, &session, stdout, stderr, errorColor(init), path),
+        .script => |path| return runScript(io, allocator, &session, stdout, stderr, useColor(init, std.Io.File.stderr()), path),
         .repl => {
-            // Streaming like `stdout`, so the two writers share the file position
-            // instead of overwriting each other when stdout is redirected to a file.
             var editor_output_buffer: [EDITOR_OUTPUT_BUFFER_SIZE]u8 = undefined;
-            var editor_output = std.Io.File.stdout().writerStreaming(io, &editor_output_buffer);
+            var editor_output = outputWriter(std.Io.File.stdout(), io, &editor_output_buffer);
 
             var editor = line_editor_mod.LineEditor.init(allocator, &editor_output.interface);
             editor.autopair_insert = repl_config.autopair_insert;
@@ -261,17 +277,24 @@ fn runLish(
             if (repl_config.prompt) |prompt| editor.renderer.prompt = prompt;
             defer editor.deinit();
 
-            repl_mod.runRepl(&session, &editor, stdout, stderr);
+            const status = repl_mod.runRepl(&session, &editor, stdout, stderr, .{
+                .errors = useColor(init, std.Io.File.stderr()),
+                .results = useColor(init, std.Io.File.stdout()),
+            });
+            return @intFromEnum(status);
         },
     }
 }
 
-/// Errors are red only on a terminal, and never when `NO_COLOR` is set.
-fn errorColor(init: std.process.Init) bool {
+fn outputWriter(file: std.Io.File, io: std.Io, buffer: []u8) std.Io.File.Writer {
+    return file.writerStreaming(io, buffer);
+}
+
+fn useColor(init: std.process.Init, file: std.Io.File) bool {
     if (init.minimal.environ.getPosix("NO_COLOR")) |value| {
         if (value.len > 0) return false;
     }
-    return std.Io.File.stderr().isTty(init.io) catch false;
+    return file.isTty(init.io) catch false;
 }
 
 /// Why a file couldn't be used, in words.
@@ -294,35 +317,37 @@ fn runScript(
     stderr: *std.Io.Writer,
     color: bool,
     path: []const u8,
-) void {
+) u8 {
     if (std.mem.endsWith(u8, path, lish.MACRO_EXTENSION)) {
         stderr.print("lish: '{s}' is a macro module, not a runnable script\n", .{path}) catch {};
-        std.process.exit(USAGE_EXIT_CODE);
+        return USAGE_EXIT_CODE;
     }
 
     const source = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(lish.LISH_FILE_MAX_SIZE)) catch |err| {
         stderr.print("lish: cannot read '{s}': {s}\n", .{ path, fileProblem(err) }) catch {};
-        std.process.exit(RUNTIME_EXIT_CODE);
+        return RUNTIME_EXIT_CODE;
     };
     defer allocator.free(source);
 
     const result = session.execute(source) catch {
         stderr.writeAll("lish: out of memory\n") catch {};
-        std.process.exit(RUNTIME_EXIT_CODE);
+        return RUNTIME_EXIT_CODE;
     };
 
     switch (result) {
-        .ok => |maybe_value| if (maybe_value) |value| {
+        .ok => |maybe_value| {
+            const value = maybe_value orelse return 0;
             repl_mod.writeResult(stdout, value) catch {};
             stdout.writeByte('\n') catch {};
+            return 0;
         },
         .validation_err => |errors| {
-            for (errors) |problem| lish.diagnostics.writeValidationReport(stderr, path, source, problem, color) catch {};
-            std.process.exit(USAGE_EXIT_CODE);
+            for (errors) |problem| lish.diagnostics.writeValidationReport(stderr, .{ .name = path, .text = source }, problem, color) catch {};
+            return SYNTAX_EXIT_CODE;
         },
         .runtime_err => |problem| {
-            lish.diagnostics.writeRuntimeReport(stderr, path, source, problem, color) catch {};
-            std.process.exit(RUNTIME_EXIT_CODE);
+            lish.diagnostics.writeRuntimeReport(stderr, .{ .name = path, .text = source }, problem, color) catch {};
+            return RUNTIME_EXIT_CODE;
         },
     }
 }
@@ -397,4 +422,27 @@ test "file problems are given in words, with the error's name as the fallback" {
     try std.testing.expectEqualStrings("is a directory", fileProblem(error.IsDir));
     try std.testing.expectEqualStrings("larger than the 1 MB limit", fileProblem(error.StreamTooLong));
     try std.testing.expectEqualStrings("NotOpenForReading", fileProblem(error.NotOpenForReading));
+}
+
+test "output writers sharing one file keep their order" {
+    var io_instance: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer io_instance.deinit();
+    const io = io_instance.io();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const file = try tmp.dir.createFile(io, "both.txt", .{});
+    defer file.close(io);
+
+    var results = outputWriter(file, io, &.{});
+    var errors_buffer: [64]u8 = undefined;
+    var errors = outputWriter(file, io, &errors_buffer);
+    try results.interface.writeAll("a\n");
+    try errors.interface.writeAll("report\n");
+    try errors.interface.flush();
+    try results.interface.writeAll("b\n");
+
+    var contents_buffer: [64]u8 = undefined;
+    const contents = try tmp.dir.readFile(io, "both.txt", &contents_buffer);
+    try std.testing.expectEqualStrings("a\nreport\nb\n", contents);
 }

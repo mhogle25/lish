@@ -957,7 +957,7 @@ test "a real error through macros prints as the full report" {
 
     var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer output.deinit();
-    try diagnostics_mod.writeRuntimeReport(&output.writer, "backup.lish", script, problem, false);
+    try diagnostics_mod.writeRuntimeReport(&output.writer, .{ .name = "backup.lish", .text = script }, problem, false);
     try std.testing.expectEqualStrings(
         \\backup.lish:2:3: 'max' expects numbers, got string
         \\  (my-clamp01 "a")

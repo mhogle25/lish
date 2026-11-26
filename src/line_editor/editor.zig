@@ -31,8 +31,14 @@ const TERMINAL_BELL = [_]u8{tok.BELL};
 /// (`process.LISH_FILE_MAX_SIZE`; a test in `repl.zig` keeps the two equal).
 pub const PIPED_COMMAND_MAX_LENGTH = 1024 * 1024;
 
+pub const Line = struct {
+    text: []const u8,
+    /// null for a line typed at the terminal.
+    first_line: ?usize = null,
+};
+
 pub const ReadLineResult = union(enum) {
-    line: []const u8,
+    line: Line,
     /// Piped input only: a command longer than `PIPED_COMMAND_MAX_LENGTH`, skipped.
     /// Holds the input line it started on.
     too_long: usize,
@@ -269,7 +275,7 @@ pub const LineEditor = struct {
                     self.renderer.reset();
                     const line = self.buffer.data[0..self.buffer.length];
                     self.recordInHistory(line);
-                    return .{ .line = line };
+                    return .{ .line = .{ .text = line } };
                 },
                 .cancel_line => {
                     self.renderer.render(self.buffer.slice(), self.buffer.length);
@@ -312,12 +318,12 @@ pub const LineEditor = struct {
         while (true) {
             switch (try self.appendPipedLine(source)) {
                 .newline => {
-                    if (!tracker.isOpen(self.piped_command.items)) return .{ .line = self.piped_command.items };
+                    if (!tracker.isOpen(self.piped_command.items)) return .{ .line = .{ .text = self.piped_command.items, .first_line = first_line } };
                     try self.piped_command.append(self.allocator, '\n');
                 },
                 .end_of_input => {
                     if (self.piped_command.items.len == 0) return .eof;
-                    return .{ .line = self.piped_command.items };
+                    return .{ .line = .{ .text = self.piped_command.items, .first_line = first_line } };
                 },
                 .too_long => {
                     self.skipPipedLine(source);
@@ -1276,7 +1282,7 @@ const TestBytes = struct {
 
 fn expectPipedLine(editor: *LineEditor, bytes: *TestBytes, expected: []const u8) !void {
     switch (try editor.readPipedCommand(bytes)) {
-        .line          => |line| try std.testing.expectEqualStrings(expected, line),
+        .line          => |line| try std.testing.expectEqualStrings(expected, line.text),
         .too_long, .eof => return error.TestUnexpectedResult,
     }
 }
@@ -1425,4 +1431,18 @@ test "Up keeps the typed line and rings the bell when history can't save it" {
     try std.testing.expectEqual(@as(usize, 1), bellsIn(output.written()));
 
     editor.history.allocator = std.testing.allocator;
+}
+
+test "piped input: each command says which input line it starts on" {
+    var editor = LineEditor.testInit();
+    defer editor.deinit();
+
+    var bytes = TestBytes.init("say 1\n+ 1 (* 2\n 3)\nsay 4\n");
+    const expected = [_]usize{ 1, 2, 4 };
+    for (expected) |first_line| {
+        switch (try editor.readPipedCommand(&bytes)) {
+            .line             => |line| try std.testing.expectEqual(@as(?usize, first_line), line.first_line),
+            .too_long, .eof   => return error.TestUnexpectedResult,
+        }
+    }
 }

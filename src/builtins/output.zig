@@ -41,13 +41,12 @@ fn sayOp(args: Args) ExecError!?Value {
 fn errorOp(args: Args) ExecError!?Value {
     try args.expectMinCount(1);
     const writer = args.env.stderr orelse return null;
-    writer.writeAll("\x1b[31m") catch return args.env.fail(.internal, "Failed to write to stderr");
     for (0..args.count()) |i| {
         var buf: [256]u8 = undefined;
         const str = try args.at(i).resolveString(&buf);
-        writer.writeAll(str)    catch return args.env.fail(.internal, "Failed to write to stderr");
+        writer.writeAll(str) catch return args.env.fail(.internal, "Failed to write to stderr");
     }
-    writer.writeAll("\x1b[0m\n") catch return args.env.fail(.internal, "Failed to write to stderr");
-    writer.flush()              catch return args.env.fail(.internal, "Failed to write to stderr");
+    writer.writeByte('\n') catch return args.env.fail(.internal, "Failed to write to stderr");
+    writer.flush()         catch return args.env.fail(.internal, "Failed to write to stderr");
     return null;
 }

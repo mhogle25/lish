@@ -5,9 +5,27 @@ const builtins_mod = @import("builtins.zig");
 const process_mod = @import("process.zig");
 const session_mod = @import("session.zig");
 const line_editor_mod = @import("line_editor.zig");
+const diagnostics = @import("diagnostics.zig");
 
 const Allocator = std.mem.Allocator;
 const LineEditor = line_editor_mod.LineEditor;
+
+const PIPED_INPUT_NAME = "<stdin>";
+
+const RED = "\x1b[31m";
+const DIM = "\x1b[2m";
+const RESET = "\x1b[0m";
+
+pub const ExitStatus = enum(u8) {
+    ok = 0,
+    runtime_error = 1,
+    syntax_error = 2,
+};
+
+pub const ReplColor = struct {
+    errors: bool,
+    results: bool,
+};
 
 /// The piped-input command limit in MB, for its error message.
 const PIPED_COMMAND_LIMIT_MB = @divExact(line_editor_mod.PIPED_COMMAND_MAX_LENGTH, 1024 * 1024);
@@ -360,56 +378,88 @@ pub fn runRepl(
     editor: *LineEditor,
     stdout: *std.Io.Writer,
     stderr: *std.Io.Writer,
-) void {
+    color: ReplColor,
+) ExitStatus {
+    var last: ExitStatus = .ok;
     while (true) {
-        const read = editor.readLine() catch |err| {
-            stderr.print("Error: {}\n", .{err}) catch {};
-            break;
+        const read = editor.readLine() catch {
+            stderr.writeAll("lish: out of memory\n") catch {};
+            stderr.flush() catch {};
+            return .runtime_error;
         };
 
         switch (read) {
             .eof => break,
             .too_long => |first_line| {
-                stderr.print("\x1b[31mInput error: line {d}: command is longer than the {d} MB limit\x1b[0m\n", .{ first_line, PIPED_COMMAND_LIMIT_MB }) catch {};
+                writeTooLong(stderr, first_line, color.errors) catch {};
+                stderr.flush() catch {};
+                last = .syntax_error;
             },
             .line => |line| {
-                const trimmed = std.mem.trim(u8, line, " \t\r");
+                const trimmed = std.mem.trim(u8, line.text, " \t\r");
                 if (trimmed.len == 0) continue;
 
-                if (std.mem.eql(u8, trimmed, "exit") or std.mem.eql(u8, trimmed, "quit")) {
-                    break;
-                }
+                if (std.mem.eql(u8, trimmed, "exit") or std.mem.eql(u8, trimmed, "quit")) break;
 
                 if (std.mem.eql(u8, trimmed, "clear")) {
                     stdout.print("\x1b[2J\x1b[H", .{}) catch {};
+                    last = .ok;
                     continue;
                 }
 
-                const result = session.execute(trimmed) catch |err| {
-                    stderr.print("Error: {}\n", .{err}) catch {};
-                    continue;
-                };
-
-                switch (result) {
-                    .ok => |maybe_value| {
-                        if (maybe_value) |value| {
-                            stdout.writeAll("\x1b[2m") catch {};
-                            writeResult(stdout, value) catch {};
-                            stdout.writeAll("\x1b[0m\n") catch {};
-                        }
-                    },
-                    .validation_err => |errors| {
-                        for (errors) |validation_error| {
-                            stderr.print("\x1b[31mValidation error: {s}\x1b[0m\n", .{validation_error.message}) catch {};
-                        }
-                    },
-                    .runtime_err => |re| {
-                        stderr.print("\x1b[31mRuntime error: {s}\x1b[0m\n", .{re.message}) catch {};
-                    },
-                }
+                const source: diagnostics.Source = if (line.first_line) |first_line|
+                    .{ .name = PIPED_INPUT_NAME, .text = line.text, .first_line = first_line }
+                else
+                    .{ .name = null, .text = line.text };
+                last = runCommand(session, source, stdout, stderr, color);
+                stderr.flush() catch {};
             },
         }
     }
+    return if (editor.is_terminal) .ok else last;
+}
+
+pub fn runCommand(
+    session: *session_mod.Session,
+    source: diagnostics.Source,
+    stdout: *std.Io.Writer,
+    stderr: *std.Io.Writer,
+    color: ReplColor,
+) ExitStatus {
+    const result = session.execute(source.text) catch {
+        stderr.writeAll("lish: out of memory\n") catch {};
+        return .runtime_error;
+    };
+
+    switch (result) {
+        .ok => |maybe_value| {
+            const value = maybe_value orelse return .ok;
+            writeResultLine(stdout, value, color.results) catch {};
+            return .ok;
+        },
+        .validation_err => |errors| {
+            for (errors) |problem| diagnostics.writeValidationReport(stderr, source, problem, color.errors) catch {};
+            return .syntax_error;
+        },
+        .runtime_err => |problem| {
+            diagnostics.writeRuntimeReport(stderr, source, problem, color.errors) catch {};
+            return .runtime_error;
+        },
+    }
+}
+
+fn writeResultLine(stdout: *std.Io.Writer, value: value_mod.Value, dim: bool) std.Io.Writer.Error!void {
+    if (dim) try stdout.writeAll(DIM);
+    try writeResult(stdout, value);
+    if (dim) try stdout.writeAll(RESET);
+    try stdout.writeByte('\n');
+}
+
+fn writeTooLong(stderr: *std.Io.Writer, first_line: usize, color: bool) std.Io.Writer.Error!void {
+    if (color) try stderr.writeAll(RED);
+    try stderr.print("{s}:{d}: command is longer than the {d} MB limit", .{ PIPED_INPUT_NAME, first_line, PIPED_COMMAND_LIMIT_MB });
+    if (color) try stderr.writeAll(RESET);
+    try stderr.writeByte('\n');
 }
 
 const testing = std.testing;
@@ -520,4 +570,68 @@ test "applyConfig with an empty source keeps every default" {
     try testing.expectEqual(@as(usize, 4), config.indent_width);
     try testing.expectEqual(@as(usize, 256), config.history_size);
     try testing.expect(config.prompt == null);
+}
+
+const CommandRun = struct {
+    status: ExitStatus,
+    out: []const u8,
+    err: []const u8,
+};
+
+fn runForTest(allocator: Allocator, source: diagnostics.Source, color: ReplColor) !CommandRun {
+    var session = try session_mod.Session.init(std.testing.allocator, .{
+        .io = std.Io.failing,
+        .fragments = &.{&builtins_mod.registerAll},
+    });
+    defer session.deinit();
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    var err: std.Io.Writer.Allocating = .init(allocator);
+    const status = runCommand(&session, source, &out.writer, &err.writer, color);
+    return .{ .status = status, .out = out.written(), .err = err.written() };
+}
+
+const no_color: ReplColor = .{ .errors = false, .results = false };
+
+test "runCommand: a result is plain, or dim only when results get colour" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const plain = try runForTest(arena.allocator(), .{ .name = null, .text = "+ 1 2" }, no_color);
+    try std.testing.expectEqual(ExitStatus.ok, plain.status);
+    try std.testing.expectEqualStrings("=> 3\n", plain.out);
+
+    const dim = try runForTest(arena.allocator(), .{ .name = null, .text = "+ 1 2" }, .{ .errors = false, .results = true });
+    try std.testing.expectEqualStrings(DIM ++ "=> 3" ++ RESET ++ "\n", dim.out);
+}
+
+test "runCommand: an error typed at the prompt has no file name" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const run = try runForTest(arena.allocator(), .{ .name = null, .text = "nosuchop 1" }, no_color);
+    try std.testing.expectEqual(ExitStatus.runtime_error, run.status);
+    try std.testing.expectEqualStrings(
+        \\1:1: Unknown operation or macro: 'nosuchop'
+        \\  nosuchop 1
+        \\  ^^^^^^^^^^
+        \\
+    , run.err);
+}
+
+test "runCommand: piped input names <stdin> and counts lines from the start of the input" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const run = try runForTest(arena.allocator(), .{ .name = "<stdin>", .text = "say (+ 1]", .first_line = 2 }, no_color);
+    try std.testing.expectEqual(ExitStatus.syntax_error, run.status);
+    try std.testing.expectEqualStrings(
+        \\<stdin>:2:5: Missing closing parenthesis
+        \\  say (+ 1]
+        \\      ^
+        \\<stdin>:2:9: Unexpected closing bracket
+        \\  say (+ 1]
+        \\          ^
+        \\
+    , run.err);
 }

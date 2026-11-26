@@ -21,6 +21,7 @@ pub const PROMPT = renderer_mod.PROMPT;
 
 pub const LineEditor = editor_mod.LineEditor;
 pub const ReadLineResult = editor_mod.ReadLineResult;
+pub const Line = editor_mod.Line;
 pub const PIPED_COMMAND_MAX_LENGTH = editor_mod.PIPED_COMMAND_MAX_LENGTH;
 
 test {

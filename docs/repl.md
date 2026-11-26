@@ -47,6 +47,8 @@ The line editor supports:
 
 **Piped input** (`cat cmds.lish | lish`) has no keys, only newlines. A newline ends a command once every bracket and quote in it is closed; while one is still open, the next line joins the same command, as in bash or a Lisp REPL. Each command runs as soon as it's complete and its result prints as `=> value`. A command longer than 1 MB is reported with the line it started on and skipped.
 
+Setting `NO_COLOR` turns off colour in errors and results. A script exits with 2 for a syntax error and 1 for an error while running; piped input exits with the last command's status (as in bash, an `exit` keeps it).
+
 ## REPL Configuration
 
 The REPL reads `$XDG_CONFIG_HOME/lish/config.lish` on startup, falling back to `~/.config/lish/config.lish`. The file is a single lish expression evaluated with the full set of core built-ins available. If the file does not exist all settings use their defaults. (`lish --init-config` scaffolds a starter file.)
