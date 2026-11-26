@@ -129,7 +129,7 @@ pub const Parser = struct {
         if (pieces.len == 0) {
             return ast.makeExpression(
                 self.allocator,
-                .{ .start = 0, .end = self.token.end },
+                .{ .start = self.token.start, .end = self.token.end },
                 try self.syntaxErr("An expression must have an ID"),
                 &.{},
                 null,
@@ -138,7 +138,9 @@ pub const Parser = struct {
             );
         }
 
-        return ast.makeExpression(self.allocator, .{ .start = 0, .end = self.token.end }, pieces[0], pieces[1..], null, null, .{ .meta_type = .top_level });
+        // From the first piece to the last: a macro body doesn't start at the top of its file.
+        const span: ast.Position = .{ .start = pieces[0].position.start, .end = pieces[pieces.len - 1].position.end };
+        return ast.makeExpression(self.allocator, span, pieces[0], pieces[1..], null, null, .{ .meta_type = .top_level });
     }
 
     fn expression(self: *Parser, nested_count: usize) Allocator.Error!*AstNode {
@@ -215,11 +217,17 @@ pub const Parser = struct {
         return self.textLiteral(tok.escSymToChar);
     }
 
+    /// A literal's position as written: a quoted string includes its quotes.
+    fn literalPosition(self: *const Parser) ast.Position {
+        const quotes: u32 = if (self.token.quote != null) 1 else 0;
+        return .{ .start = self.token.start - quotes, .end = self.token.end + quotes };
+    }
+
     fn textLiteral(self: *Parser, converter: *const fn (u8) ?u8) Allocator.Error!*AstNode {
         if (self.token.hasInvalidEscapes()) {
             return ast.makeSyntaxErr(
                 self.allocator,
-                .{ .start = self.token.start, .end = self.token.end },
+                self.literalPosition(),
                 "Encountered a literal with invalid escape sequences",
             );
         }
@@ -242,7 +250,7 @@ pub const Parser = struct {
 
         const owned = try self.allocator.dupe(u8, self.string_buf.items);
 
-        const node = try ast.makeValueLiteral(self.allocator, .{ .start = self.token.start, .end = self.token.end }, .{ .string = owned });
+        const node = try ast.makeValueLiteral(self.allocator, self.literalPosition(), .{ .string = owned });
         node.quote = self.token.quote;
         return node;
     }
@@ -846,6 +854,20 @@ test "parseWithComments returns comment spans and a valid root" {
     try std.testing.expectEqual(@as(usize, 2), result.comments.len);
     try std.testing.expectEqualStrings("## doc", source[result.comments[0].start..result.comments[0].end]);
     try std.testing.expectEqualStrings("## trailing", source[result.comments[1].start..result.comments[1].end]);
+}
+
+test "a quoted string's position covers its quotes, and so does a sigil around it" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const source = "say \"hi\" :\"my var\" bare";
+    const root = try parse(arena.allocator(), source);
+    const args = root.body.expression.args;
+    const expected = [_][]const u8{ "\"hi\"", ":\"my var\"", "bare" };
+    for (args, expected) |arg, written| {
+        try std.testing.expectEqualStrings(written, source[arg.position.start..arg.position.end]);
+    }
+    try std.testing.expectEqualStrings(source, source[root.position.start..root.position.end]);
 }
 
 test "quote field distinguishes a string literal from a bare identifier" {

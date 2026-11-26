@@ -116,7 +116,7 @@ fn executeUnit(env: *Env, unit: Unit, scope: ?*const Scope) (Allocator.Error)!Pr
     const frame = try env.enterUnit(unit.unit_id, unit.site_count);
     defer env.exitUnit(frame);
 
-    const result = env.processExpression(unit.root, exec_scope) catch |err| switch (err) {
+    const result = unit.root.proc(env, exec_scope) catch |err| switch (err) {
         error.RuntimeError => return .{ .runtime_err = env.runtime_error orelse .{ .category = .internal, .message = "Unknown runtime error" } },
         error.OutOfMemory => {
             if (env.memory_budget_tripped) {
@@ -354,7 +354,7 @@ fn validateUnit(alloc: Allocator, source: []const u8) !exec_mod.Unit {
 fn runUnit(env: *Env, unit: exec_mod.Unit) exec_mod.ExecError!?Value {
     const frame = try env.enterUnit(unit.unit_id, unit.site_count);
     defer env.exitUnit(frame);
-    return env.processExpression(unit.root, &Scope.EMPTY);
+    return unit.root.proc(env, &Scope.EMPTY);
 }
 
 test "one lowered unit resolves per-registry, never to whoever ran it first" {
@@ -850,8 +850,9 @@ test "a runtime error records whose text its position is in" {
         \\boom x | + 1 (+ :x "bad") ;
         \\twice ~x | list :x :x ;
         \\pass-along | twice (nosuchop) ;
+        \\outer-bad x | + :x "bad" ;
     ;
-    try std.testing.expectEqual(MacroLoadResult{ .ok = 3 }, try loadMacroModule(&registry, macros));
+    try std.testing.expectEqual(MacroLoadResult{ .ok = 4 }, try loadMacroModule(&registry, macros));
     var env = Env{ .registry = &registry, .allocator = alloc };
 
     const in_run_text = "list 1 (+ 2 \"x\")";
@@ -871,6 +872,26 @@ test "a runtime error records whose text its position is in" {
     const passed_along = try runtimeErrorOf(&env, "pass-along");
     try std.testing.expectEqual(registry.getMacro("pass-along").?, passed_along.macro.?);
     try std.testing.expectEqualStrings("(nosuchop)", spanText(passed_along.macro.?.text, passed_along));
+}
+
+test "an error in an outermost expression records its own position" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var registry = Registry.init(alloc);
+    try builtins.registerAll(&registry, alloc);
+    try std.testing.expectEqual(MacroLoadResult{ .ok = 1 }, try loadMacroModule(&registry, "## a comment line first\nouter-bad x | + :x \"bad\" ;"));
+    var env = Env{ .registry = &registry, .allocator = alloc };
+
+    const command = "nosuchop 1";
+    const whole_command = try runtimeErrorOf(&env, command);
+    try std.testing.expect(whole_command.macro == null);
+    try std.testing.expectEqualStrings("nosuchop 1", spanText(command, whole_command));
+
+    const macro_body = try runtimeErrorOf(&env, "list 1 (outer-bad 2)");
+    try std.testing.expectEqual(registry.getMacro("outer-bad").?, macro_body.macro.?);
+    try std.testing.expectEqualStrings("+ :x \"bad\"", spanText(macro_body.macro.?.text, macro_body));
 }
 
 test "loadMacroModule: each macro keeps the text it was loaded from" {

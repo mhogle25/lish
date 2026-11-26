@@ -134,7 +134,8 @@ pub const Expression = struct {
 /// slot array, indexed by local `site` ids. `unit_id` keys the resolution cache;
 /// `site_count` sizes the array.
 pub const Unit = struct {
-    root: Expression,
+    /// The command's outermost expression, with its position.
+    root: *const Thunk,
     unit_id: u32,
     site_count: u32,
 };
@@ -514,6 +515,8 @@ pub const Macro = struct {
     text: []const u8,
     parameters: []const MacroParameter,
     body: Expression,
+    /// Where the body is written in `text`.
+    body_position: Position,
     /// The body is its own unit: `unit_id` keys the resolution cache, `site_count`
     /// sizes its slots. Default 0 for test-built macros (un-cached, dynamic).
     unit_id: u32 = 0,
@@ -576,6 +579,10 @@ pub const Macro = struct {
         const saved_macro = env.current_macro;
         env.current_macro = self;
         defer env.current_macro = saved_macro;
+
+        const saved_position = env.current_position;
+        env.current_position = self.body_position;
+        defer env.current_position = saved_position;
 
         return env.processExpression(self.body, &macro_scope);
     }
@@ -954,7 +961,7 @@ test "Macro.writeSignature renders params, marking deferred with ~" {
         .{ .id = "hi", .param_type = .value },
         .{ .id = "body", .param_type = .deferred },
     };
-    const macro = Macro{ .id = "guard", .text = "guard lo hi ~body | :body ;", .parameters = &params, .body = undefined };
+    const macro = Macro{ .id = "guard", .text = "guard lo hi ~body | :body ;", .parameters = &params, .body = undefined, .body_position = Position.synthetic };
 
     var buf: [64]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buf);
@@ -1434,7 +1441,7 @@ test "a bound op gets its own host data, and ops bound to different data don't m
 fn makeTestMacro(allocator: Allocator, id: []const u8, parameters: []const MacroParameter) Allocator.Error!*Macro {
     const name = try makeValueLiteral(allocator, Position.synthetic, .{ .string = "add" });
     const macro = try allocator.create(Macro);
-    macro.* = .{ .id = id, .text = "", .parameters = parameters, .body = .{ .name = name, .args = &.{} } };
+    macro.* = .{ .id = id, .text = "", .parameters = parameters, .body = .{ .name = name, .args = &.{} }, .body_position = Position.synthetic };
 
     var text: std.Io.Writer.Allocating = .init(allocator);
     macro.writeSignature(&text.writer) catch return error.OutOfMemory;
@@ -1504,10 +1511,8 @@ test "macro with value parameters" {
         .id = "add-one",
         .text = "add-one x | add :x 1 ;",
         .parameters = &params,
-        .body = .{
-            .name = add_id,
-            .args = try alloc.dupe(*const Thunk, &.{ x_ref, one }),
-        },
+        .body = .{ .name = add_id, .args = try alloc.dupe(*const Thunk, &.{ x_ref, one }) },
+        .body_position = Position.synthetic,
     };
     try registry.registerMacro("add-one", macro);
 
@@ -1546,10 +1551,8 @@ test "macro with deferred parameter" {
         .id = "run-deferred",
         .text = "run-deferred ~thunk | passthrough :thunk ;",
         .parameters = &params,
-        .body = .{
-            .name = identity_id,
-            .args = try alloc.dupe(*const Thunk, &.{thunk_ref}),
-        },
+        .body = .{ .name = identity_id, .args = try alloc.dupe(*const Thunk, &.{thunk_ref}) },
+        .body_position = Position.synthetic,
     };
     try registry.registerMacro("run-deferred", macro);
 
@@ -1585,6 +1588,7 @@ test "macro arity mismatch" {
         .text = "needs-two x y | proc ;",
         .parameters = &params,
         .body = .{ .name = dummy_id, .args = &.{} },
+        .body_position = Position.synthetic,
     };
     try registry.registerMacro("needs-two", macro);
 

@@ -182,7 +182,7 @@ test "ops: includes registered macros" {
     const validated = try validation.validate(alloc, ast_root);
 
     const result = switch (validated) {
-        .ok => |unit| try env.processExpression(unit.root, &scope),
+        .ok => |unit| try unit.root.proc(&env, &scope),
         .err => return error.RuntimeError,
     };
     try std.testing.expect(result != null);
@@ -211,7 +211,7 @@ test "known: registered macro" {
     const validated = try validation.validate(alloc, ast_root);
 
     const result = switch (validated) {
-        .ok => |unit| try env.processExpression(unit.root, &scope),
+        .ok => |unit| try unit.root.proc(&env, &scope),
         .err => return error.RuntimeError,
     };
 

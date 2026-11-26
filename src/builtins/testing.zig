@@ -49,5 +49,5 @@ pub fn evalWithStdlib(alloc: Allocator, source: []const u8) ExecError!?Value {
 fn runUnit(env: *exec.Env, unit: exec.Unit) ExecError!?Value {
     const frame = try env.enterUnit(unit.unit_id, unit.site_count);
     defer env.exitUnit(frame);
-    return env.processExpression(unit.root, &exec.Scope.EMPTY);
+    return unit.root.proc(env, &exec.Scope.EMPTY);
 }

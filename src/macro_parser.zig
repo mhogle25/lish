@@ -443,10 +443,13 @@ fn validateMacro(
 
     var site_counter: u32 = 0;
     const body_thunk = try validation_mod.validateStep(allocator, macro.body, errors, &site_counter) orelse return null;
-    if (body_thunk.body != .expression) {
-        try errors.add(allocator, .{ .message = "Macro body must be an expression" });
-        return null;
-    }
+    const body = switch (body_thunk.body) {
+        .expression => |expression| expression,
+        .value_literal, .scope_thunk => {
+            try errors.add(allocator, .{ .message = "Macro body must be an expression" });
+            return null;
+        },
+    };
 
     if (errors.count() > init_error_count) return null;
 
@@ -454,7 +457,8 @@ fn validateMacro(
         .id = id,
         .text = text,
         .parameters = valid_params.items,
-        .body = body_thunk.body.expression,
+        .body = body,
+        .body_position = body_thunk.position,
         .unit_id = exec.nextUnitId(),
         .site_count = site_counter,
         .description = try cleanDocstring(allocator, macro.description),
@@ -615,6 +619,19 @@ test "duplicate parameter name fails module validation" {
     }
 }
 
+test "a macro body's position covers just the body, not the text before it" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const source = "double x | * :x 2 ;\ntriple y | * :y 3 ;";
+    const module = try parseMacroModule(arena.allocator(), source);
+    const expected = [_][]const u8{ "* :x 2", "* :y 3" };
+    for (module.macros, expected) |node, body_text| {
+        const body = node.macro.body.position;
+        try std.testing.expectEqualStrings(body_text, source[body.start..body.end]);
+    }
+}
+
 test "validate macro module" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -657,14 +674,14 @@ test "validate and execute macro" {
 
     const ast_root = try expr_parser.parse(alloc, "double 21");
     const expr_result = try validation_mod.validate(alloc, ast_root);
-    const expression = switch (expr_result) {
+    const root = switch (expr_result) {
         .ok => |unit| unit.root,
         .err => return error.TestUnexpectedResult,
     };
 
     var env = exec.Env{ .registry = &registry, .allocator = alloc };
     const scope = exec.Scope.EMPTY;
-    const value = try env.processExpression(expression, &scope);
+    const value = try root.proc(&env, &scope);
 
     try std.testing.expectEqual(@as(i64, 42), value.?.int);
 }
@@ -691,14 +708,14 @@ test "end-to-end: macro with deferred parameter" {
 
     const ast_root = try expr_parser.parse(alloc, "do-twice 42");
     const expr_result = try validation_mod.validate(alloc, ast_root);
-    const expression = switch (expr_result) {
+    const root = switch (expr_result) {
         .ok => |unit| unit.root,
         .err => return error.TestUnexpectedResult,
     };
 
     var env = exec.Env{ .registry = &registry, .allocator = alloc };
     const scope = exec.Scope.EMPTY;
-    const value = try env.processExpression(expression, &scope);
+    const value = try root.proc(&env, &scope);
 
     try std.testing.expectEqual(@as(i64, 42), value.?.int);
 }
@@ -724,14 +741,14 @@ test "end-to-end: multiple macros in module" {
 
     const ast_root = try expr_parser.parse(alloc, "quadruple 3");
     const expr_result = try validation_mod.validate(alloc, ast_root);
-    const expression = switch (expr_result) {
+    const root = switch (expr_result) {
         .ok => |unit| unit.root,
         .err => return error.TestUnexpectedResult,
     };
 
     var env = exec.Env{ .registry = &registry, .allocator = alloc };
     const scope = exec.Scope.EMPTY;
-    const value = try env.processExpression(expression, &scope);
+    const value = try root.proc(&env, &scope);
 
     try std.testing.expectEqual(@as(i64, 12), value.?.int);
 }

@@ -58,7 +58,7 @@ pub fn validate(allocator: Allocator, ast_root: *const AstNode) Allocator.Error!
 
     if (errors.count() > 0) return .{ .err = errors.slice() };
     return .{ .ok = .{
-        .root = thunk.body.expression,
+        .root = thunk,
         .unit_id = exec_mod.nextUnitId(),
         .site_count = site_counter,
     } };
@@ -172,7 +172,7 @@ test "validate simple expression" {
 
     switch (result) {
         .ok => |unit| {
-            const expression = unit.root;
+            const expression = unit.root.body.expression;
             try std.testing.expect(expression.name.body == .value_literal);
             try std.testing.expectEqualStrings("say", expression.name.body.value_literal.?.string);
             try std.testing.expectEqual(@as(usize, 1), expression.args.len);
@@ -197,7 +197,7 @@ test "validate nested expression" {
 
     switch (result) {
         .ok => |unit| {
-            const expression = unit.root;
+            const expression = unit.root.body.expression;
             try std.testing.expectEqualStrings("add", expression.name.body.value_literal.?.string);
             try std.testing.expectEqual(@as(usize, 2), expression.args.len);
             try std.testing.expect(expression.args[0].body == .expression);
@@ -216,7 +216,7 @@ test "validate scope thunk" {
 
     switch (result) {
         .ok => |unit| {
-            const expression = unit.root;
+            const expression = unit.root.body.expression;
             try std.testing.expectEqualStrings("say", expression.name.body.value_literal.?.string);
             try std.testing.expectEqual(@as(usize, 1), expression.args.len);
             try std.testing.expect(expression.args[0].body == .scope_thunk);
@@ -373,8 +373,7 @@ test "validate end-to-end with execution" {
 
     switch (validation_result) {
         .ok => |unit| {
-            const expression = unit.root;
-            const exec_result = try env.processExpression(expression, &scope);
+            const exec_result = try unit.root.proc(&env, &scope);
             try std.testing.expectEqual(@as(i64, 42), exec_result.?.int);
         },
         .err => return error.TestUnexpectedResult,
@@ -395,7 +394,7 @@ test "validate list literal" {
 
     switch (result) {
         .ok => |unit| {
-            const expression = unit.root;
+            const expression = unit.root.body.expression;
             try std.testing.expectEqualStrings("say", expression.name.body.value_literal.?.string);
             try std.testing.expectEqual(@as(usize, 1), expression.args.len);
 

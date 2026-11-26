@@ -287,7 +287,7 @@ test "cache: basic put and get" {
 
     const cached = cache.get("+ 1 2");
     try std.testing.expect(cached != null);
-    try std.testing.expectEqualStrings("+", cached.?.root.name.body.value_literal.?.string);
+    try std.testing.expectEqualStrings("+", cached.?.root.body.expression.name.body.value_literal.?.string);
 }
 
 test "cache: miss returns null" {
@@ -314,7 +314,7 @@ test "cache: update existing key" {
     try std.testing.expectEqual(@as(usize, 1), cache.count());
 
     const cached = cache.get("key").?;
-    try std.testing.expectEqualStrings("*", cached.root.name.body.value_literal.?.string);
+    try std.testing.expectEqualStrings("*", cached.root.body.expression.name.body.value_literal.?.string);
 }
 
 test "cache: evicts least recently used" {

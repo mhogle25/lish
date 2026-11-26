@@ -36,7 +36,7 @@ fn eval(alloc: std.mem.Allocator, io: ?std.Io, opts: Options, src: []const u8) e
         .ok => |unit| blk: {
             const frame = try env.enterUnit(unit.unit_id, unit.site_count);
             defer env.exitUnit(frame);
-            break :blk env.processExpression(unit.root, &exec.Scope.EMPTY);
+            break :blk unit.root.proc(&env, &exec.Scope.EMPTY);
         },
         .err => error.RuntimeError,
     };
