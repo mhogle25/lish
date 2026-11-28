@@ -49,9 +49,9 @@ fn applyOp(args: Args) ExecError!?Value {
 fn knownOp(args: Args) ExecError!?Value {
     try args.expectCount(1);
     const value = try args.at(0).get() orelse return null;
-    if (value != .string) return null;
-    if (value.string.len == 0) return null;
-    if (args.env.registry.resolveId(value.string) == null) return null;
+    const name = value.asString() orelse return null;
+    if (name.len == 0) return null;
+    if (args.env.registry.resolveId(name) == null) return null;
     return value;
 }
 

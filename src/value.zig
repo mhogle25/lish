@@ -24,6 +24,34 @@ pub const Value = union(enum) {
         };
     }
 
+    pub fn asString(self: Value) ?[]const u8 {
+        return switch (self) {
+            .string             => |string| string,
+            .int, .float, .list => null,
+        };
+    }
+
+    pub fn asInt(self: Value) ?i64 {
+        return switch (self) {
+            .int                   => |int| int,
+            .float, .string, .list => null,
+        };
+    }
+
+    pub fn asFloat(self: Value) ?f64 {
+        return switch (self) {
+            .float               => |float| float,
+            .int, .string, .list => null,
+        };
+    }
+
+    pub fn asList(self: Value) ?[]const ?Value {
+        return switch (self) {
+            .list                  => |items| items,
+            .int, .float, .string => null,
+        };
+    }
+
     pub fn typeName(self: Value) []const u8 {
         return @tagName(self);
     }
@@ -83,16 +111,15 @@ pub const Value = union(enum) {
     }
 
     pub fn eql(lhs: Value, rhs: Value, allocator: std.mem.Allocator) std.mem.Allocator.Error!bool {
-        switch (shallowEql(lhs, rhs)) {
+        var current: ListPair = switch (shallowEql(lhs, rhs)) {
             .equal     => return true,
             .not_equal => return false,
-            .descend   => {},
-        }
+            .descend   => |pair| pair,
+        };
 
         var pending = std.ArrayList(ListPair).empty;
         defer pending.deinit(allocator);
 
-        var current: ListPair = .{ .lhs = lhs.list, .rhs = rhs.list };
         while (true) {
             for (current.lhs, current.rhs) |lhs_item, rhs_item| {
                 const lhs_inner = lhs_item orelse {
@@ -104,7 +131,7 @@ pub const Value = union(enum) {
                 switch (shallowEql(lhs_inner, rhs_inner)) {
                     .equal     => {},
                     .not_equal => return false,
-                    .descend   => try pending.append(allocator, .{ .lhs = lhs_inner.list, .rhs = rhs_inner.list }),
+                    .descend   => |pair| try pending.append(allocator, pair),
                 }
             }
 
@@ -323,20 +350,31 @@ const SourceTextMode = struct {
 };
 
 /// One shallow eql step: scalars settle; equal-length lists need their elements walked.
-const ShallowEql = enum { equal, not_equal, descend };
+const ShallowEql = union(enum) {
+    equal,
+    not_equal,
+    descend: ListPair,
+};
 
 fn shallowEql(lhs: Value, rhs: Value) ShallowEql {
-    const Tag = std.meta.Tag(Value);
-    const lhs_tag: Tag = lhs;
-    const rhs_tag: Tag = rhs;
-    if (lhs_tag != rhs_tag) return .not_equal;
-
-    return switch (lhs) {
-        .string => |lhs_str| if (std.mem.eql(u8, lhs_str, rhs.string)) .equal else .not_equal,
-        .int    => |lhs_int| if (lhs_int == rhs.int) .equal else .not_equal,
-        .float  => |lhs_float| if (lhs_float == rhs.float) .equal else .not_equal,
-        .list   => |lhs_items| if (lhs_items.len == rhs.list.len) .descend else .not_equal,
-    };
+    switch (lhs) {
+        .string => |left| {
+            const right = rhs.asString() orelse return .not_equal;
+            return if (std.mem.eql(u8, left, right)) .equal else .not_equal;
+        },
+        .int => |left| {
+            const right = rhs.asInt() orelse return .not_equal;
+            return if (left == right) .equal else .not_equal;
+        },
+        .float => |left| {
+            const right = rhs.asFloat() orelse return .not_equal;
+            return if (left == right) .equal else .not_equal;
+        },
+        .list => |left| {
+            const right = rhs.asList() orelse return .not_equal;
+            return if (left.len == right.len) .{ .descend = .{ .lhs = left, .rhs = right } } else .not_equal;
+        },
+    }
 }
 
 const ListPair = struct {
@@ -521,6 +559,47 @@ test "value: asNumber accepts only ints and floats, and toValue gives the same v
 
     try std.testing.expectEqual(Value{ .int = 7 }, (Number{ .int = 7 }).toValue());
     try std.testing.expectEqual(Value{ .float = 2.5 }, (Number{ .float = 2.5 }).toValue());
+}
+
+test "value: each accessor gives its own kind's contents and null for every other kind" {
+    const items = [_]?Value{.{ .int = 1 }};
+    const kinds = [_]Value{ .{ .int = 7 }, .{ .float = 2.5 }, .{ .string = "seven" }, .{ .list = &items } };
+
+    for (kinds, 0..) |value, kind| {
+        try std.testing.expectEqual(kind == 0, value.asInt() != null);
+        try std.testing.expectEqual(kind == 1, value.asFloat() != null);
+        try std.testing.expectEqual(kind == 2, value.asString() != null);
+        try std.testing.expectEqual(kind == 3, value.asList() != null);
+    }
+    try std.testing.expectEqual(@as(i64, 7), kinds[0].asInt().?);
+    try std.testing.expectEqual(@as(f64, 2.5), kinds[1].asFloat().?);
+    try std.testing.expectEqualStrings("seven", kinds[2].asString().?);
+    try std.testing.expectEqual(@as(usize, 1), kinds[3].asList().?.len);
+}
+
+test "value: eql tells values of the same kind apart by their contents" {
+    const allocator = std.testing.allocator;
+    const one_two = [_]?Value{ .{ .int = 1 }, .{ .int = 2 } };
+    const one_two_again = [_]?Value{ .{ .int = 1 }, .{ .int = 2 } };
+    const one_three = [_]?Value{ .{ .int = 1 }, .{ .int = 3 } };
+    const one_two_three = [_]?Value{ .{ .int = 1 }, .{ .int = 2 }, .{ .int = 3 } };
+    const list: Value = .{ .list = &one_two };
+
+    try std.testing.expect(try (Value{ .float = 1.5 }).eql(.{ .float = 1.5 }, allocator));
+    try std.testing.expect(!(try (Value{ .float = 1.5 }).eql(.{ .float = 2.5 }, allocator)));
+    try std.testing.expect(try (Value{ .string = "a" }).eql(.{ .string = "a" }, allocator));
+    try std.testing.expect(!(try (Value{ .string = "a" }).eql(.{ .string = "b" }, allocator)));
+    try std.testing.expect(try list.eql(.{ .list = &one_two_again }, allocator));
+    try std.testing.expect(!(try list.eql(.{ .list = &one_three }, allocator)));
+    try std.testing.expect(!(try list.eql(.{ .list = &one_two_three }, allocator)));
+    try std.testing.expect(!(try (Value{ .list = &one_two_three }).eql(list, allocator)));
+}
+
+test "value: an int never equals the float with the same value" {
+    const int: Value = .{ .int = 1 };
+    const float: Value = .{ .float = 1.0 };
+    try std.testing.expect(!(try int.eql(float, std.testing.allocator)));
+    try std.testing.expect(!(try float.eql(int, std.testing.allocator)));
 }
 
 test "value: Number.pair keeps two ints as ints and makes both floats when either is a float" {

@@ -68,15 +68,15 @@ pub fn intFold(
     int_op: *const fn (i64, i64) i64,
 ) ExecError!?Value {
     try args.expectMinCount(2);
-    var accumulator = try args.at(0).resolve();
-    if (accumulator != .int) return args.env.failFmt(.type_mismatch, "Expected an integer, got {s}", .{accumulator.typeName()});
+    const first = try args.at(0).resolve();
+    var accumulator = first.asInt() orelse return args.env.failFmt(.type_mismatch, "Expected an integer, got {s}", .{first.typeName()});
 
     for (1..args.count()) |i| {
         const operand = try args.at(i).resolve();
-        if (operand != .int) return args.env.failFmt(.type_mismatch, "Expected an integer, got {s}", .{operand.typeName()});
-        accumulator = .{ .int = int_op(accumulator.int, operand.int) };
+        const operand_int = operand.asInt() orelse return args.env.failFmt(.type_mismatch, "Expected an integer, got {s}", .{operand.typeName()});
+        accumulator = int_op(accumulator, operand_int);
     }
-    return accumulator;
+    return .{ .int = accumulator };
 }
 
 pub fn checkedIntFold(
@@ -84,15 +84,15 @@ pub fn checkedIntFold(
     int_op: *const fn (i64, i64) ?i64,
 ) ExecError!?Value {
     try args.expectMinCount(2);
-    var accumulator = try args.at(0).resolve();
-    if (accumulator != .int) return args.env.failFmt(.type_mismatch, "Expected an integer, got {s}", .{accumulator.typeName()});
+    const first = try args.at(0).resolve();
+    var accumulator = first.asInt() orelse return args.env.failFmt(.type_mismatch, "Expected an integer, got {s}", .{first.typeName()});
 
     for (1..args.count()) |i| {
         const operand = try args.at(i).resolve();
-        if (operand != .int) return args.env.failFmt(.type_mismatch, "Expected an integer, got {s}", .{operand.typeName()});
-        accumulator = .{ .int = int_op(accumulator.int, operand.int) orelse return null };
+        const operand_int = operand.asInt() orelse return args.env.failFmt(.type_mismatch, "Expected an integer, got {s}", .{operand.typeName()});
+        accumulator = int_op(accumulator, operand_int) orelse return null;
     }
-    return accumulator;
+    return .{ .int = accumulator };
 }
 
 pub fn numericComparison(
@@ -127,8 +127,8 @@ pub fn naturalLessThan(_: void, left: ?Value, right: ?Value) bool {
         inline else => |numbers| numbers.left < numbers.right,
     };
 
-    if (left_value == .string and right_value == .string) {
-        return std.mem.order(u8, left_value.string, right_value.string) == .lt;
+    if (left_value.asString()) |left_string| {
+        if (right_value.asString()) |right_string| return std.mem.order(u8, left_string, right_string) == .lt;
     }
 
     return typeRank(left_value) < typeRank(right_value);

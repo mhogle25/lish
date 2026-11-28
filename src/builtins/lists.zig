@@ -133,8 +133,8 @@ fn flatOp(args: Args) ExecError!?Value {
     for (0..args.count()) |i| {
         const maybe_value = try args.at(i).get();
         if (maybe_value) |value| {
-            if (value == .list) {
-                for (value.list) |item| {
+            if (value.asList()) |items| {
+                for (items) |item| {
                     try helpers.checkListLength(args.env, result.items.len + 1);
                     try result.append(args.env.allocator, item);
                 }
@@ -364,14 +364,14 @@ fn flattenInto(maybe_value: ?Value, result: *std.ArrayList(?Value), alloc: Alloc
         try result.append(alloc, null);
         return;
     };
-    if (value != .list) {
+    const outer_items = value.asList() orelse {
         try result.append(alloc, value);
         return;
-    }
+    };
 
     var stack = std.ArrayList(FlattenFrame).empty;
     defer stack.deinit(alloc);
-    try stack.append(alloc, .{ .items = value.list });
+    try stack.append(alloc, .{ .items = outer_items });
 
     while (stack.items.len > 0) {
         const frame = &stack.items[stack.items.len - 1];
@@ -479,8 +479,8 @@ fn sortwithLessThan(ctx: *SortWithContext, left: ?Value, right: ?Value) bool {
     };
 
     if (result) |value| {
-        if (value == .int) return value.int < 0;
-        if (value == .float) return value.float < 0;
+        if (value.asInt()) |int| return int < 0;
+        if (value.asFloat()) |float| return float < 0;
     }
     return false;
 }

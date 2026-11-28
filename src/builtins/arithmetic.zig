@@ -261,16 +261,16 @@ fn powerWrapOp(args: Args) ExecError!?Value {
 
 fn powerCheckedOp(args: Args) ExecError!?Value {
     try args.expectMinCount(2);
-    var accumulator = try args.at(0).resolve();
-    if (accumulator != .int) return args.env.failFmt(.type_mismatch, "'{s}' expects integers, got {s}", .{ POWER_CHECKED_ID, accumulator.typeName() });
+    const first = try args.at(0).resolve();
+    var accumulator = first.asInt() orelse return args.env.failFmt(.type_mismatch, "'{s}' expects integers, got {s}", .{ POWER_CHECKED_ID, first.typeName() });
 
     for (1..args.count()) |i| {
         const operand = try args.at(i).resolve();
-        if (operand != .int) return args.env.failFmt(.type_mismatch, "'{s}' expects integers, got {s}", .{ POWER_CHECKED_ID, operand.typeName() });
-        accumulator = .{ .int = intPowChecked(accumulator.int, operand.int) orelse return null };
+        const exponent = operand.asInt() orelse return args.env.failFmt(.type_mismatch, "'{s}' expects integers, got {s}", .{ POWER_CHECKED_ID, operand.typeName() });
+        accumulator = intPowChecked(accumulator, exponent) orelse return null;
     }
 
-    return accumulator;
+    return .{ .int = accumulator };
 }
 
 fn intPowNegExp(base: i64, exp: i64) i64 {
@@ -343,8 +343,8 @@ fn xorInt(left: i64, right: i64) i64 {
 fn bitwiseNotOp(args: Args) ExecError!?Value {
     try args.expectCount(1);
     const operand = try args.at(0).resolve();
-    if (operand != .int) return args.env.failFmt(.type_mismatch, "'{s}' expects an integer, got {s}", .{ BITWISE_NOT_ID, operand.typeName() });
-    return Value{ .int = ~operand.int };
+    const int = operand.asInt() orelse return args.env.failFmt(.type_mismatch, "'{s}' expects an integer, got {s}", .{ BITWISE_NOT_ID, operand.typeName() });
+    return Value{ .int = ~int };
 }
 
 fn shiftLeftOp(args: Args) ExecError!?Value {
