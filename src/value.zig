@@ -408,13 +408,7 @@ pub const LishType = union(enum) {
     one_of: []const LishType,
 
     pub fn oneOf(comptime types: []const LishType, comptime names: []const []const u8) LishType {
-        return .{ .one_of = comptime blk: {
-            var members: [types.len + names.len]LishType = undefined;
-            for (types, 0..) |t, i| members[i] = t;
-            for (names, 0..) |name, i| members[types.len + i] = .{ .literal = name };
-            const frozen = members;
-            break :blk &frozen;
-        } };
+        return .{ .one_of = comptime oneOfMembers(types, names) };
     }
 
     pub fn render(self: LishType, writer: *std.Io.Writer) std.Io.Writer.Error!void {
@@ -434,6 +428,14 @@ pub const LishType = union(enum) {
         }
     }
 };
+
+fn oneOfMembers(comptime types: []const LishType, comptime names: []const []const u8) []const LishType {
+    var members: [types.len + names.len]LishType = undefined;
+    for (types, 0..) |member_type, index| members[index] = member_type;
+    for (names, 0..) |name, index| members[types.len + index] = .{ .literal = name };
+    const frozen = members;
+    return &frozen;
+}
 
 test "LishType.render spells a union mixing generic types and quoted literals" {
     var buf: [64]u8 = undefined;

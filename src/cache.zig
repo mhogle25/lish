@@ -62,18 +62,7 @@ pub fn LruCache(comptime V: type) type {
                 return;
             }
 
-            const index = if (self.len < self.capacity) blk: {
-                const idx = self.len;
-                self.len += 1;
-                break :blk idx;
-            } else blk: {
-                const tail_idx = self.tail orelse std.debug.panic("LruCache is full ({d} entries) but its list has no tail", .{self.len});
-                _ = self.map.remove(self.nodes[tail_idx].key);
-                self.allocator.free(self.nodes[tail_idx].key);
-                self.removeFromList(tail_idx);
-                self.nodes[tail_idx].active = false;
-                break :blk tail_idx;
-            };
+            const index = if (self.len < self.capacity) self.takeFreeSlot() else self.evictOldest();
 
             const owned_key = try self.allocator.dupe(u8, key);
             self.nodes[index] = .{
@@ -83,6 +72,21 @@ pub fn LruCache(comptime V: type) type {
             };
             try self.map.put(self.allocator, owned_key, index);
             self.addToFront(index);
+        }
+
+        fn takeFreeSlot(self: *Self) usize {
+            const index = self.len;
+            self.len += 1;
+            return index;
+        }
+
+        fn evictOldest(self: *Self) usize {
+            const oldest = self.tail orelse std.debug.panic("LruCache is full ({d} entries) but its list has no tail", .{self.len});
+            _ = self.map.remove(self.nodes[oldest].key);
+            self.allocator.free(self.nodes[oldest].key);
+            self.removeFromList(oldest);
+            self.nodes[oldest].active = false;
+            return oldest;
         }
 
         pub fn clear(self: *Self) void {
@@ -185,11 +189,7 @@ pub const ResolutionCache = struct {
         }
 
         try self.map.ensureUnusedCapacity(self.allocator, 1);
-        const index = if (self.len < self.capacity) blk: {
-            const idx = self.len;
-            self.len += 1;
-            break :blk idx;
-        } else (self.evictVictim() orelse return null);
+        const index = if (self.len < self.capacity) self.takeFreeSlot() else (self.evictVictim() orelse return null);
 
         const slots = try self.allocator.alloc(?Resolution, site_count);
         @memset(slots, null);
@@ -225,6 +225,12 @@ pub const ResolutionCache = struct {
             self.nodes = try self.allocator.alloc(Node, self.capacity);
             @memset(self.nodes, Node{});
         }
+    }
+
+    fn takeFreeSlot(self: *ResolutionCache) usize {
+        const index = self.len;
+        self.len += 1;
+        return index;
     }
 
     fn evictVictim(self: *ResolutionCache) ?usize {

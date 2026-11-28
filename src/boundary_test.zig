@@ -33,13 +33,15 @@ fn eval(alloc: std.mem.Allocator, io: ?std.Io, opts: Options, src: []const u8) e
     const ast_root = try parser.parse(alloc, src);
     const result = try validation.validate(alloc, ast_root);
     return switch (result) {
-        .ok => |unit| blk: {
-            const frame = try env.enterUnit(unit.unit_id, unit.site_count);
-            defer env.exitUnit(frame);
-            break :blk unit.root.proc(&env, &exec.Scope.EMPTY);
-        },
+        .ok  => |unit| runUnit(&env, unit),
         .err => error.RuntimeError,
     };
+}
+
+fn runUnit(env: *exec.Env, unit: exec.Unit) !?Value {
+    const frame = try env.enterUnit(unit.unit_id, unit.site_count);
+    defer env.exitUnit(frame);
+    return unit.root.proc(env, &exec.Scope.EMPTY);
 }
 
 fn sweepNoTrap(alloc: std.mem.Allocator, io: ?std.Io, opts: Options, cases: []const []const u8) !void {
