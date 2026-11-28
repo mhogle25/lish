@@ -439,9 +439,7 @@ test "file problems are given in words, with the error's name as the fallback" {
 }
 
 test "output writers sharing one file keep their order" {
-    var io_instance: std.Io.Threaded = .init(std.testing.allocator, .{});
-    defer io_instance.deinit();
-    const io = io_instance.io();
+    const io = std.testing.io;
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

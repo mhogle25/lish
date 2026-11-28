@@ -176,9 +176,7 @@ test "boundary sweep: range/until reach the i64 bounds without trapping" {
 test "boundary sweep: random ops never trap at the i64 extremes" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var threaded = std.Io.Threaded.init(arena.allocator(), .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    const io = std.testing.io;
     try sweepNoTrap(arena.allocator(), io, .{ .with_random = true }, &.{
         "? " ++ MIN ++ " " ++ MAX,
         "?< " ++ MIN ++ " " ++ MAX,
@@ -208,9 +206,7 @@ test "an enormous range errors under a list-length bound instead of hanging" {
 test "random over the full i64 range returns an in-range value" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var threaded = std.Io.Threaded.init(arena.allocator(), .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    const io = std.testing.io;
     for (0..200) |_| {
         const result = try eval(arena.allocator(), io, .{ .with_random = true }, "? " ++ MIN ++ " " ++ MAX);
         try std.testing.expect(result.? == .int);

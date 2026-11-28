@@ -1023,9 +1023,7 @@ test "loadMacroPath: a macro keeps its text after the file's buffer is freed" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    var io_instance: std.Io.Threaded = .init(std.testing.allocator, .{});
-    defer io_instance.deinit();
-    const io = io_instance.io();
+    const io = std.testing.io;
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -1102,9 +1100,7 @@ fn macroFolderForTest(io: std.Io, tmp: *std.testing.TmpDir, allocator: Allocator
 }
 
 test "loadMacroPath: a folder loads its macro files and keeps a broken one's text and errors" {
-    var io_instance: std.Io.Threaded = .init(std.testing.allocator, .{});
-    defer io_instance.deinit();
-    const io = io_instance.io();
+    const io = std.testing.io;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
@@ -1155,9 +1151,7 @@ test "loadMacroModule: a name that's taken refuses the whole file, reported at t
 }
 
 test "loadMacroPath: a folder loads in name order, so the later file's repeat is refused" {
-    var io_instance: std.Io.Threaded = .init(std.testing.allocator, .{});
-    defer io_instance.deinit();
-    const io = io_instance.io();
+    const io = std.testing.io;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
@@ -1182,9 +1176,7 @@ test "loadMacroPath: a folder loads in name order, so the later file's repeat is
 }
 
 test "loadMacroPath: a file path loads just that file" {
-    var io_instance: std.Io.Threaded = .init(std.testing.allocator, .{});
-    defer io_instance.deinit();
-    const io = io_instance.io();
+    const io = std.testing.io;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
@@ -1203,9 +1195,7 @@ test "loadMacroPath: a file path loads just that file" {
 }
 
 test "loadMacroPath: a path that doesn't exist is unreadable, named as given" {
-    var io_instance: std.Io.Threaded = .init(std.testing.allocator, .{});
-    defer io_instance.deinit();
-    const io = io_instance.io();
+    const io = std.testing.io;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 

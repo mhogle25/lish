@@ -632,9 +632,7 @@ fn environForTest(allocator: Allocator, config_home: []const u8) !std.process.En
 }
 
 test "loadConfig: no file is absent, a folder in its place is unreadable, a file runs" {
-    var io_instance: std.Io.Threaded = .init(testing.allocator, .{});
-    defer io_instance.deinit();
-    const io = io_instance.io();
+    const io = std.testing.io;
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const memory = arena.allocator();
