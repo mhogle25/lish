@@ -113,19 +113,18 @@ fn randPickOp(args: Args) ExecError!?Value {
 const builtins = @import("builtins.zig");
 const process = @import("process.zig");
 
+fn randomTestEnv(arena: Allocator) !exec.Env {
+    const registry = try arena.create(Registry);
+    registry.* = Registry.init(arena);
+    try builtins.registerAll(registry, arena);
+    try registerAll(registry, arena);
+    return .{ .registry = registry, .allocator = arena, .io = std.testing.io };
+}
+
 test "?: integer inclusive range" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const alloc = arena.allocator();
-
-    var threaded = std.Io.Threaded.init(alloc, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
-
-    var registry = Registry.init(alloc);
-    try builtins.registerAll(&registry, alloc);
-    try registerAll(&registry, alloc);
-    var env = exec.Env{ .registry = &registry, .allocator = alloc, .io = io };
+    var env = try randomTestEnv(arena.allocator());
 
     for (0..100) |_| {
         const result = try process.processRaw(&env, "? 1 6", null);
@@ -138,16 +137,7 @@ test "?: integer inclusive range" {
 test "?<: integer exclusive upper" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const alloc = arena.allocator();
-
-    var threaded = std.Io.Threaded.init(alloc, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
-
-    var registry = Registry.init(alloc);
-    try builtins.registerAll(&registry, alloc);
-    try registerAll(&registry, alloc);
-    var env = exec.Env{ .registry = &registry, .allocator = alloc, .io = io };
+    var env = try randomTestEnv(arena.allocator());
 
     for (0..100) |_| {
         const result = try process.processRaw(&env, "?< 0 5", null);
@@ -160,16 +150,7 @@ test "?<: integer exclusive upper" {
 test "?: same value returns that value" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const alloc = arena.allocator();
-
-    var threaded = std.Io.Threaded.init(alloc, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
-
-    var registry = Registry.init(alloc);
-    try builtins.registerAll(&registry, alloc);
-    try registerAll(&registry, alloc);
-    var env = exec.Env{ .registry = &registry, .allocator = alloc, .io = io };
+    var env = try randomTestEnv(arena.allocator());
 
     const result = try process.processRaw(&env, "? 7 7", null);
     try std.testing.expectEqual(@as(i64, 7), result.ok.?.int);
@@ -178,16 +159,7 @@ test "?: same value returns that value" {
 test "? and ?<: float and mixed ranges give floats within bounds" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const alloc = arena.allocator();
-
-    var threaded = std.Io.Threaded.init(alloc, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
-
-    var registry = Registry.init(alloc);
-    try builtins.registerAll(&registry, alloc);
-    try registerAll(&registry, alloc);
-    var env = exec.Env{ .registry = &registry, .allocator = alloc, .io = io };
+    var env = try randomTestEnv(arena.allocator());
 
     for (0..100) |_| {
         const inclusive = (try process.processRaw(&env, "? 1.5 2.5", null)).ok.?;
@@ -203,16 +175,7 @@ test "? and ?<: float and mixed ranges give floats within bounds" {
 test "? and ?<: bounds in the wrong order are an error for ints and floats" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const alloc = arena.allocator();
-
-    var threaded = std.Io.Threaded.init(alloc, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
-
-    var registry = Registry.init(alloc);
-    try builtins.registerAll(&registry, alloc);
-    try registerAll(&registry, alloc);
-    var env = exec.Env{ .registry = &registry, .allocator = alloc, .io = io };
+    var env = try randomTestEnv(arena.allocator());
 
     const cases = [_]struct { source: []const u8, message: []const u8 }{
         .{ .source = "? 3 1",     .message = "'?' expects x <= y" },
@@ -230,16 +193,7 @@ test "? and ?<: bounds in the wrong order are an error for ints and floats" {
 test "??: picks from provided values" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const alloc = arena.allocator();
-
-    var threaded = std.Io.Threaded.init(alloc, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
-
-    var registry = Registry.init(alloc);
-    try builtins.registerAll(&registry, alloc);
-    try registerAll(&registry, alloc);
-    var env = exec.Env{ .registry = &registry, .allocator = alloc, .io = io };
+    var env = try randomTestEnv(arena.allocator());
 
     for (0..100) |_| {
         const result = try process.processRaw(&env, "?? 10 20 30", null);
@@ -251,16 +205,7 @@ test "??: picks from provided values" {
 test "let: binds ? once, body sees the same roll on every reference" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const alloc = arena.allocator();
-
-    var threaded = std.Io.Threaded.init(alloc, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
-
-    var registry = Registry.init(alloc);
-    try builtins.registerAll(&registry, alloc);
-    try registerAll(&registry, alloc);
-    var env = exec.Env{ .registry = &registry, .allocator = alloc, .io = io };
+    var env = try randomTestEnv(arena.allocator());
 
     for (0..50) |_| {
         const result = try process.processRaw(&env, "let r (? 0 1000000) (- :r :r)", null);
