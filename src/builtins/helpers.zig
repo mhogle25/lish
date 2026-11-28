@@ -120,25 +120,24 @@ pub fn numericComparison(
 }
 
 pub fn naturalLessThan(_: void, left: ?Value, right: ?Value) bool {
-    const lv = left orelse return right != null;
-    const rv = right orelse return false;
+    const left_value = left orelse return right != null;
+    const right_value = right orelse return false;
 
-    if (Number.pairValues(lv, rv)) |both| return switch (both) {
+    if (Number.pairValues(left_value, right_value)) |both| return switch (both) {
         inline else => |numbers| numbers.left < numbers.right,
     };
 
-    if (lv == .string and rv == .string) {
-        return std.mem.order(u8, lv.string, rv.string) == .lt;
+    if (left_value == .string and right_value == .string) {
+        return std.mem.order(u8, left_value.string, right_value.string) == .lt;
     }
 
-    const typeRank = struct {
-        fn rank(v: Value) u8 {
-            return switch (v) {
-                .int, .float => 0,
-                .string => 1,
-                .list => 2,
-            };
-        }
+    return typeRank(left_value) < typeRank(right_value);
+}
+
+fn typeRank(value: Value) u8 {
+    return switch (value) {
+        .int, .float => 0,
+        .string      => 1,
+        .list        => 2,
     };
-    return typeRank.rank(lv) < typeRank.rank(rv);
 }

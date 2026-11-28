@@ -818,6 +818,20 @@ test "collection: sort mixes ints and floats" {
     try std.testing.expectEqual(@as(i64, 2), items[2].?.int);
 }
 
+test "collection: sort puts none first, then numbers, then strings, then lists" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try testing.evalWithBuiltins(arena.allocator(), "sort [[1] \"b\" 2 $none \"a\" 1.5]");
+    const items = result.?.list;
+    try std.testing.expectEqual(@as(usize, 6), items.len);
+    try std.testing.expect(items[0] == null);
+    try std.testing.expectEqual(@as(f64, 1.5), items[1].?.float);
+    try std.testing.expectEqual(@as(i64, 2), items[2].?.int);
+    try std.testing.expectEqualStrings("a", items[3].?.string);
+    try std.testing.expectEqualStrings("b", items[4].?.string);
+    try std.testing.expectEqual(@as(i64, 1), items[5].?.list[0].?.int);
+}
+
 test "collection: sort orders ints past 2^53 exactly" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

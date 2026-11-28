@@ -44,6 +44,8 @@ The **bitwise** operations (`&` AND, `|` OR, `^` XOR, `~` NOT, `<<` left shift, 
 
 `given NAME SOURCE OK-BODY [ELSE-BODY]` evaluates `SOURCE`; if it is non-`$none` it binds the value to `NAME` and runs `OK-BODY`, otherwise it runs `ELSE-BODY` (or yields `$none` when omitted). It is the Optional binding-if, `let`+`if` fused, and the ok-body sees the binding while the else-body does not. See [Error handling](errors.md).
 
+`sort` orders a mixed list as `$none` first, then numbers (ints and floats compared by value), then strings (byte by byte, so `"B"` comes before `"a"`), then lists: `sort [[1] "b" 2 $none "a" 1.5]` gives `[$none 1.5 2 "a" "b" [1]]`.
+
 ## Binding form for iterative ops
 
 `map`, `for`, `filter`, `reduce`, `fold`, `any`, `all`, `count`, `findby`, `sortby`, and `sortwith` all take a **binding name** followed by a **source** and a **body expression**. Inside the body, `:NAME` refers to the current element (or accumulator).
