@@ -52,8 +52,7 @@ pub const History = struct {
 
     pub fn add(self: *History, line: []const u8) Allocator.Error!void {
         if (self.count > 0) {
-            const last_index = if (self.write_index == 0) self.limit - 1 else self.write_index - 1;
-            if (self.entries[last_index]) |last_entry| {
+            if (self.entries[self.newestIndex()]) |last_entry| {
                 if (std.mem.eql(u8, last_entry, line)) return;
             }
         }
@@ -70,43 +69,50 @@ pub const History = struct {
     pub fn up(self: *History, buffer: *LineBuffer) EditError!void {
         if (self.count == 0) return;
 
-        const next_index = if (self.browse_index) |current|
-            self.olderIndex(current) orelse return
-        else
-            try self.startBrowsing(buffer);
+        if (self.browse_index) |current| {
+            const older = self.olderIndex(current) orelse return;
+            return self.show(older, buffer, .end);
+        }
 
-        try self.loadEntry(next_index, buffer, .end);
-        self.browse_index = next_index;
+        try self.saveTypedLine(buffer);
+        try self.show(self.newestIndex(), buffer, .end);
     }
 
-    fn startBrowsing(self: *History, buffer: *const LineBuffer) Allocator.Error!usize {
+    fn saveTypedLine(self: *History, buffer: *const LineBuffer) Allocator.Error!void {
         self.saved_line.clearRetainingCapacity();
         try self.saved_line.appendSlice(self.allocator, buffer.slice());
-
-        return if (self.write_index == 0) self.limit - 1 else self.write_index - 1;
     }
 
     fn olderIndex(self: *const History, current: usize) ?usize {
         const oldest_index = if (self.count < self.limit) 0 else self.write_index;
         if (current == oldest_index) return null;
 
-        return if (current == 0) self.limit - 1 else current - 1;
+        return self.previousIndex(current);
     }
 
     pub fn down(self: *History, buffer: *LineBuffer) EditError!void {
         const current = self.browse_index orelse return;
 
-        const newest_index = if (self.write_index == 0) self.limit - 1 else self.write_index - 1;
-
-        if (current == newest_index) {
+        if (current == self.newestIndex()) {
             try buffer.setContent(self.saved_line.items);
             self.browse_index = null;
             return;
         }
 
-        const next_index = (current + 1) % self.limit;
-        try self.loadEntry(next_index, buffer, .start);
-        self.browse_index = next_index;
+        try self.show((current + 1) % self.limit, buffer, .start);
+    }
+
+    fn show(self: *History, index: usize, buffer: *LineBuffer, cursor_at: CursorAt) EditError!void {
+        try self.loadEntry(index, buffer, cursor_at);
+        self.browse_index = index;
+    }
+
+    fn newestIndex(self: *const History) usize {
+        return self.previousIndex(self.write_index);
+    }
+
+    fn previousIndex(self: *const History, index: usize) usize {
+        return if (index == 0) self.limit - 1 else index - 1;
     }
 
     pub fn endBrowse(self: *History) void {
@@ -229,6 +235,38 @@ test "history: ring buffer wrapping" {
 
     try history.up(&buffer);
     try std.testing.expectEqualStrings("cmd 265", buffer.slice());
+}
+
+fn expectBrowsing(added: []const []const u8, up_order: []const []const u8) !void {
+    var buffer = LineBuffer.init(std.testing.allocator);
+    defer buffer.deinit();
+    var history = History.init(std.testing.allocator);
+    defer history.deinit();
+    history.setLimit(3);
+
+    for (added) |line| try history.add(line);
+    try buffer.setContent("typed");
+
+    for (up_order) |expected| {
+        try history.up(&buffer);
+        try std.testing.expectEqualStrings(expected, buffer.slice());
+    }
+    try history.up(&buffer);
+    try std.testing.expectEqualStrings(up_order[up_order.len - 1], buffer.slice());
+
+    var index = up_order.len - 1;
+    while (index > 0) {
+        index -= 1;
+        try history.down(&buffer);
+        try std.testing.expectEqualStrings(up_order[index], buffer.slice());
+    }
+    try history.down(&buffer);
+    try std.testing.expectEqualStrings("typed", buffer.slice());
+}
+
+test "history: browsing crosses the point where the slots wrap, both ways" {
+    try expectBrowsing(&.{ "a", "b", "c", "d", "e" }, &.{ "e", "d", "c" });
+    try expectBrowsing(&.{ "a", "b", "c", "d", "e", "f" }, &.{ "f", "e", "d" });
 }
 
 test "history: up on empty history does nothing" {
